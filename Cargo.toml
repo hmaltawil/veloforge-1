@@ -1,11 +1,10 @@
 [package]
 name = "veloforge"
-version = "1.1.0"
+version = "1.1.1"
 edition = "2021"
 description = "Indoor cycling with smart trainer control, workouts, plans and a 3D world"
 license = "MIT"
 repository = "https://github.com/hmaltawil/veloforge-1"
-homepage = "https://github.com/hmaltawil/veloforge-1"
 
 [dependencies]
 eframe = { version = "0.37", default-features = false, features = ["clipboard", "default_fonts", "glow", "links", "persistence", "system_fonts", "wayland", "x11"] }
