@@ -26,13 +26,13 @@ jobs:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Bluetooth (D-Bus) headers
         run: |
           sudo apt-get update
           sudo apt-get install -y libdbus-1-dev pkg-config
-      - name: Install Rust
-        run: rustup toolchain install stable --profile minimal --component clippy,rustfmt
+      - name: Install Rust (the version in rust-toolchain.toml)
+        run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - name: Formatting
         run: cargo fmt --check
@@ -45,9 +45,9 @@ jobs:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Install Rust
-        run: rustup toolchain install stable --profile minimal --component clippy
+      - uses: actions/checkout@v5
+      - name: Install Rust (the version in rust-toolchain.toml)
+        run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - name: Lints
         run: cargo clippy --all-targets --locked -- -D warnings

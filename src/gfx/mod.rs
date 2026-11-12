@@ -1563,7 +1563,7 @@ impl GlState {
         for (kind, list) in self.scattered.iter().enumerate() {
             let tree = matches!(kind, OBJ_PINE | OBJ_BROAD | OBJ_BIRCH);
             let small = matches!(kind, OBJ_BUSH | OBJ_ROCK);
-            for inst in list.chunks_exact(INSTANCE_STRIDE) {
+            for inst in list.as_chunks::<INSTANCE_STRIDE>().0 {
                 let rel = sub([inst[0], inst[1], inst[2]], f.cam);
                 let dist = len(rel);
                 if dist > FAR_CULL
@@ -1633,7 +1633,7 @@ impl GlState {
             // The same heights as a texture, for planting grass on the GPU.
             let n = ((t.verts.len() / TERRAIN_STRIDE) as f64).sqrt().round() as usize;
             let mut texels = Vec::with_capacity(n * n * 4);
-            for v in t.verts.chunks_exact(TERRAIN_STRIDE) {
+            for v in t.verts.as_chunks::<TERRAIN_STRIDE>().0 {
                 texels.extend_from_slice(&[v[1], v[6], v[7], 0.0]);
             }
             if self.height_tex.is_none() {

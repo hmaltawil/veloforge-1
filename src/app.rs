@@ -3772,8 +3772,8 @@ impl App {
                 ui.add_space(6.0);
                 ui.label("Riding days");
                 ui.horizontal_wrapped(|ui| {
-                    for d in 0..7 {
-                        ui.toggle_value(&mut self.plan_cfg.days[d], plan::weekday_label(d));
+                    for (d, on) in self.plan_cfg.days.iter_mut().enumerate() {
+                        ui.toggle_value(on, plan::weekday_label(d));
                     }
                 });
                 egui::ComboBox::from_label("Long ride day")

@@ -1,0 +1,7 @@
+# The Rust version VeloForge is built and checked with, here and on GitHub.
+# rustup installs it automatically. Newer Rust releases add lints, so moving
+# to one is a deliberate change: bump the version and fix what it reports.
+[toolchain]
+channel = "1.100.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"
