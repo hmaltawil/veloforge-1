@@ -1,9 +1,9 @@
 //! Audio cues for workouts. Tones are rendered to small WAV files once and
 //! played with the desktop's command-line player (PipeWire, PulseAudio or
-//! ALSA), so no audio libraries are needed at build time.
+//! ALSA) on Linux, or with the system's own sound player on Windows, so no
+//! audio libraries are needed at build time.
 
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cue {
@@ -47,6 +47,7 @@ impl Cue {
 }
 
 const RATE: u32 = 44_100;
+#[cfg(not(windows))]
 const PLAYERS: [&str; 3] = ["pw-play", "paplay", "aplay"];
 
 pub struct Sound {
@@ -57,6 +58,9 @@ pub struct Sound {
 
 impl Sound {
     pub fn new(dir: PathBuf, volume: f32) -> Sound {
+        #[cfg(windows)]
+        let player = Some("Windows audio");
+        #[cfg(not(windows))]
         let player = PLAYERS.into_iter().find(|p| in_path(p));
         let s = Sound {
             dir,
@@ -79,7 +83,36 @@ impl Sound {
         }
     }
 
+    #[cfg(windows)]
     pub fn play(&self, cue: Cue) {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Media::Audio::{
+            PlaySoundW, SND_ASYNC, SND_FILENAME, SND_NODEFAULT,
+        };
+        if self.player.is_none() {
+            return;
+        }
+        let file: Vec<u16> = self
+            .dir
+            .join(cue.file())
+            .as_os_str()
+            .encode_wide()
+            .chain([0])
+            .collect();
+        // SAFETY: `file` is NUL-terminated and PlaySound reads the name
+        // before returning; ASYNC plays it in the background.
+        unsafe {
+            PlaySoundW(
+                file.as_ptr(),
+                std::ptr::null_mut(),
+                SND_FILENAME | SND_ASYNC | SND_NODEFAULT,
+            );
+        }
+    }
+
+    #[cfg(not(windows))]
+    pub fn play(&self, cue: Cue) {
+        use std::process::{Command, Stdio};
         let Some(player) = self.player else { return };
         let child = Command::new(player)
             .arg(self.dir.join(cue.file()))
@@ -108,13 +141,15 @@ impl Sound {
     }
 }
 
+#[cfg(not(windows))]
 fn in_path(program: &str) -> bool {
     std::env::var_os("PATH")
         .map(|paths| std::env::split_paths(&paths).any(|dir| is_executable(&dir.join(program))))
         .unwrap_or(false)
 }
 
-fn is_executable(p: &Path) -> bool {
+#[cfg(not(windows))]
+fn is_executable(p: &std::path::Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     p.metadata()
         .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)

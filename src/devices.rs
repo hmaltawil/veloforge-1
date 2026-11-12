@@ -374,7 +374,8 @@ async fn run(mut cmd_rx: UnboundedReceiver<Cmd>, ui: Ui) {
         }
         Err(e) => {
             ui.send(Event::Adapter(Err(format!(
-                "{e}. Is bluetoothd running and the adapter powered on?"
+                "{e}. {}",
+                crate::platform::BLUETOOTH_HINT
             ))));
             None
         }

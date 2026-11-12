@@ -3201,7 +3201,9 @@ dependencies = [
  "chrono",
  "directories",
  "eframe",
+ "epaint_default_fonts",
  "futures",
+ "getrandom 0.3.4",
  "qrcode",
  "roxmltree",
  "serde",
@@ -3209,6 +3211,7 @@ dependencies = [
  "tokio",
  "ureq",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

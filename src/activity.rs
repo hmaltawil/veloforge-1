@@ -61,8 +61,46 @@ pub fn parse_tcx(xml: &str) -> Result<Activity> {
     Ok(Activity { name, samples })
 }
 
+/// Move a file to the Recycle Bin, so it can be restored from there.
+#[cfg(windows)]
+pub fn move_to_trash(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::{
+        SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FO_DELETE,
+        SHFILEOPSTRUCTW,
+    };
+    // The shell wants a plain absolute path (not the \\?\ form that
+    // canonicalize returns), ending in two NULs.
+    let path = std::path::absolute(path)?;
+    if !path.exists() {
+        return Err(std::io::ErrorKind::NotFound.into());
+    }
+    let mut from: Vec<u16> = path.as_os_str().encode_wide().collect();
+    from.extend([0, 0]);
+    let mut op = SHFILEOPSTRUCTW {
+        hwnd: std::ptr::null_mut(),
+        wFunc: FO_DELETE,
+        pFrom: from.as_ptr(),
+        pTo: std::ptr::null(),
+        // ALLOWUNDO is what sends it to the Recycle Bin instead of deleting.
+        fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT) as _,
+        fAnyOperationsAborted: 0,
+        hNameMappings: std::ptr::null_mut(),
+        lpszProgressTitle: std::ptr::null(),
+    };
+    // SAFETY: `op` and the NUL-terminated `from` outlive the call.
+    let code = unsafe { SHFileOperationW(&mut op) };
+    if code != 0 || op.fAnyOperationsAborted != 0 {
+        return Err(std::io::Error::other(format!(
+            "the Recycle Bin did not take the file (code {code})"
+        )));
+    }
+    Ok(())
+}
+
 /// Move a file to the desktop's Trash (the freedesktop.org layout that
 /// Dolphin, Nautilus and others use), so it can be restored from there.
+#[cfg(not(windows))]
 pub fn move_to_trash(path: &std::path::Path) -> std::io::Result<()> {
     let data_home = std::env::var_os("XDG_DATA_HOME")
         .map(std::path::PathBuf::from)
@@ -78,6 +116,7 @@ pub fn move_to_trash(path: &std::path::Path) -> std::io::Result<()> {
     )
 }
 
+#[cfg(not(windows))]
 fn trash_into(
     path: &std::path::Path,
     trash: &std::path::Path,
@@ -140,6 +179,7 @@ fn trash_into(
 }
 
 /// Percent-encode a path for a .trashinfo file.
+#[cfg(not(windows))]
 fn url_path(path: &std::path::Path) -> String {
     use std::os::unix::ffi::OsStrExt;
     path.as_os_str()
@@ -207,6 +247,7 @@ mod tests {
         assert!(best_efforts(&a.samples).iter().any(|b| b.0 == "1 min"));
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn trashed_rides_can_be_restored() {
         let dir = std::env::temp_dir().join(format!("vf-trash-{}", std::process::id()));

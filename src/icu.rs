@@ -31,16 +31,16 @@ impl Credentials {
 
     pub fn save(&self, path: &std::path::Path) -> Result<()> {
         use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        // Readable only by the user. On Windows the file lives in the user's
+        // own AppData folder, which other accounts cannot read.
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut f = options.open(path)?;
         f.write_all(serde_json::to_string_pretty(self)?.as_bytes())?;
         Ok(())
     }
@@ -519,14 +519,17 @@ mod tests {
 
     #[test]
     fn credentials_file_is_private() {
-        use std::os::unix::fs::PermissionsExt;
         let path =
             std::env::temp_dir().join(format!("veloforge-creds-{}.json", std::process::id()));
         creds().save(&path).unwrap();
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
         assert_eq!(Credentials::load(&path), creds());
         let _ = std::fs::remove_file(path);
     }

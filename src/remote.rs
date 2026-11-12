@@ -154,10 +154,7 @@ pub fn local_ip() -> Option<IpAddr> {
 pub fn new_token() -> String {
     const ALPHABET: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789";
     let mut bytes = [0u8; 8];
-    let ok = std::fs::File::open("/dev/urandom")
-        .and_then(|mut f| f.read_exact(&mut bytes))
-        .is_ok();
-    if !ok {
+    if getrandom::fill(&mut bytes).is_err() {
         // Fall back to the clock; still unguessable enough on a home network.
         let t = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

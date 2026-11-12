@@ -1,6 +1,6 @@
 # VeloForge
 
-A free, local indoor-cycling app for Linux: smart trainer control, structured workouts, training plans and a 3D world to ride in. Everything runs on your computer, with no account and no subscription.
+A free, local indoor-cycling app for Linux, with a Windows version in testing: smart trainer control, structured workouts, training plans and a 3D world to ride in. Everything runs on your computer, with no account and no subscription.
 
 ![Workout on the Col Loop](docs/ride-workout.png)
 
@@ -62,6 +62,14 @@ veloforge --demo             # free ride with the simulated trainer
 veloforge --demo --workout   # a sweet spot workout, starting just before the first interval
 veloforge --demo --pacer     # free ride alongside a pacer
 ```
+
+### Windows (test version)
+
+VeloForge also runs on Windows 10 and 11 (64-bit). This version is new: the app, 3D world, workouts, sounds and phone remote work, but connecting to trainers and heart rate straps over Bluetooth has not yet been tested on Windows. Reports are welcome.
+
+- **Run it:** unzip the test build and double-click `veloforge.exe`. Windows may warn that it "protected your PC" because the program is new and unsigned; click **More info**, then **Run anyway**. To try it without a trainer, run `veloforge.exe --demo --workout` from a terminal in that folder.
+- **Build it yourself:** install Rust from https://rustup.rs, then run `cargo build --release` in the downloaded folder. The program is `target\release\veloforge.exe`.
+- **Phone remote:** when Windows Firewall asks, allow VeloForge on private networks.
 
 ## Getting started
 
@@ -125,7 +133,7 @@ Wheel-on trainers such as the KICKR SNAP read power more accurately after a **sp
 
 ## Your data
 
-Everything stays on your computer in `~/.local/share/veloforge/`:
+Everything stays on your computer in `~/.local/share/veloforge/` (on Windows: `%APPDATA%\veloforge\data\`):
 
 | File | Contents |
 |---|---|
@@ -134,7 +142,7 @@ Everything stays on your computer in `~/.local/share/veloforge/`:
 | `activities/*.tcx` | your rides |
 | `veloforge.log` | the log, for troubleshooting |
 
-Deleting a ride in **History** moves its `.tcx` file to the Trash, so you can restore it from there. Set `VELOFORGE_DATA=/some/dir` to use a different folder.
+Deleting a ride in **History** moves its `.tcx` file to the Trash (the Recycle Bin on Windows), so you can restore it from there. Set `VELOFORGE_DATA=/some/dir` to use a different folder.
 
 ## For developers
 
@@ -158,6 +166,7 @@ VeloForge is written in Rust with [egui](https://github.com/emilk/egui) for the 
 | `src/world.rs` | Simple software 3D view (fallback), time of day and weather |
 | `src/sound.rs` | Audio cues |
 | `src/charts.rs` | Charts and zone colours |
+| `src/platform.rs` | The few differences between Linux and Windows |
 | `src/app.rs` | The user interface |
 
 The interface is set in [Inter](https://rsms.me/inter/), used under the SIL Open Font License (`assets/fonts/LICENSE.txt`).

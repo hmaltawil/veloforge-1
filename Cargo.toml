@@ -19,6 +19,11 @@ directories = "6"
 anyhow = "1"
 ureq = "3"
 qrcode = { version = "0.14", default-features = false }
+getrandom = "0.3"
+epaint_default_fonts = "0.37"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Media_Audio", "Win32_UI_Shell"] }
 
 [profile.release]
 opt-level = 3

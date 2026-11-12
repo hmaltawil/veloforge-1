@@ -582,16 +582,8 @@ impl App {
             });
         });
         card(ui, "Phone can't connect?", |ui| {
-            ui.label(
-                RichText::new(
-                    "Check that the phone is on the same Wi-Fi. If it is, the firewall may be \
-                     blocking it; allow the port with:",
-                )
-                .weak(),
-            );
-            let cmd = format!(
-                "sudo firewall-cmd --add-port={port}/tcp --permanent && sudo firewall-cmd --reload"
-            );
+            let (why, cmd) = crate::platform::firewall_hint(port);
+            ui.label(RichText::new(why).weak());
             ui.horizontal(|ui| {
                 ui.add(
                     egui::Label::new(RichText::new(&cmd).monospace().size(12.5)).selectable(true),
@@ -806,7 +798,7 @@ impl App {
                     );
                     if ui.button("Open data folder").clicked() {
                         let _ = std::fs::create_dir_all(&data);
-                        let _ = std::process::Command::new("xdg-open").arg(&data).spawn();
+                        crate::platform::open(&data);
                     }
                 },
             );
@@ -821,7 +813,7 @@ impl App {
                     },
                     "Ride files in the activities folder that aren't in History any more, from rides you deleted earlier.",
                     |ui| {
-                        clean = ui.button("Move them to the Trash").clicked();
+                        clean = ui.button(format!("Move them to the {TRASH}")).clicked();
                     },
                 );
             });
@@ -848,7 +840,7 @@ impl App {
         });
         card(ui, "About", |ui| {
             ui.label(format!(
-                "VeloForge {} — free, local indoor cycling for Linux.",
+                "VeloForge {} — free, local indoor cycling.",
                 env!("CARGO_PKG_VERSION")
             ));
             ui.hyperlink_to(
@@ -864,11 +856,11 @@ impl App {
                 }
             }
             let moved = orphans.len() - failed;
-            self.log_line(format!("Moved {moved} leftover ride files to the Trash"));
+            self.log_line(format!("Moved {moved} leftover ride files to the {TRASH}"));
             self.notify(if failed == 0 {
-                format!("Moved {moved} leftover ride files to the Trash")
+                format!("Moved {moved} leftover ride files to the {TRASH}")
             } else {
-                format!("Moved {moved} files to the Trash; {failed} could not be moved")
+                format!("Moved {moved} files to the {TRASH}; {failed} could not be moved")
             });
         }
         if forget {

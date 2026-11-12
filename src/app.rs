@@ -7,6 +7,7 @@ use crate::devices::{
 };
 use crate::gfx::GpuWorld;
 use crate::plan::{self, Goal, PlanConfig, PlannedWorkout};
+use crate::platform::TRASH;
 use crate::ride::{self, Live, Mode, Physics, Ride, Summary};
 use crate::route::{self, Route};
 use crate::sound::{Cue, Sound};
@@ -1168,7 +1169,7 @@ impl App {
         }
     }
 
-    /// Move a deleted ride's file to the Trash: only files in the
+    /// Move a deleted ride's file to the Trash (Recycle Bin): only files in the
     /// activities folder that no other ride in History still uses.
     fn trash_activity(&mut self, file: &str) {
         let path = Path::new(file);
@@ -1184,13 +1185,15 @@ impl App {
             return;
         }
         match crate::activity::move_to_trash(path) {
-            Ok(()) => self.log_line(format!("Moved {} to the Trash", path.display())),
+            Ok(()) => self.log_line(format!("Moved {} to the {TRASH}", path.display())),
             Err(e) => {
                 self.log_line(format!(
-                    "Could not move {} to the Trash: {e}",
+                    "Could not move {} to the {TRASH}: {e}",
                     path.display()
                 ));
-                self.notify("The ride was removed, but its file could not be moved to the Trash");
+                self.notify(format!(
+                    "The ride was removed, but its file could not be moved to the {TRASH}"
+                ));
             }
         }
     }
@@ -1398,44 +1401,31 @@ fn append_log_file(path: &Path, line: &str) {
 /// egui's bundled fonts lack some symbols (arrows, check marks, dots); use
 /// a common system font as a fallback when one is installed.
 fn install_fallback_font(ctx: &egui::Context) {
-    // Ask fontconfig first: it knows the distribution's font layout.
-    let fc = std::process::Command::new("fc-match")
-        .args(["-f", "%{file}", "sans-serif:charset=2190 2193 2714 25b6"])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .filter(|p| p.ends_with(".ttf") || p.ends_with(".otf"));
-    const CANDIDATES: &[&str] = &[
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/TTF/DejaVuSans.ttf",
-        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
-        "/usr/share/fonts/gnu-free/FreeSans.otf",
-        "/usr/share/fonts/noto/NotoSansSymbols2-Regular.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf",
-        "/usr/share/fonts/google-noto/NotoSans-Regular.ttf",
-    ];
-    for path in fc
-        .iter()
-        .map(|s| s.as_str())
-        .chain(CANDIDATES.iter().copied())
+    let add_last = |name: &str, data: egui::FontData| {
+        ctx.add_font(egui::FontInsert::new(
+            name,
+            data,
+            theme::families()
+                .into_iter()
+                .map(|family| egui::InsertFontFamily {
+                    family,
+                    priority: egui::FontPriority::Lowest,
+                })
+                .collect(),
+        ));
+    };
+    if let Some(bytes) = crate::platform::fallback_fonts()
+        .into_iter()
+        .find_map(|path| std::fs::read(path).ok())
     {
-        if let Ok(bytes) = std::fs::read(path) {
-            ctx.add_font(egui::FontInsert::new(
-                "system-fallback",
-                egui::FontData::from_owned(bytes),
-                theme::families()
-                    .into_iter()
-                    .map(|family| egui::InsertFontFamily {
-                        family,
-                        priority: egui::FontPriority::Lowest,
-                    })
-                    .collect(),
-            ));
-            return;
-        }
+        add_last("system-fallback", egui::FontData::from_owned(bytes));
     }
+    // Last resort, already built in: egui's Hack font has the few symbols
+    // (such as the menu arrow ▾) that a system may lack.
+    add_last(
+        "bundled-symbols",
+        egui::FontData::from_static(epaint_default_fonts::HACK_REGULAR),
+    );
 }
 
 // ----------------------------------------------------------------------
@@ -2736,7 +2726,7 @@ impl App {
             format!("{} · {}", s.time_of_day.label(), s.weather.label())
         };
         let mut changed = false;
-        ui.menu_button(format!("{label} ⏷"), |ui| {
+        ui.menu_button(format!("{label} ▾"), |ui| {
             ui.set_min_width(170.0);
             ui.label(RichText::new("Time of day").weak());
             for t in TimeOfDay::ALL {
@@ -2770,7 +2760,7 @@ impl App {
             .collect();
         let ftp = self.store.settings.ftp;
         let mut load = None;
-        ui.menu_button(format!("{label} ⏷"), |ui| {
+        ui.menu_button(format!("{label} ▾"), |ui| {
             ui.set_min_width(260.0);
             if ui
                 .selectable_label(self.ride.companion.is_none(), "Ride alone")
@@ -4408,9 +4398,7 @@ impl App {
             );
             if ui.button("Open folder").clicked() {
                 let _ = std::fs::create_dir_all(&self.paths.activities);
-                let _ = std::process::Command::new("xdg-open")
-                    .arg(&self.paths.activities)
-                    .spawn();
+                crate::platform::open(&self.paths.activities);
             }
         });
         ui.label(
@@ -4532,11 +4520,13 @@ impl App {
                                         .parent()
                                         .map(|p| p.to_path_buf())
                                         .unwrap_or_default();
-                                    let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+                                    crate::platform::open(dir);
                                 }
                                 if ui
                                     .small_button("Delete")
-                                    .on_hover_text("Delete this ride (its file goes to the Trash)")
+                                    .on_hover_text(format!(
+                                        "Delete this ride (its file goes to the {TRASH})"
+                                    ))
                                     .clicked()
                                 {
                                     delete = Some(i);
@@ -4657,12 +4647,12 @@ impl App {
                     ui.colored_label(Color32::from_rgb(240, 150, 80), "Heart rate hidden: the strap's signal is noisy (see its card on the left).");
                 }
                 ui.add_space(10.0);
-                egui::CollapsingHeader::new("KICKR SNAP / Linux tips").default_open(true).show(ui, |ui| {
+                egui::CollapsingHeader::new(crate::platform::TIPS_TITLE).default_open(true).show(ui, |ui| {
                     ui.label("• Close the Wahoo or Zwift app on your phone: a trainer accepts only one controlling connection.");
                     ui.label("• VeloForge does not need the trainer to be paired in your system Bluetooth settings. If it connects but shows no data, remove (forget) it there and connect again from here.");
                     ui.label("• Update the trainer firmware once with the Wahoo app; recent firmware adds standard FTMS control. Older firmware is still supported via Wahoo's legacy protocol.");
                     ui.label("• The KICKR SNAP does not measure cadence by itself — pair any Bluetooth cadence sensor or a power meter if you want rpm.");
-                    ui.label("• If scanning finds nothing: `systemctl status bluetooth` and `bluetoothctl power on`.");
+                    ui.label(crate::platform::SCAN_HINT);
                 });
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
@@ -4673,7 +4663,7 @@ impl App {
                         self.toast = Some(("Log copied to clipboard".into(), Instant::now()));
                     }
                     if ui.button("Open full log").on_hover_text(self.paths.log_file().display().to_string()).clicked() {
-                        let _ = std::process::Command::new("xdg-open").arg(self.paths.log_file()).spawn();
+                        crate::platform::open(self.paths.log_file());
                     }
                     if ui.button("Save log to file").clicked() {
                         let text: Vec<&str> = self.log.iter().rev().map(|s| s.as_str()).collect();
@@ -5111,7 +5101,7 @@ impl App {
                                     .parent()
                                     .map(|p| p.to_path_buf())
                                     .unwrap_or_default();
-                                let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+                                crate::platform::open(dir);
                             }
                             ui.label(RichText::new(&s.file).small().weak());
                         });
@@ -5271,9 +5261,9 @@ impl App {
                     .show(ctx, |ui| {
                         ui.label(format!("Delete {name}?"));
                         ui.label(
-                            RichText::new(
-                                "Its .tcx file goes to the Trash, so you can still restore it from there.",
-                            )
+                            RichText::new(format!(
+                                "Its .tcx file goes to the {TRASH}, so you can still restore it from there."
+                            ))
                             .weak(),
                         );
                         ui.horizontal(|ui| {

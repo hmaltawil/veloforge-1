@@ -1,3 +1,6 @@
+// A windowed app: don't open a console window next to it on Windows.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod activity;
 mod app;
 mod charts;
@@ -5,6 +8,7 @@ mod devices;
 mod gfx;
 mod icu;
 mod plan;
+mod platform;
 mod progress;
 mod protocol;
 mod remote;
