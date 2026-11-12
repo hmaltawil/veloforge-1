@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=VeloForge
+Comment=Smart trainer control, structured workouts and training plans
+Exec=veloforge
+Icon=veloforge
+Terminal=false
+Categories=Sports;Utility;
+StartupWMClass=veloforge

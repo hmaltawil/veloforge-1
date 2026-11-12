@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1d4f8f"/>
+      <stop offset="0.62" stop-color="#7fb6e6"/>
+    </linearGradient>
+    <linearGradient id="hill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4fae5a"/>
+      <stop offset="1" stop-color="#2b7a3a"/>
+    </linearGradient>
+    <linearGradient id="road" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4b4f58"/>
+      <stop offset="1" stop-color="#2a2d33"/>
+    </linearGradient>
+    <clipPath id="tile"><rect width="256" height="256" rx="58"/></clipPath>
+  </defs>
+  <g clip-path="url(#tile)">
+    <rect width="256" height="256" fill="url(#sky)"/>
+    <!-- Wheel as the sun -->
+    <g transform="translate(128 96)">
+      <circle r="62" fill="#ffb15c" opacity="0.18"/>
+      <circle r="50" fill="none" stroke="#f28a2e" stroke-width="13"/>
+      <circle r="40" fill="none" stroke="#ffd8a8" stroke-width="2.5" opacity="0.8"/>
+      <g stroke="#fff3e2" stroke-width="3" stroke-linecap="round" opacity="0.9">
+        <line x1="0" y1="-40" x2="0" y2="40"/>
+        <line x1="-40" y1="0" x2="40" y2="0"/>
+        <line x1="-28" y1="-28" x2="28" y2="28"/>
+        <line x1="-28" y1="28" x2="28" y2="-28"/>
+      </g>
+      <circle r="9" fill="#f28a2e"/>
+    </g>
+    <!-- Hills -->
+    <path d="M0 168 C 50 140, 90 150, 128 158 C 170 166, 210 136, 256 150 L256 256 L0 256 Z" fill="url(#hill)"/>
+    <!-- Road to the horizon -->
+    <path d="M58 256 L120 158 L136 158 L198 256 Z" fill="url(#road)"/>
+    <g fill="#f4f4ef">
+      <path d="M125.5 166 L130.5 166 L131.5 178 L124.5 178 Z"/>
+      <path d="M123.5 190 L132.5 190 L134 208 L122 208 Z"/>
+      <path d="M121 224 L135 224 L137.5 256 L118.5 256 Z"/>
+    </g>
+  </g>
+</svg>
