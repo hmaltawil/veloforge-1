@@ -1,5 +1,7 @@
 # VeloForge
 
+[![CI](https://github.com/hmaltawil/veloforge-1/actions/workflows/ci.yml/badge.svg)](https://github.com/hmaltawil/veloforge-1/actions/workflows/ci.yml)
+
 A free, local indoor-cycling app for Linux, with a Windows version in testing: smart trainer control, structured workouts, training plans and a 3D world to ride in. Everything runs on your computer, with no account and no subscription.
 
 ![Workout on the Col Loop](docs/ride-workout.png)

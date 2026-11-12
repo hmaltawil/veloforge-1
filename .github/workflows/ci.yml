@@ -1,0 +1,63 @@
+# Check every change: formatting, lints and tests on Linux, and lints, tests
+# and a build on a real Windows machine (with Microsoft's compiler, the way
+# someone building VeloForge on Windows would).
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch replaces a run that is still going.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    # Pull requests from branches of this repository are already checked
+    # by their push; only forks need the pull_request run.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Bluetooth (D-Bus) headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component clippy,rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Formatting
+        run: cargo fmt --check
+      - name: Lints
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Tests
+        run: cargo test --locked
+
+  windows:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Lints
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Tests
+        run: cargo test --locked
+      - name: Build veloforge.exe
+        run: cargo build --locked
+      - name: The program has its name, version and icon
+        shell: pwsh
+        run: |
+          $info = (Get-Item target\debug\veloforge.exe).VersionInfo
+          "FileDescription: $($info.FileDescription), version: $($info.FileVersion)"
+          if ($info.FileDescription -ne 'VeloForge') { throw 'veloforge.exe is missing its Windows resources (name and icon)' }
