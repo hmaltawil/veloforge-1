@@ -67,7 +67,7 @@ veloforge --demo --pacer     # free ride alongside a pacer
 
 VeloForge also runs on Windows 10 and 11 (64-bit). This version is new: the app, 3D world, workouts, sounds and phone remote work, but connecting to trainers and heart rate straps over Bluetooth has not yet been tested on Windows. Reports are welcome.
 
-- **Run it:** unzip the test build and double-click `veloforge.exe`. Windows may warn that it "protected your PC" because the program is new and unsigned; click **More info**, then **Run anyway**. To try it without a trainer, run `veloforge.exe --demo --workout` from a terminal in that folder.
+- **Run it:** download the `windows-x64.zip` file from the [Releases page](https://github.com/hmaltawil/veloforge-1/releases), unzip it and double-click `veloforge.exe`. Windows may warn that it "protected your PC" because the program is new and unsigned; click **More info**, then **Run anyway**. To try it without a trainer, run `veloforge.exe --demo --workout` from a terminal in that folder.
 - **Build it yourself:** install Rust from https://rustup.rs, then run `cargo build --release` in the downloaded folder. The program is `target\release\veloforge.exe`.
 - **Phone remote:** when Windows Firewall asks, allow VeloForge on private networks.
 
