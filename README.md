@@ -30,6 +30,16 @@ A free, local indoor-cycling app for Linux, with a Windows version in testing: s
 
 ## Install
 
+Download VeloForge from the [Releases page](https://github.com/hmaltawil/veloforge-1/releases/latest):
+
+- **Ubuntu, Debian, Linux Mint, Pop!_OS:** the `.deb` file. Open it to install, or run `sudo apt install ./veloforge_*_amd64.deb` in the download folder.
+- **Other Linux (Fedora, Arch, openSUSE…):** the `linux-x64.tar.gz` file. Unpack it and run `./install.sh` in the `VeloForge` folder; it installs for your user, with an app-menu entry and icon. `./install.sh --uninstall` removes it again.
+- **Windows:** the `windows-x64.zip` file (see [Windows](#windows-test-version) below).
+
+The Linux downloads need Ubuntu 22.04, Debian 12, Fedora 36 or newer. **To update**, install the new version the same way; your settings, calendar and rides are kept. VeloForge tells you when a new version is out.
+
+### Build it yourself
+
 You need Rust (https://rustup.rs, or your distribution's `rust` and `cargo` packages) and the D-Bus headers that Bluetooth support needs:
 
 ```bash
@@ -55,7 +65,7 @@ cd veloforge
 ./install.sh
 ```
 
-**To update:** `git pull && ./install.sh`. Your settings, calendar and rides are kept.
+**To update:** `git pull && ./install.sh`. Your settings, calendar and rides are kept. `./install.sh --uninstall` removes VeloForge (not your rides).
 
 Try it without any hardware:
 
@@ -173,6 +183,7 @@ VeloForge is written in Rust with [egui](https://github.com/emilk/egui) for the 
 | `src/charts.rs` | Charts and zone colours |
 | `src/platform.rs` | The few differences between Linux and Windows |
 | `build.rs` | Gives the Windows `.exe` its icon, name and version |
+| `packaging/linux/` | Builds and tests the Linux `.deb` and `.tar.gz` downloads |
 | `src/app.rs` | The user interface |
 
 The interface is set in [Inter](https://rsms.me/inter/), used under the SIL Open Font License (`assets/fonts/LICENSE.txt`).

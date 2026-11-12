@@ -1,9 +1,18 @@
-# Build the Windows program and attach it, zipped, to a GitHub release.
+# Build the downloads and attach them to a GitHub release:
+#   VeloForge-<version>-windows-x64.zip   Windows 10 and 11
+#   veloforge_<version>-1_amd64.deb       Ubuntu, Debian, Linux Mint, Pop!_OS
+#   VeloForge-<version>-linux-x64.tar.gz  any other Linux (./install.sh)
+#   SHA256SUMS                            checksums of the three
 #
 # Either publish a release on GitHub (Releases > Draft a new release, with
-# a new tag such as v1.0.0), or push a version tag from a computer. In both
-# cases the zip and its checksum are added to the release a few minutes
-# later. A tag pushed with a dash (v1.1.0-beta) becomes a pre-release.
+# a new tag such as v1.2.0), or push a version tag from a computer. In both
+# cases the files are added to the release a few minutes later, once the
+# Linux packages have been installed and started on fresh systems. The tag
+# must match the version in Cargo.toml. A tag with a dash (v1.2.0-beta)
+# becomes a pre-release.
+#
+# "Run workflow" (Actions > Release) builds and tests everything without
+# publishing; the files are kept with that run for a few days.
 name: Release
 
 on:
@@ -11,6 +20,7 @@ on:
     tags: ["v*"]
   release:
     types: [published]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -39,7 +49,7 @@ jobs:
 
       - name: Package the zip
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
           mkdir -p dist/VeloForge
           x86_64-w64-mingw32-strip -o dist/VeloForge/veloforge.exe \
             target/x86_64-pc-windows-gnu/release/veloforge.exe
@@ -48,17 +58,96 @@ jobs:
           sed 's/$/\r/' LICENSE > dist/VeloForge/LICENSE.txt
           cd dist
           zip -9 -r "VeloForge-$version-windows-x64.zip" VeloForge
-          sha256sum "VeloForge-$version-windows-x64.zip" > "VeloForge-$version-windows-x64.zip.sha256"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: dist/*.zip
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-24.04
+    # Built on Ubuntu 22.04 (glibc 2.35), so it also runs on older systems.
+    container: ubuntu:22.04
+    steps:
+      - name: Install build tools
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates curl git build-essential pkg-config libdbus-1-dev dpkg-dev
+
+      - uses: actions/checkout@v5
+
+      - name: Install Rust (the version in rust-toolchain.toml) and cargo-deb
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain none
+          export PATH="$HOME/.cargo/bin:$PATH"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          rustup toolchain install
+          cargo install cargo-deb --locked --version 3.8.0
+
+      - name: Build veloforge
+        run: cargo build --release --locked
+
+      - name: Package the .tar.gz and .deb
+        run: packaging/linux/package.sh
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+          if-no-files-found: error
+
+  test-linux:
+    needs: linux
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: "ubuntu:22.04", package: deb }
+          - { image: "debian:12", package: deb }
+          - { image: "ubuntu:24.04", package: deb }
+          - { image: "fedora:latest", package: tar }
+    name: install ${{ matrix.package }} on ${{ matrix.image }}
+    runs-on: ubuntu-24.04
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v8
+        with:
+          name: linux
+          path: dist
+      - name: Install it and start VeloForge
+        run: bash packaging/linux/smoke-test.sh ${{ matrix.package }} dist
+
+  publish:
+    needs: [windows, test-linux]
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
 
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="$GITHUB_REF_NAME"
-          version="${tag#v}"
-          files=("dist/VeloForge-$version-windows-x64.zip" "dist/VeloForge-$version-windows-x64.zip.sha256")
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          if [ "$tag" != "v$version" ]; then
+            echo "::error::The tag $tag does not match the version in Cargo.toml ($version). Change one of them and publish again."
+            exit 1
+          fi
+          (cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS)
+          files=(dist/*)
           if gh release view "$tag" >/dev/null 2>&1; then
-            # Made on GitHub: add the download, and the standard title and
+            # Made on GitHub: add the downloads, and the standard title and
             # notes where they were left empty.
             gh release upload "$tag" "${files[@]}" --clobber
             name="$(gh release view "$tag" --json name --jq .name)"

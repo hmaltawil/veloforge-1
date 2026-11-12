@@ -2,8 +2,10 @@
 name = "veloforge"
 version = "1.1.0"
 edition = "2021"
-description = "Smart trainer controller, workout player and training planner with a 3D ride view"
+description = "Indoor cycling with smart trainer control, workouts, plans and a 3D world"
 license = "MIT"
+repository = "https://github.com/hmaltawil/veloforge-1"
+homepage = "https://github.com/hmaltawil/veloforge-1"
 
 [dependencies]
 eframe = { version = "0.37", default-features = false, features = ["clipboard", "default_fonts", "glow", "links", "persistence", "system_fonts", "wayland", "x11"] }
@@ -30,3 +32,29 @@ opt-level = 3
 
 [build-dependencies]
 winresource = { version = "0.1", default-features = false }
+
+# The .deb package (built with cargo-deb by the release workflow).
+[package.metadata.deb]
+maintainer = "hmaltawil <342350112+hmaltawil@users.noreply.github.com>"
+copyright = "2026, hmaltawil"
+license-file = ["LICENSE", "0"]
+extended-description = """\
+Controls FTMS and older Wahoo smart trainers over Bluetooth, plays structured \
+workouts, plans your training, syncs with intervals.icu, has a phone remote \
+over Wi-Fi and a 3D world to ride in. Everything runs on your computer."""
+section = "misc"
+priority = "optional"
+depends = "$auto"
+# Loaded when the app starts, so not found by $auto: the window (X11 or
+# Wayland), OpenGL, Bluetooth and a player for the workout sounds.
+recommends = "libx11-6, libx11-xcb1, libxcursor1, libxrandr2, libxi6, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libwayland-cursor0, libwayland-egl1, libgl1, libegl1, bluez, pipewire-bin | pulseaudio-utils | alsa-utils"
+assets = [
+    ["target/release/veloforge", "usr/bin/", "755"],
+    ["packaging/veloforge.desktop", "usr/share/applications/", "644"],
+    ["packaging/icons/veloforge-48.png", "usr/share/icons/hicolor/48x48/apps/veloforge.png", "644"],
+    ["packaging/icons/veloforge-64.png", "usr/share/icons/hicolor/64x64/apps/veloforge.png", "644"],
+    ["packaging/icons/veloforge-128.png", "usr/share/icons/hicolor/128x128/apps/veloforge.png", "644"],
+    ["packaging/icons/veloforge-256.png", "usr/share/icons/hicolor/256x256/apps/veloforge.png", "644"],
+    ["packaging/icons/veloforge.svg", "usr/share/icons/hicolor/scalable/apps/veloforge.svg", "644"],
+    ["README.md", "usr/share/doc/veloforge/", "644"],
+]
