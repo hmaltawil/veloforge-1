@@ -790,7 +790,7 @@ impl App {
             row(
                 ui,
                 "Folder",
-                "Settings, calendar, rides (.tcx) and the log. Nothing leaves your computer unless you turn on intervals.icu.",
+                "Settings, calendar, rides (.tcx) and the log. Nothing about you or your rides leaves your computer unless you turn on intervals.icu.",
                 |ui| {
                     ui.add(
                         egui::Label::new(RichText::new(data.display().to_string()).monospace())
@@ -838,6 +838,8 @@ impl App {
                 },
             );
         });
+        let mut check_now = false;
+        let mut changed = false;
         card(ui, "About", |ui| {
             ui.label(format!(
                 "VeloForge {} — free, local indoor cycling.",
@@ -847,7 +849,56 @@ impl App {
                 "Source code on GitHub",
                 "https://github.com/hmaltawil/veloforge-1",
             );
+            row(
+                ui,
+                "Updates",
+                "Asks GitHub once at start-up whether a newer version exists. Nothing about you or your rides is sent.",
+                |ui| {
+                    changed |= ui
+                        .checkbox(
+                            &mut self.store.settings.check_updates,
+                            "Check for new versions",
+                        )
+                        .changed();
+                    use crate::update::Status;
+                    let checking = matches!(self.update, Some(Status::Checking));
+                    match &self.update {
+                        None => {}
+                        Some(Status::Checking) => {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label(RichText::new("Checking…").weak());
+                            });
+                        }
+                        Some(Status::UpToDate) => {
+                            ui.label(RichText::new("You have the latest version.").weak());
+                        }
+                        Some(Status::Available(r)) => {
+                            ui.colored_label(
+                                ACCENT,
+                                format!("VeloForge {} is available.", r.version),
+                            );
+                            ui.hyperlink_to("Open the download page", &r.url);
+                        }
+                        Some(Status::Failed(e)) => {
+                            ui.colored_label(
+                                Color32::from_rgb(240, 150, 80),
+                                format!("Could not check: {e}"),
+                            );
+                        }
+                    }
+                    check_now = ui
+                        .add_enabled(!checking, egui::Button::new("Check now"))
+                        .clicked();
+                },
+            );
         });
+        if check_now {
+            self.check_for_update();
+        }
+        if changed {
+            self.mark_dirty();
+        }
         if clean {
             let mut failed = 0;
             for f in &orphans {

@@ -208,6 +208,9 @@ pub struct App {
     remote_error: Option<String>,
     remote_pushed: Instant,
     settings_page: settings_ui::SettingsPage,
+    /// What the last check for a newer version found.
+    update: Option<crate::update::Status>,
+    update_rx: Option<std::sync::mpsc::Receiver<crate::update::Status>>,
 }
 
 impl App {
@@ -302,6 +305,8 @@ impl App {
             remote_error: None,
             remote_pushed: Instant::now(),
             settings_page: Default::default(),
+            update: None,
+            update_rx: None,
             last_checkpoint: Instant::now(),
             curve_failed: Default::default(),
             demo: false,
@@ -324,6 +329,9 @@ impl App {
             app.icu_busy = true;
             app.icu
                 .send(crate::icu::Request::Test(app.icu_creds.clone()));
+        }
+        if app.store.settings.check_updates {
+            app.check_for_update();
         }
         app.recover_checkpoint();
         if app.store.settings.remote_enabled {
@@ -1033,6 +1041,35 @@ impl App {
                 name,
             });
         }
+    }
+
+    /// Ask GitHub, in the background, whether a newer version exists.
+    fn check_for_update(&mut self) {
+        let url = std::env::var("VELOFORGE_UPDATE_URL")
+            .unwrap_or_else(|_| crate::update::LATEST_URL.to_string());
+        self.update = Some(crate::update::Status::Checking);
+        self.update_rx = Some(crate::update::check(self.egui_ctx.clone(), url));
+    }
+
+    fn pump_update(&mut self) {
+        use crate::update::Status;
+        use std::sync::mpsc::TryRecvError;
+        let Some(rx) = &self.update_rx else { return };
+        let status = match rx.try_recv() {
+            Ok(status) => status,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Status::Failed("the check stopped".into()),
+        };
+        self.update_rx = None;
+        match &status {
+            Status::Available(r) => {
+                self.log_line(format!("VeloForge {} is available: {}", r.version, r.url))
+            }
+            Status::UpToDate => self.log_line("VeloForge is up to date".into()),
+            Status::Failed(e) => self.log_line(format!("Could not check for a new version: {e}")),
+            Status::Checking => {}
+        }
+        self.update = Some(status);
     }
 
     fn pump_icu(&mut self) {
@@ -1969,6 +2006,7 @@ impl eframe::App for App {
         self.pump_events();
         self.tick_ride();
         self.pump_icu();
+        self.pump_update();
         if self.icu_creds.is_set()
             && self.store.settings.icu_sync_plan
             && !self.icu_busy
@@ -2178,6 +2216,32 @@ impl App {
                         None => "No trainer",
                     },
                 );
+                if self.ride.state != ride::State::Running {
+                    if let Some(crate::update::Status::Available(r)) = &self.update {
+                        let label = if compact {
+                            "Update".to_string()
+                        } else {
+                            format!("Update {}", r.version)
+                        };
+                        let button = egui::Button::new(
+                            RichText::new(label)
+                                .font(theme::medium(12.0))
+                                .color(Color32::WHITE),
+                        )
+                        .fill(ACCENT)
+                        .corner_radius(12);
+                        if ui
+                            .add(button)
+                            .on_hover_text(format!(
+                                "VeloForge {} is available. Click to open its download page.",
+                                r.version
+                            ))
+                            .clicked()
+                        {
+                            ui.ctx().open_url(egui::OpenUrl::new_tab(&r.url));
+                        }
+                    }
+                }
                 if self.ride.state == ride::State::Running {
                     // A recording light that breathes.
                     let t = ui.input(|i| i.time);

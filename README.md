@@ -144,6 +144,8 @@ Everything stays on your computer in `~/.local/share/veloforge/` (on Windows: `%
 
 Deleting a ride in **History** moves its `.tcx` file to the Trash (the Recycle Bin on Windows), so you can restore it from there. Set `VELOFORGE_DATA=/some/dir` to use a different folder.
 
+**Updates:** when it starts, VeloForge asks GitHub once whether a newer version has been released, and shows **Update** in the top bar if so. The request contains only the app's version, nothing about you or your rides. Turn it off in **Settings → Data & about**.
+
 ## For developers
 
 VeloForge is written in Rust with [egui](https://github.com/emilk/egui) for the interface, [btleplug](https://github.com/deviceplug/btleplug) for Bluetooth and OpenGL for the 3D world. Run the tests with `cargo test`.
@@ -158,6 +160,7 @@ VeloForge is written in Rust with [egui](https://github.com/emilk/egui) for the 
 | `src/progress.rs` | Fitness, fatigue and form, power curves, weekly and monthly totals |
 | `src/icu.rs` | intervals.icu client: planned workouts down, rides up |
 | `src/remote.rs` | Phone remote: a small web server on the local network |
+| `src/update.rs` | The check for a newer version |
 | `src/route.rs` | Built-in routes (including the hairpin climb) and GPX import |
 | `src/activity.rs` | Reading saved rides back (ride details, crash recovery) |
 | `src/gfx/` | OpenGL 3D world: terrain generation, meshes, shaders, renderer (shadow maps, HDR, post-processing) |

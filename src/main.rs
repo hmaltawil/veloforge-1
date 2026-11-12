@@ -17,6 +17,7 @@ mod route;
 mod sound;
 mod store;
 mod theme;
+mod update;
 mod workout;
 mod world;
 

@@ -49,6 +49,8 @@ pub struct Settings {
     pub remote_port: u16,
     /// Access code the phone must present (part of the QR code link).
     pub remote_token: String,
+    /// Ask GitHub at start-up whether a newer version has been released.
+    pub check_updates: bool,
 }
 
 impl Default for Settings {
@@ -79,6 +81,7 @@ impl Default for Settings {
             remote_enabled: false,
             remote_port: crate::remote::DEFAULT_PORT,
             remote_token: String::new(),
+            check_updates: true,
         }
     }
 }
