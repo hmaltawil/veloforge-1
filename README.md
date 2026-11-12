@@ -167,6 +167,7 @@ VeloForge is written in Rust with [egui](https://github.com/emilk/egui) for the 
 | `src/sound.rs` | Audio cues |
 | `src/charts.rs` | Charts and zone colours |
 | `src/platform.rs` | The few differences between Linux and Windows |
+| `build.rs` | Gives the Windows `.exe` its icon, name and version |
 | `src/app.rs` | The user interface |
 
 The interface is set in [Inter](https://rsms.me/inter/), used under the SIL Open Font License (`assets/fonts/LICENSE.txt`).
