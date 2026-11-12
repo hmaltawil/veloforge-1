@@ -1,14 +1,25 @@
-# Publish a release when a version tag is pushed (for example v1.0.0):
-# build the Windows program and attach it, zipped, to a new GitHub release.
-# Tags with a dash (v1.1.0-beta) become pre-releases.
+# Build the Windows program and attach it, zipped, to a GitHub release.
+#
+# Either publish a release on GitHub (Releases > Draft a new release, with
+# a new tag such as v1.0.0), or push a version tag from a computer. In both
+# cases the zip and its checksum are added to the release a few minutes
+# later. A tag pushed with a dash (v1.1.0-beta) becomes a pre-release.
 name: Release
 
 on:
   push:
     tags: ["v*"]
+  release:
+    types: [published]
 
 permissions:
   contents: write
+
+# Publishing a release with a new tag can start this twice (the tag and the
+# release); run one after the other so they never upload at the same time.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   windows:
@@ -43,12 +54,25 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          pre=""
-          case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" \
-            "dist/VeloForge-$version-windows-x64.zip" \
-            "dist/VeloForge-$version-windows-x64.zip.sha256" \
-            --verify-tag $pre \
-            --title "VeloForge $version" \
-            --notes-file packaging/release-notes.md
+          tag="$GITHUB_REF_NAME"
+          version="${tag#v}"
+          files=("dist/VeloForge-$version-windows-x64.zip" "dist/VeloForge-$version-windows-x64.zip.sha256")
+          if gh release view "$tag" >/dev/null 2>&1; then
+            # Made on GitHub: add the download, and the standard title and
+            # notes where they were left empty.
+            gh release upload "$tag" "${files[@]}" --clobber
+            name="$(gh release view "$tag" --json name --jq .name)"
+            body="$(gh release view "$tag" --json body --jq .body)"
+            if [ -z "$name" ] || [ "$name" = "$tag" ]; then
+              gh release edit "$tag" --title "VeloForge $version"
+            fi
+            if [ -z "$body" ]; then
+              gh release edit "$tag" --notes-file packaging/release-notes.md
+            fi
+          else
+            pre=""
+            case "$tag" in *-*) pre="--prerelease" ;; esac
+            gh release create "$tag" "${files[@]}" --verify-tag $pre \
+              --title "VeloForge $version" \
+              --notes-file packaging/release-notes.md
+          fi
