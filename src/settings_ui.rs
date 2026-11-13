@@ -396,7 +396,8 @@ impl App {
                 ui,
                 "Detail",
                 "High: sharp shadows, thick grass, smooth edges. Medium halves all three. \
-                 Low drops shadows and grass for older graphics cards.",
+                 Low drops shadows and grass and draws the world at a lower resolution \
+                 (the numbers stay sharp), for older graphics cards.",
                 |ui| {
                     ui.add_enabled_ui(s.gpu_3d, |ui| {
                         ui.horizontal(|ui| {

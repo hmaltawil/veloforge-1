@@ -27,7 +27,8 @@ use crate::world::{Scene, Sky, TimeOfDay, Weather, LANE};
 /// How much the 3D view asks of the graphics card.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Quality {
-    /// No shadows, grass or anti-aliasing.
+    /// No shadows, grass or anti-aliasing, and the world drawn at a lower
+    /// resolution and scaled up.
     Low,
     Medium,
     #[default]
@@ -55,6 +56,14 @@ impl Quality {
             Quality::High => 2048,
             Quality::Medium => 1024,
             Quality::Low => 0,
+        }
+    }
+    /// The share of the view's width and height the world is drawn at. The
+    /// work grows with the number of pixels, so 2/3 is under half of it.
+    fn render_scale(self) -> f32 {
+        match self {
+            Quality::High | Quality::Medium => 1.0,
+            Quality::Low => 2.0 / 3.0,
         }
     }
     fn grass(self) -> usize {
@@ -2179,7 +2188,12 @@ impl GlState {
                 self.error = Some(e);
                 return;
             }
-            self.ensure_targets(gl, w, h, f.quality);
+            let scale = f.quality.render_scale();
+            let (rw, rh) = (
+                ((w as f32 * scale).round() as i32).max(1),
+                ((h as f32 * scale).round() as i32).max(1),
+            );
+            self.ensure_targets(gl, rw, rh, f.quality);
 
             // Per-frame geometry.
             let road = self.road.as_mut().unwrap();
@@ -2426,7 +2440,7 @@ impl GlState {
             gl.depth_mask(false);
             if let Some(t) = self.targets.take() {
                 Self::resolve(gl, &t);
-                self.post(gl, &t, f, info.pixels_per_point);
+                self.post(gl, &t, f, info.pixels_per_point, [w, h]);
                 gl.bind_framebuffer(glow::FRAMEBUFFER, screen);
                 set_view(gl);
                 gl.enable(glow::SCISSOR_TEST);
@@ -2446,8 +2460,16 @@ impl GlState {
     }
 
     /// Blur pyramid, light shafts, and the final composite left bound and
-    /// ready to draw to the screen.
-    unsafe fn post(&mut self, gl: &glow::Context, t: &Targets, f: &FrameData, ppp: f32) {
+    /// ready to draw to the screen, which is `screen` pixels (the scene may
+    /// have been drawn smaller).
+    unsafe fn post(
+        &mut self,
+        gl: &glow::Context,
+        t: &Targets,
+        f: &FrameData,
+        ppp: f32,
+        screen: [i32; 2],
+    ) {
         unsafe {
             gl.bind_vertex_array(self.sky_vao);
             gl.active_texture(glow::TEXTURE0);
@@ -2544,7 +2566,8 @@ impl GlState {
             p.f1(gl, "u_desat", l.desat);
             p.f1(gl, "u_bloom_k", l.bloom);
             p.v3(gl, "u_ray_col", scale(l.sun_col, rays * 0.55));
-            p.f2(gl, "u_res", t.w as f32, t.h as f32);
+            // The glass panels are placed in screen pixels.
+            p.f2(gl, "u_res", screen[0] as f32, screen[1] as f32);
             p.v3(gl, "u_grade", l.grade);
             p.v3(gl, "u_tint_shadow", l.tint_shadow);
             p.v3(gl, "u_tint_light", l.tint_light);
