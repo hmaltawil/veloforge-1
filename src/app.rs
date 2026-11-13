@@ -347,9 +347,17 @@ impl App {
                 app.ride.hr_control =
                     ride::HrControl::new((app.store.settings.max_hr * 0.65).round());
             }
-            if args.iter().any(|a| a == "--workout") {
-                app.load_ride(Some("ss-3x10".into()), None);
-                app.ride.skip_to(590.0);
+            // `--workout [id]`: a workout (sweet spot unless named), starting
+            // 10 s before the end of its first step.
+            if let Some(i) = args.iter().position(|a| a == "--workout") {
+                let id = args
+                    .get(i + 1)
+                    .filter(|v| !v.starts_with("--"))
+                    .cloned()
+                    .unwrap_or_else(|| "ss-3x10".into());
+                app.load_ride(Some(id), None);
+                let first = app.ride.segs.first().map_or(0.0, |s| s.end());
+                app.ride.skip_to((first - 10.0).max(0.0) as f64);
             }
             // `--km 1.5`: start partway along the route.
             if let Some(km) = args
@@ -662,21 +670,26 @@ impl App {
             })),
             (Some(w), Mode::Workout) => workout::segment_index(&self.ride.segs, t).map(|i| {
                 let seg = self.ride.segs[i];
+                // The phone's cadence tile shows the current cadence target,
+                // so this big line stays short enough not to wrap.
                 let now = if seg.free {
                     "Free ride".to_string()
                 } else {
                     format!("{:.0} W", seg.at(t) * self.ride.intensity * ftp)
                 };
                 let next = self.ride.segs.get(i + 1).map(|n| {
-                    if n.free {
-                        format!("Next: {} free ride", fmt_dur(n.secs))
-                    } else {
-                        format!(
-                            "Next: {} @ {:.0} W",
-                            fmt_dur(n.secs),
-                            n.from * self.ride.intensity * ftp
-                        )
-                    }
+                    n.with_cadence(
+                        if n.free {
+                            format!("Next: {} free ride", fmt_dur(n.secs))
+                        } else {
+                            format!(
+                                "Next: {} @ {:.0} W",
+                                fmt_dur(n.secs),
+                                n.from * self.ride.intensity * ftp
+                            )
+                        },
+                        ", ",
+                    )
                 });
                 let col = if seg.free {
                     Color32::GRAY
@@ -733,6 +746,7 @@ impl App {
             "target": target,
             "target_color": target.map(|t| hex(charts::zone_color(t / ftp))),
             "cadence": fresh(&self.metrics.cadence).map(f32::round),
+            "cadence_target": self.ride.target_cadence().map(f32::round),
             "speed": self.ride.speed * 3.6,
             "grade": grade,
             "time": fmt_dur(self.ride.elapsed as f32),
@@ -1885,6 +1899,38 @@ fn pct_edit(ui: &mut egui::Ui, frac: &mut f32) -> bool {
     changed
 }
 
+/// A step's cadence target in rpm; 0 ("any rpm") means none.
+fn cadence_edit(ui: &mut egui::Ui, cadence: &mut Option<u32>) -> bool {
+    let mut rpm = cadence.unwrap_or(0);
+    let changed = ui
+        .add(
+            egui::DragValue::new(&mut rpm)
+                .range(0..=200)
+                .speed(1.0)
+                .custom_formatter(|v, _| {
+                    if v < 1.0 {
+                        "any rpm".into()
+                    } else {
+                        format!("{v:.0} rpm")
+                    }
+                })
+                .custom_parser(|s| {
+                    let s = s.trim().trim_end_matches("rpm").trim();
+                    if s.is_empty() || s == "-" || s.eq_ignore_ascii_case("any") {
+                        Some(0.0)
+                    } else {
+                        s.parse().ok()
+                    }
+                }),
+        )
+        .on_hover_text("Target cadence for this step (0 = no target)")
+        .changed();
+    if changed {
+        *cadence = (rpm > 0).then_some(rpm);
+    }
+    changed
+}
+
 /// A dashboard tile: caption, a big number with its unit, and a stripe of
 /// colour down the left edge.
 fn tile(
@@ -3010,7 +3056,14 @@ impl App {
                 "rpm",
                 Color32::from_rgb(90, 170, 230),
             );
-            if let Some(src) = self.source_name(&self.metrics.cadence) {
+            if let Some(t) = self.ride.target_cadence() {
+                let live = fresh(&self.metrics.cadence);
+                sub(
+                    tiles[2],
+                    format!("target {t:.0} rpm"),
+                    charts::cadence_colour(live, t),
+                );
+            } else if let Some(src) = self.source_name(&self.metrics.cadence) {
                 sub(tiles[2], src, grey);
             }
         } else {
@@ -3093,11 +3146,14 @@ impl App {
             (Some(w), Mode::Workout) => {
                 if let Some(i) = workout::segment_index(&self.ride.segs, t) {
                     let seg = self.ride.segs[i];
-                    let now = if seg.free {
-                        "Free ride".to_string()
-                    } else {
-                        format!("{:.0} W", seg.at(t) * self.ride.intensity * ftp)
-                    };
+                    let now = seg.with_cadence(
+                        if seg.free {
+                            "Free ride".to_string()
+                        } else {
+                            format!("{:.0} W", seg.at(t) * self.ride.intensity * ftp)
+                        },
+                        "  ·  ",
+                    );
                     painter.text(
                         left - Vec2::new(0.0, h2 * 0.22),
                         Align2::LEFT_CENTER,
@@ -3127,15 +3183,18 @@ impl App {
                         Color32::WHITE,
                     );
                     let next = self.ride.segs.get(i + 1).map(|n| {
-                        if n.free {
-                            format!("Next: {} free ride", fmt_dur(n.secs))
-                        } else {
-                            format!(
-                                "Next: {} @ {:.0} W",
-                                fmt_dur(n.secs),
-                                n.from * self.ride.intensity * ftp
-                            )
-                        }
+                        n.with_cadence(
+                            if n.free {
+                                format!("Next: {} free ride", fmt_dur(n.secs))
+                            } else {
+                                format!(
+                                    "Next: {} @ {:.0} W",
+                                    fmt_dur(n.secs),
+                                    n.from * self.ride.intensity * ftp
+                                )
+                            },
+                            ", ",
+                        )
                     });
                     painter.text(
                         right - Vec2::new(0.0, h2 * 0.18),
@@ -3442,15 +3501,18 @@ impl App {
                                     secs: 600,
                                     from: 0.45,
                                     to: 0.72,
+                                    cadence: None,
                                 },
                                 Step::Steady {
                                     secs: 1200,
                                     power: 0.75,
+                                    cadence: None,
                                 },
                                 Step::Ramp {
                                     secs: 300,
                                     from: 0.65,
                                     to: 0.4,
+                                    cadence: None,
                                 },
                             ],
                         });
@@ -3649,19 +3711,30 @@ impl App {
                     ui.horizontal(|ui| {
                         ui.label(format!("{:>2}.", i + 1));
                         match step {
-                            Step::Steady { secs, power } => {
+                            Step::Steady {
+                                secs,
+                                power,
+                                cadence,
+                            } => {
                                 ui.label("Steady");
                                 changed |= secs_edit(ui, secs);
                                 ui.label("at");
                                 changed |= pct_edit(ui, power);
+                                changed |= cadence_edit(ui, cadence);
                             }
-                            Step::Ramp { secs, from, to } => {
+                            Step::Ramp {
+                                secs,
+                                from,
+                                to,
+                                cadence,
+                            } => {
                                 ui.label("Ramp");
                                 changed |= secs_edit(ui, secs);
                                 ui.label("from");
                                 changed |= pct_edit(ui, from);
                                 ui.label("to");
                                 changed |= pct_edit(ui, to);
+                                changed |= cadence_edit(ui, cadence);
                             }
                             Step::Intervals {
                                 repeat,
@@ -3669,6 +3742,8 @@ impl App {
                                 on_power,
                                 off_secs,
                                 off_power,
+                                on_cadence,
+                                off_cadence,
                             } => {
                                 ui.label("Intervals");
                                 changed |= ui
@@ -3677,14 +3752,17 @@ impl App {
                                 changed |= secs_edit(ui, on_secs);
                                 ui.label("@");
                                 changed |= pct_edit(ui, on_power);
+                                changed |= cadence_edit(ui, on_cadence);
                                 ui.label("then");
                                 changed |= secs_edit(ui, off_secs);
                                 ui.label("@");
                                 changed |= pct_edit(ui, off_power);
+                                changed |= cadence_edit(ui, off_cadence);
                             }
-                            Step::FreeRide { secs } => {
+                            Step::FreeRide { secs, cadence } => {
                                 ui.label("Free ride");
                                 changed |= secs_edit(ui, secs);
+                                changed |= cadence_edit(ui, cadence);
                             }
                         }
                         if icon_button(ui, Icon::Up, "", None)
@@ -3717,12 +3795,14 @@ impl App {
                 Some(Step::Steady {
                     secs: 300,
                     power: 0.75,
+                    cadence: None,
                 })
             } else if ui.button("Ramp").clicked() {
                 Some(Step::Ramp {
                     secs: 300,
                     from: 0.5,
                     to: 0.75,
+                    cadence: None,
                 })
             } else if ui.button("Intervals").clicked() {
                 Some(Step::Intervals {
@@ -3731,9 +3811,14 @@ impl App {
                     on_power: 1.05,
                     off_secs: 120,
                     off_power: 0.5,
+                    on_cadence: None,
+                    off_cadence: None,
                 })
             } else if ui.button("Free ride").clicked() {
-                Some(Step::FreeRide { secs: 600 })
+                Some(Step::FreeRide {
+                    secs: 600,
+                    cadence: None,
+                })
             } else {
                 None
             };

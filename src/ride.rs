@@ -403,6 +403,14 @@ impl Ride {
             .map(|(p, free)| (p * self.intensity, free))
     }
 
+    /// The workout's cadence target (rpm) right now, if it sets one.
+    pub fn target_cadence(&self) -> Option<f32> {
+        if self.mode != Mode::Workout {
+            return None;
+        }
+        workout::cadence_at(&self.segs, self.workout_time() as f32)
+    }
+
     pub fn target_watts(&self, ftp: f32) -> Option<f32> {
         if self.mode == Mode::HeartRate {
             return self.hr_control.power.map(f32::round);

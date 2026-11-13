@@ -359,8 +359,10 @@ function render(s) {
     $('target-k').textContent = 'Speed'; $('target').textContent = fmt(s.speed, 1); $('target-u').textContent = 'km/h';
     $('t-target').style.borderLeftColor = '#2a2d38';
   }
-  if (s.cadence !== null && s.cadence !== undefined) {
-    $('third-k').textContent = 'Cadence'; $('third').textContent = fmt(s.cadence); $('third-u').textContent = 'rpm';
+  const cadenceTarget = s.cadence_target !== null && s.cadence_target !== undefined;
+  if (cadenceTarget || (s.cadence !== null && s.cadence !== undefined)) {
+    $('third-k').textContent = cadenceTarget ? 'Cadence · target ' + fmt(s.cadence_target) : 'Cadence';
+    $('third').textContent = fmt(s.cadence); $('third-u').textContent = 'rpm';
   } else {
     $('third-k').textContent = 'Grade'; $('third').textContent = (s.grade >= 0 ? '+' : '') + fmt(s.grade, 1); $('third-u').textContent = '%';
   }

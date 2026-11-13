@@ -9,7 +9,7 @@ A free, local indoor-cycling app for Linux, with a Windows version in testing: s
 ## What it does
 
 - **Controls your smart trainer** over Bluetooth. ERG mode holds a target power, and simulation mode makes the resistance follow the road. It works with trainers that use the standard FTMS protocol, and with older Wahoo KICKR / SNAP firmware through Wahoo's legacy protocol.
-- **Structured workouts**: about 30 built in (recovery, endurance, tempo, sweet spot, threshold, VO2 max, sprints, ramp test, 20-minute test), a step editor for your own, and import of `.zwo` files from intervals.icu, TrainerRoad, WhatsOnZwift and others.
+- **Structured workouts**: about 30 built in (recovery, endurance, tempo, sweet spot, threshold, VO2 max, sprints, ramp test, 20-minute test), a step editor for your own, and import of `.zwo` files from intervals.icu, TrainerRoad, WhatsOnZwift and others. Steps can have a cadence target, shown next to your live cadence (green when you're within 5 rpm).
 - **Training plans and a calendar**. VeloForge generates a periodized plan (FTP builder, aerobic base or maintenance) on the days you ride: three build weeks, then a recovery week. Missed a key workout? It offers to move it to your next free day. Tired? It suggests an easier ride instead.
 - **Heart-rate rides**: pick a target heart rate and VeloForge sets the trainer's power to hold it.
 - **Ride with someone**: a pacer at a power you choose, or a ghost of your own best ride on the same route.
@@ -72,6 +72,7 @@ Try it without any hardware:
 ```bash
 veloforge --demo             # free ride with the simulated trainer
 veloforge --demo --workout   # a sweet spot workout, starting just before the first interval
+veloforge --demo --workout cadence-builder   # any workout by its id
 veloforge --demo --pacer     # free ride alongside a pacer
 ```
 

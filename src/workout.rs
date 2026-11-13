@@ -54,11 +54,17 @@ pub enum Step {
     Steady {
         secs: u32,
         power: f32,
+        /// Target cadence in rpm, if the workout asks for one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cadence: Option<u32>,
     },
     Ramp {
         secs: u32,
         from: f32,
         to: f32,
+        /// Target cadence in rpm, if the workout asks for one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cadence: Option<u32>,
     },
     Intervals {
         repeat: u32,
@@ -66,17 +72,27 @@ pub enum Step {
         on_power: f32,
         off_secs: u32,
         off_power: f32,
+        /// Target cadences (rpm) for the efforts and the recoveries.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        on_cadence: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        off_cadence: Option<u32>,
     },
     /// Rider-controlled section: the trainer follows the route grade.
     FreeRide {
         secs: u32,
+        /// Target cadence in rpm, if the workout asks for one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cadence: Option<u32>,
     },
 }
 
 impl Step {
     pub fn secs(&self) -> u32 {
         match *self {
-            Step::Steady { secs, .. } | Step::Ramp { secs, .. } | Step::FreeRide { secs } => secs,
+            Step::Steady { secs, .. } | Step::Ramp { secs, .. } | Step::FreeRide { secs, .. } => {
+                secs
+            }
             Step::Intervals {
                 repeat,
                 on_secs,
@@ -88,25 +104,45 @@ impl Step {
 
     pub fn describe(&self) -> String {
         let pct = |p: f32| format!("{:.0}%", p * 100.0);
+        let rpm = |c: Option<u32>| c.map(|c| format!(" · {c} rpm")).unwrap_or_default();
         match *self {
-            Step::Steady { secs, power } => format!("{} @ {}", fmt_dur(secs as f32), pct(power)),
-            Step::Ramp { secs, from, to } => {
-                format!("{} ramp {} to {}", fmt_dur(secs as f32), pct(from), pct(to))
-            }
+            Step::Steady {
+                secs,
+                power,
+                cadence,
+            } => format!("{} @ {}{}", fmt_dur(secs as f32), pct(power), rpm(cadence)),
+            Step::Ramp {
+                secs,
+                from,
+                to,
+                cadence,
+            } => format!(
+                "{} ramp {} to {}{}",
+                fmt_dur(secs as f32),
+                pct(from),
+                pct(to),
+                rpm(cadence)
+            ),
             Step::Intervals {
                 repeat,
                 on_secs,
                 on_power,
                 off_secs,
                 off_power,
+                on_cadence,
+                off_cadence,
             } => format!(
-                "{repeat}× ({} @ {} / {} @ {})",
+                "{repeat}× ({} @ {}{} / {} @ {}{})",
                 fmt_dur(on_secs as f32),
                 pct(on_power),
+                rpm(on_cadence),
                 fmt_dur(off_secs as f32),
-                pct(off_power)
+                pct(off_power),
+                rpm(off_cadence)
             ),
-            Step::FreeRide { secs } => format!("{} free ride", fmt_dur(secs as f32)),
+            Step::FreeRide { secs, cadence } => {
+                format!("{} free ride{}", fmt_dur(secs as f32), rpm(cadence))
+            }
         }
     }
 }
@@ -118,6 +154,8 @@ pub struct Segment {
     pub from: f32,
     pub to: f32,
     pub free: bool,
+    /// Target cadence (rpm), if any.
+    pub cadence: Option<f32>,
 }
 
 impl Segment {
@@ -143,33 +181,46 @@ impl Workout {
     pub fn segments(&self) -> Vec<Segment> {
         let mut out = Vec::new();
         let mut t = 0.0;
-        let mut push = |secs: u32, from: f32, to: f32, free: bool, t: &mut f32| {
-            if secs > 0 {
-                out.push(Segment {
-                    start: *t,
-                    secs: secs as f32,
-                    from,
-                    to,
-                    free,
-                });
-                *t += secs as f32;
-            }
-        };
+        let mut push =
+            |secs: u32, from: f32, to: f32, free: bool, cadence: Option<u32>, t: &mut f32| {
+                if secs > 0 {
+                    out.push(Segment {
+                        start: *t,
+                        secs: secs as f32,
+                        from,
+                        to,
+                        free,
+                        cadence: cadence.map(|c| c as f32),
+                    });
+                    *t += secs as f32;
+                }
+            };
         for s in &self.steps {
             match *s {
-                Step::Steady { secs, power } => push(secs, power, power, false, &mut t),
-                Step::Ramp { secs, from, to } => push(secs, from, to, false, &mut t),
-                Step::FreeRide { secs } => push(secs, 0.5, 0.5, true, &mut t),
+                Step::Steady {
+                    secs,
+                    power,
+                    cadence,
+                } => push(secs, power, power, false, cadence, &mut t),
+                Step::Ramp {
+                    secs,
+                    from,
+                    to,
+                    cadence,
+                } => push(secs, from, to, false, cadence, &mut t),
+                Step::FreeRide { secs, cadence } => push(secs, 0.5, 0.5, true, cadence, &mut t),
                 Step::Intervals {
                     repeat,
                     on_secs,
                     on_power,
                     off_secs,
                     off_power,
+                    on_cadence,
+                    off_cadence,
                 } => {
                     for _ in 0..repeat {
-                        push(on_secs, on_power, on_power, false, &mut t);
-                        push(off_secs, off_power, off_power, false, &mut t);
+                        push(on_secs, on_power, on_power, false, on_cadence, &mut t);
+                        push(off_secs, off_power, off_power, false, off_cadence, &mut t);
                     }
                 }
             }
@@ -214,6 +265,22 @@ impl Workout {
 pub fn target_at(segs: &[Segment], t: f32) -> Option<(f32, bool)> {
     let i = segs.partition_point(|s| s.end() <= t);
     segs.get(i).map(|s| (s.at(t), s.free))
+}
+
+impl Segment {
+    /// `text` followed by this segment's cadence target, if it has one:
+    /// "176 W" becomes "176 W{sep}90 rpm".
+    pub fn with_cadence(&self, text: String, sep: &str) -> String {
+        match self.cadence {
+            Some(c) => format!("{text}{sep}{c:.0} rpm"),
+            None => text,
+        }
+    }
+}
+
+/// The target cadence (rpm) at workout time `t`, if the workout sets one.
+pub fn cadence_at(segs: &[Segment], t: f32) -> Option<f32> {
+    segment_index(segs, t).and_then(|i| segs[i].cadence)
 }
 
 pub fn segment_index(segs: &[Segment], t: f32) -> Option<usize> {
@@ -332,21 +399,35 @@ pub fn parse_zwo(xml: &str, id: &str) -> Result<Workout> {
         let secs = num("Duration").unwrap_or(0.0).round() as u32;
         let lo = num("PowerLow").or(num("Power")).unwrap_or(0.5);
         let hi = num("PowerHigh").or(num("Power")).unwrap_or(lo);
+        // Cadence targets in rpm: a single value, or the middle of a range.
+        let rpm = |v: Option<f32>| {
+            v.filter(|c| (20.0..=250.0).contains(c))
+                .map(|c| c.round() as u32)
+        };
+        let cadence = rpm(
+            num("Cadence").or(match (num("CadenceLow"), num("CadenceHigh")) {
+                (Some(a), Some(b)) => Some((a + b) / 2.0),
+                (a, b) => a.or(b),
+            }),
+        );
         let step = match n.tag_name().name() {
             "Warmup" | "Ramp" => Step::Ramp {
                 secs,
                 from: lo,
                 to: hi,
+                cadence,
             },
             // Cooldowns always descend, whichever order the attributes use.
             "Cooldown" => Step::Ramp {
                 secs,
                 from: lo.max(hi),
                 to: lo.min(hi),
+                cadence,
             },
             "SteadyState" | "SolidState" => Step::Steady {
                 secs,
                 power: num("Power").unwrap_or(lo),
+                cadence,
             },
             "IntervalsT" => Step::Intervals {
                 repeat: num("Repeat").unwrap_or(1.0).round() as u32,
@@ -360,8 +441,10 @@ pub fn parse_zwo(xml: &str, id: &str) -> Result<Workout> {
                     .or(num("PowerOffLow"))
                     .or(num("PowerOffHigh"))
                     .unwrap_or(0.5),
+                on_cadence: cadence,
+                off_cadence: rpm(num("CadenceResting")),
             },
-            "FreeRide" | "MaxEffort" => Step::FreeRide { secs },
+            "FreeRide" | "MaxEffort" => Step::FreeRide { secs, cadence },
             _ => continue,
         };
         if step.secs() > 0 {
@@ -388,26 +471,37 @@ pub fn parse_zwo(xml: &str, id: &str) -> Result<Workout> {
 
 const MIN: u32 = 60;
 
-fn warmup(mins: u32) -> Step {
+fn ramp(secs: u32, from: f32, to: f32) -> Step {
     Step::Ramp {
-        secs: mins * MIN,
-        from: 0.45,
-        to: 0.72,
+        secs,
+        from,
+        to,
+        cadence: None,
     }
 }
 
+fn warmup(mins: u32) -> Step {
+    ramp(mins * MIN, 0.45, 0.72)
+}
+
 fn cooldown(mins: u32) -> Step {
-    Step::Ramp {
-        secs: mins * MIN,
-        from: 0.65,
-        to: 0.40,
-    }
+    ramp(mins * MIN, 0.65, 0.40)
 }
 
 fn steady(mins: u32, power: f32) -> Step {
     Step::Steady {
         secs: mins * MIN,
         power,
+        cadence: None,
+    }
+}
+
+/// A steady block at a target cadence.
+fn spin(secs: u32, power: f32, rpm: u32) -> Step {
+    Step::Steady {
+        secs,
+        power,
+        cadence: Some(rpm),
     }
 }
 
@@ -418,6 +512,8 @@ fn reps(repeat: u32, on_secs: u32, on_power: f32, off_secs: u32, off_power: f32)
         on_power,
         off_secs,
         off_power,
+        on_cadence: None,
+        off_cadence: None,
     }
 }
 
@@ -435,22 +531,38 @@ pub fn builtin() -> Vec<Workout> {
     use Category::*;
     let mut v = vec![
         w(
+            "cadence-builder",
+            "Cadence Builder",
+            Endurance,
+            "Easy power, faster legs: three ladders from 85 to 110 rpm, for a smoother, more efficient pedal stroke.",
+            vec![
+                warmup(10),
+                spin(3 * MIN, 0.62, 85),
+                spin(3 * MIN, 0.62, 95),
+                spin(2 * MIN, 0.62, 105),
+                spin(MIN, 0.62, 110),
+                spin(3 * MIN, 0.55, 85),
+                spin(3 * MIN, 0.62, 90),
+                spin(3 * MIN, 0.62, 100),
+                spin(2 * MIN, 0.62, 105),
+                spin(MIN, 0.62, 110),
+                spin(3 * MIN, 0.55, 85),
+                spin(3 * MIN, 0.62, 90),
+                spin(3 * MIN, 0.62, 100),
+                spin(2 * MIN, 0.62, 105),
+                spin(MIN, 0.62, 110),
+                cooldown(8),
+            ],
+        ),
+        w(
             "recovery-30",
             "Recovery Spin",
             Recovery,
             "Easy spin to flush the legs.",
             vec![
-                Step::Ramp {
-                    secs: 5 * MIN,
-                    from: 0.40,
-                    to: 0.50,
-                },
+                ramp(5 * MIN, 0.40, 0.50),
                 steady(20, 0.50),
-                Step::Ramp {
-                    secs: 5 * MIN,
-                    from: 0.50,
-                    to: 0.40,
-                },
+                ramp(5 * MIN, 0.50, 0.40),
             ],
         ),
         w(
@@ -459,18 +571,18 @@ pub fn builtin() -> Vec<Workout> {
             Recovery,
             "Longer easy spin with light cadence pickups.",
             vec![
-                Step::Ramp {
-                    secs: 5 * MIN,
-                    from: 0.40,
-                    to: 0.52,
+                ramp(5 * MIN, 0.40, 0.52),
+                Step::Intervals {
+                    repeat: 4,
+                    on_secs: 6 * MIN,
+                    on_power: 0.52,
+                    off_secs: 2 * MIN,
+                    off_power: 0.58,
+                    on_cadence: Some(85),
+                    off_cadence: Some(100),
                 },
-                reps(4, 6 * MIN, 0.52, 2 * MIN, 0.58),
                 steady(3, 0.50),
-                Step::Ramp {
-                    secs: 5 * MIN,
-                    from: 0.50,
-                    to: 0.40,
-                },
+                ramp(5 * MIN, 0.50, 0.40),
             ],
         ),
     ];
@@ -541,9 +653,9 @@ pub fn builtin() -> Vec<Workout> {
             warmup(15), reps(8, 30, 1.60, 4 * MIN + 30, 0.50), cooldown(8),
         ]),
         w("ramp-test", "Ramp Test", Test, "Ride each 1-minute step until you can't hold it, then press Finish. FTP is estimated as 75% of your best minute.", {
-            let mut s = vec![Step::Ramp { secs: 5 * MIN, from: 0.40, to: 0.50 }];
+            let mut s = vec![ramp(5 * MIN, 0.40, 0.50)];
             for i in 0..25 {
-                s.push(Step::Steady { secs: MIN, power: 0.40 + 0.06 * i as f32 });
+                s.push(Step::Steady { secs: MIN, power: 0.40 + 0.06 * i as f32, cadence: None });
             }
             s
         }),
@@ -551,9 +663,12 @@ pub fn builtin() -> Vec<Workout> {
             warmup(10),
             reps(3, MIN, 1.05, MIN, 0.55),
             steady(5, 0.55),
-            Step::Steady { secs: 5 * MIN, power: 1.05 },
+            Step::Steady { secs: 5 * MIN, power: 1.05, cadence: None },
             steady(10, 0.50),
-            Step::FreeRide { secs: 20 * MIN },
+            Step::FreeRide {
+                secs: 20 * MIN,
+                cadence: None,
+            },
             cooldown(10),
         ]),
     ]);
@@ -572,13 +687,12 @@ mod tests {
             Category::Custom,
             "",
             vec![
-                Step::Ramp {
-                    secs: 100,
-                    from: 0.5,
-                    to: 1.0,
-                },
+                ramp(100, 0.5, 1.0),
                 reps(2, 10, 1.2, 20, 0.5),
-                Step::FreeRide { secs: 30 },
+                Step::FreeRide {
+                    secs: 30,
+                    cadence: None,
+                },
             ],
         );
         let segs = wk.segments();
@@ -669,10 +783,83 @@ mod tests {
             Step::Ramp {
                 secs: 300,
                 from: 0.75,
-                to: 0.25
+                to: 0.25,
+                cadence: None,
             }
         );
         assert_eq!(wk.duration(), (600 + 300 + 4 * 180 + 120 + 300) as f32);
+    }
+
+    #[test]
+    fn zwo_cadence_targets() {
+        let xml = r#"<workout_file><name>Cadence</name><workout>
+              <SteadyState Duration="300" Power="0.6" Cadence="95"/>
+              <Warmup Duration="120" PowerLow="0.4" PowerHigh="0.6" CadenceLow="80" CadenceHigh="90"/>
+              <IntervalsT Repeat="2" OnDuration="30" OffDuration="60" OnPower="1.2" OffPower="0.5" Cadence="110" CadenceResting="85"/>
+              <SteadyState Duration="60" Power="0.5"/>
+              <SteadyState Duration="60" Power="0.5" Cadence="0"/>
+            </workout></workout_file>"#;
+        let wk = parse_zwo(xml, "c").unwrap();
+        let cad: Vec<Option<f32>> = wk.segments().iter().map(|s| s.cadence).collect();
+        // Steady 95; ramp the middle of 80–90; on/off/on/off 110/85;
+        // no target; and "0" means no target either.
+        assert_eq!(
+            cad,
+            [95.0, 85.0, 110.0, 85.0, 110.0, 85.0]
+                .map(Some)
+                .into_iter()
+                .chain([None, None])
+                .collect::<Vec<_>>()
+        );
+        let segs = wk.segments();
+        assert_eq!(cadence_at(&segs, 10.0), Some(95.0));
+        assert_eq!(cadence_at(&segs, 300.0 + 120.0 + 31.0), Some(85.0));
+        assert_eq!(cadence_at(&segs, 10_000.0), None);
+        assert_eq!(wk.steps[0].describe(), "5m @ 60% · 95 rpm");
+        assert_eq!(
+            wk.steps[2].describe(),
+            "2× (30s @ 120% · 110 rpm / 1m @ 50% · 85 rpm)"
+        );
+        assert_eq!(
+            segs[0].with_cadence("150 W".into(), " · "),
+            "150 W · 95 rpm"
+        );
+        assert_eq!(segs[6].with_cadence("150 W".into(), " · "), "150 W");
+    }
+
+    #[test]
+    fn workouts_saved_before_cadence_still_load() {
+        // A custom workout as older versions stored it in state.json.
+        let old = r#"{"id":"my","name":"Mine","description":"","category":"Custom",
+            "steps":[{"Steady":{"secs":600,"power":0.75}},
+                     {"Intervals":{"repeat":3,"on_secs":60,"on_power":1.1,"off_secs":60,"off_power":0.5}},
+                     {"FreeRide":{"secs":120}}]}"#;
+        let wk: Workout = serde_json::from_str(old).unwrap();
+        assert!(wk.segments().iter().all(|s| s.cadence.is_none()));
+        // And workouts without targets are saved exactly as before.
+        let saved = serde_json::to_string(&wk).unwrap();
+        assert!(!saved.contains("cadence"), "{saved}");
+        let back: Workout = serde_json::from_str(&saved).unwrap();
+        assert_eq!(back, wk);
+        // Targets are saved when set.
+        let with = Workout {
+            steps: vec![spin(60, 0.6, 100)],
+            ..wk
+        };
+        let saved = serde_json::to_string(&with).unwrap();
+        assert!(saved.contains("\"cadence\":100"), "{saved}");
+        assert_eq!(serde_json::from_str::<Workout>(&saved).unwrap(), with);
+    }
+
+    #[test]
+    fn library_cadence_workouts() {
+        let lib = builtin();
+        let cb = lib.iter().find(|w| w.id == "cadence-builder").unwrap();
+        let rpms: Vec<f32> = cb.segments().iter().filter_map(|s| s.cadence).collect();
+        assert_eq!(rpms.iter().cloned().fold(0.0, f32::max), 110.0);
+        assert!(rpms.len() >= 12);
+        let spin = lib.iter().find(|w| w.id == "recovery-45").unwrap();
+        assert!(spin.segments().iter().any(|s| s.cadence == Some(100.0)));
     }
 
     #[test]

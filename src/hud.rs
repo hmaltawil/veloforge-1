@@ -123,11 +123,14 @@ impl App {
             };
             let seg = self.ride.segs[i];
             let left = seg.end() - t;
-            let now = if seg.free {
-                "Free ride — your effort".to_string()
-            } else {
-                format!("{:.0} W", seg.at(t) * self.ride.intensity * ftp)
-            };
+            let now = seg.with_cadence(
+                if seg.free {
+                    "Free ride — your effort".to_string()
+                } else {
+                    format!("{:.0} W", seg.at(t) * self.ride.intensity * ftp)
+                },
+                "  ·  ",
+            );
             let mut lines = vec![
                 (
                     format!("{}  ·  {} of {}", w.name, i + 1, self.ride.segs.len()),
@@ -144,15 +147,18 @@ impl App {
             ];
             if let Some(n) = self.ride.segs.get(i + 1) {
                 lines.push((
-                    if n.free {
-                        format!("Next: {} free ride", fmt_dur(n.secs))
-                    } else {
-                        format!(
-                            "Next: {} at {:.0} W",
-                            fmt_dur(n.secs),
-                            n.from * self.ride.intensity * ftp
-                        )
-                    },
+                    n.with_cadence(
+                        if n.free {
+                            format!("Next: {} free ride", fmt_dur(n.secs))
+                        } else {
+                            format!(
+                                "Next: {} at {:.0} W",
+                                fmt_dur(n.secs),
+                                n.from * self.ride.intensity * ftp
+                            )
+                        },
+                        ", ",
+                    ),
                     12.5,
                     dim,
                     false,
@@ -421,6 +427,16 @@ impl App {
             theme::TEXT_DIM,
         );
         let cadence = fresh(&self.metrics.cadence).filter(|_| self.has_cadence());
+        if let Some(t) = self.ride.target_cadence() {
+            // "→ 85": the target, beside the caption (green when close).
+            painter.text(
+                Pos2::new(x0 + half - 4.0, y),
+                Align2::RIGHT_TOP,
+                format!("→ {t:.0}"),
+                theme::semibold(10.5),
+                charts::cadence_colour(cadence, t),
+            );
+        }
         theme::value(
             painter,
             Pos2::new(x0 - 1.0, y + 48.0),

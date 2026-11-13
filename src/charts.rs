@@ -1,6 +1,7 @@
 //! Small painter-based charts: workout profiles, elevation, fitness trends.
 
 use crate::route::Route;
+use crate::theme;
 use crate::workout::{Category, Segment};
 use eframe::egui::{Align2, Color32, FontId, Mesh, Painter, Pos2, Rect, Shape, Stroke};
 
@@ -872,6 +873,16 @@ pub fn ftp_history(
         FontId::proportional(11.0),
         Color32::from_gray(140),
     );
+}
+
+/// Colour for a cadence target: green within 5 rpm of it, amber further off,
+/// dim when there is no cadence reading.
+pub fn cadence_colour(live: Option<f32>, target: f32) -> Color32 {
+    match live {
+        Some(c) if (c - target).abs() <= 5.0 => theme::GOOD,
+        Some(_) => theme::WARN,
+        None => theme::TEXT_DIM,
+    }
 }
 
 #[cfg(test)]
