@@ -3194,7 +3194,7 @@ dependencies = [
 
 [[package]]
 name = "veloforge"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "btleplug",
