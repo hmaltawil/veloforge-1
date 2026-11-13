@@ -626,6 +626,26 @@ impl Ride {
     }
 
     /// Garmin Training Center XML with power and speed extensions.
+    /// Where each lap of the saved ride starts, as indices into `samples`:
+    /// a new lap at every workout interval (including one reached with
+    /// "skip step") and after the workout ends. Rides without a workout are
+    /// a single lap.
+    pub fn lap_starts(&self) -> Vec<usize> {
+        let mut starts = vec![0];
+        if self.mode != Mode::Workout || self.segs.is_empty() {
+            return starts;
+        }
+        let mut prev = None;
+        for (i, s) in self.samples.iter().enumerate() {
+            let seg = workout::segment_index(&self.segs, s.elapsed);
+            if i > 0 && seg != prev {
+                starts.push(i);
+            }
+            prev = seg;
+        }
+        starts
+    }
+
     pub fn to_tcx(&self) -> String {
         let start = self
             .samples
@@ -633,53 +653,123 @@ impl Ride {
             .map(|s| s.time)
             .unwrap_or_else(Utc::now);
         let ts = |t: DateTime<Utc>| t.format("%Y-%m-%dT%H:%M:%SZ").to_string();
-        let secs = self.samples.len();
-        let max_speed = self.samples.iter().map(|s| s.speed).fold(0.0, f32::max);
-        // Mechanical kJ ≈ dietary kcal at typical cycling efficiency.
-        let kcal = self.samples.iter().map(|s| s.power).sum::<f32>() / 1000.0;
         let mut x = String::new();
         x += "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
         x += "<TrainingCenterDatabase xmlns=\"http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2\" xmlns:ns3=\"http://www.garmin.com/xmlschemas/ActivityExtension/v2\">\n";
         x += " <Activities>\n  <Activity Sport=\"Biking\">\n";
         let _ = writeln!(x, "   <Id>{}</Id>", ts(start));
-        let _ = writeln!(x, "   <Lap StartTime=\"{}\">", ts(start));
-        let _ = writeln!(x, "    <TotalTimeSeconds>{secs}</TotalTimeSeconds>");
-        let _ = writeln!(
-            x,
-            "    <DistanceMeters>{:.1}</DistanceMeters>",
-            self.distance
-        );
-        let _ = writeln!(x, "    <MaximumSpeed>{max_speed:.2}</MaximumSpeed>");
-        let _ = writeln!(x, "    <Calories>{}</Calories>", kcal.round() as u32);
-        x += "    <Intensity>Active</Intensity>\n    <TriggerMethod>Manual</TriggerMethod>\n    <Track>\n";
-        for s in &self.samples {
-            x += "     <Trackpoint>";
-            let _ = write!(x, "<Time>{}</Time>", ts(s.time));
-            let _ = write!(x, "<AltitudeMeters>{:.1}</AltitudeMeters>", s.ele);
-            let _ = write!(x, "<DistanceMeters>{:.1}</DistanceMeters>", s.distance);
-            if let Some(hr) = s.hr.filter(|h| *h > 0.0) {
-                let _ = write!(
+        let starts = self.lap_starts();
+        for (k, &a) in starts.iter().enumerate() {
+            let last = k + 1 == starts.len();
+            let b = if last {
+                self.samples.len()
+            } else {
+                starts[k + 1]
+            };
+            let lap = &self.samples[a..b];
+            let lap_start = lap.first().map(|s| s.time).unwrap_or(start);
+            // Each lap covers the distance from where the previous one ended.
+            let from = if a == 0 {
+                0.0
+            } else {
+                self.samples[a - 1].distance
+            };
+            let to = if last {
+                self.distance
+            } else {
+                lap.last().map_or(from, |s| s.distance)
+            };
+            let max_speed = lap.iter().map(|s| s.speed).fold(0.0, f32::max);
+            let watts: Vec<f32> = lap.iter().map(|s| s.power).collect();
+            // Mechanical kJ ≈ dietary kcal at typical cycling efficiency.
+            let kcal = watts.iter().sum::<f32>() / 1000.0;
+            let hrs: Vec<f32> = lap
+                .iter()
+                .filter_map(|s| s.hr)
+                .filter(|h| *h > 0.0)
+                .collect();
+            let cads: Vec<f32> = lap.iter().filter_map(|s| s.cadence).collect();
+            let mean = |v: &[f32]| v.iter().sum::<f32>() / v.len().max(1) as f32;
+            // Elements in the order the TCX schema requires.
+            let _ = writeln!(x, "   <Lap StartTime=\"{}\">", ts(lap_start));
+            let _ = writeln!(x, "    <TotalTimeSeconds>{}</TotalTimeSeconds>", lap.len());
+            let _ = writeln!(
+                x,
+                "    <DistanceMeters>{:.1}</DistanceMeters>",
+                (to - from).max(0.0)
+            );
+            let _ = writeln!(x, "    <MaximumSpeed>{max_speed:.2}</MaximumSpeed>");
+            let _ = writeln!(x, "    <Calories>{}</Calories>", kcal.round() as u32);
+            if !hrs.is_empty() {
+                let _ = writeln!(
                     x,
-                    "<HeartRateBpm><Value>{}</Value></HeartRateBpm>",
-                    hr.round() as u32
+                    "    <AverageHeartRateBpm><Value>{}</Value></AverageHeartRateBpm>",
+                    mean(&hrs).round() as u32
+                );
+                let _ = writeln!(
+                    x,
+                    "    <MaximumHeartRateBpm><Value>{}</Value></MaximumHeartRateBpm>",
+                    hrs.iter().cloned().fold(0.0, f32::max).round() as u32
                 );
             }
-            if let Some(c) = s.cadence {
-                let _ = write!(x, "<Cadence>{}</Cadence>", c.round().min(254.0) as u32);
+            x += "    <Intensity>Active</Intensity>\n";
+            if !cads.is_empty() {
+                let _ = writeln!(
+                    x,
+                    "    <Cadence>{}</Cadence>",
+                    mean(&cads).round().min(254.0) as u32
+                );
             }
+            x += "    <TriggerMethod>Manual</TriggerMethod>\n    <Track>\n";
+            write_trackpoints(&mut x, lap);
+            x += "    </Track>\n";
+            if !lap.is_empty() {
+                let _ = writeln!(
+                    x,
+                    "    <Extensions><ns3:LX><ns3:AvgWatts>{}</ns3:AvgWatts><ns3:MaxWatts>{}</ns3:MaxWatts></ns3:LX></Extensions>",
+                    mean(&watts).round() as u32,
+                    watts.iter().cloned().fold(0.0, f32::max).round() as u32
+                );
+            }
+            x += "   </Lap>\n";
+        }
+        let _ = writeln!(x, "   <Notes>{}</Notes>", xml_escape(&self.title()));
+        // A Device_t creator must also give a unit, product and version.
+        let _ = writeln!(
+            x,
+            "   <Creator xsi:type=\"Device_t\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"><Name>VeloForge</Name><UnitId>0</UnitId><ProductID>0</ProductID><Version><VersionMajor>{}</VersionMajor><VersionMinor>{}</VersionMinor></Version></Creator>",
+            env!("CARGO_PKG_VERSION_MAJOR"),
+            env!("CARGO_PKG_VERSION_MINOR")
+        );
+        x += "  </Activity>\n </Activities>\n</TrainingCenterDatabase>\n";
+        x
+    }
+}
+
+fn write_trackpoints(x: &mut String, samples: &[Sample]) {
+    let ts = |t: DateTime<Utc>| t.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    for s in samples {
+        *x += "     <Trackpoint>";
+        let _ = write!(x, "<Time>{}</Time>", ts(s.time));
+        let _ = write!(x, "<AltitudeMeters>{:.1}</AltitudeMeters>", s.ele);
+        let _ = write!(x, "<DistanceMeters>{:.1}</DistanceMeters>", s.distance);
+        if let Some(hr) = s.hr.filter(|h| *h > 0.0) {
             let _ = write!(
+                x,
+                "<HeartRateBpm><Value>{}</Value></HeartRateBpm>",
+                hr.round() as u32
+            );
+        }
+        if let Some(c) = s.cadence {
+            let _ = write!(x, "<Cadence>{}</Cadence>", c.round().min(254.0) as u32);
+        }
+        let _ = write!(
                 x,
                 "<Extensions><ns3:TPX><ns3:Speed>{:.2}</ns3:Speed><ns3:Watts>{}</ns3:Watts></ns3:TPX></Extensions>",
                 s.speed,
                 s.power.round() as u32
             );
-            x += "</Trackpoint>\n";
-        }
-        x += "    </Track>\n   </Lap>\n";
-        let _ = writeln!(x, "   <Notes>{}</Notes>", xml_escape(&self.title()));
-        x += "   <Creator xsi:type=\"Device_t\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"><Name>VeloForge</Name></Creator>\n";
-        x += "  </Activity>\n </Activities>\n</TrainingCenterDatabase>\n";
-        x
+        *x += "</Trackpoint>\n";
     }
 }
 
@@ -851,6 +941,141 @@ mod tests {
         let c = ride.update(1.1, live, r, phys(), 200.0, 0.5, true);
         assert_eq!(c, Some(Control::Erg(176)));
         assert!(ride.samples.last().unwrap().elapsed >= 600.0);
+    }
+
+    /// A short workout: a 2 minute ramp, 2 × (30 s on, 60 s off), 1 minute
+    /// steady: six intervals, six minutes.
+    fn lap_workout() -> Workout {
+        use crate::workout::{Category, Step};
+        Workout {
+            id: "laps".into(),
+            name: "Laps".into(),
+            description: String::new(),
+            category: Category::Custom,
+            steps: vec![
+                Step::Ramp {
+                    secs: 120,
+                    from: 0.5,
+                    to: 0.7,
+                    cadence: None,
+                },
+                Step::Intervals {
+                    repeat: 2,
+                    on_secs: 30,
+                    on_power: 1.2,
+                    off_secs: 60,
+                    off_power: 0.5,
+                    on_cadence: Some(100),
+                    off_cadence: None,
+                },
+                Step::Steady {
+                    secs: 60,
+                    power: 0.6,
+                    cadence: None,
+                },
+            ],
+        }
+    }
+
+    /// The text of every `<tag>` element in `xml`, in order.
+    fn tags<'a>(xml: &'a str, tag: &str) -> Vec<&'a str> {
+        let (open, close) = (format!("<{tag}>"), format!("</{tag}>"));
+        xml.match_indices(&open)
+            .map(|(i, _)| {
+                let rest = &xml[i + open.len()..];
+                &rest[..rest.find(&close).unwrap()]
+            })
+            .collect()
+    }
+
+    fn ride_seconds(ride: &mut Ride, r: &Route, secs: u32) {
+        let live = Live {
+            power: 180.0,
+            cadence: Some(92.0),
+            hr: Some(140.0),
+            speed_kmh: None,
+        };
+        for _ in 0..secs * 10 {
+            ride.update(0.1, live, r, phys(), 200.0, 0.5, true);
+        }
+    }
+
+    fn check_laps_add_up(ride: &Ride, xml: &str) {
+        let times: Vec<usize> = tags(xml, "TotalTimeSeconds")
+            .iter()
+            .map(|v| v.parse().unwrap())
+            .collect();
+        assert_eq!(times.iter().sum::<usize>(), ride.samples.len());
+        // Lap distances add up to the ride's (each is rounded to 0.1 m).
+        let lap_distance: f64 = xml
+            .split("<Lap ")
+            .skip(1)
+            .map(|lap| tags(lap, "DistanceMeters")[0].parse::<f64>().unwrap())
+            .sum();
+        assert!((lap_distance - ride.distance).abs() < 0.1 * times.len() as f64);
+        assert_eq!(xml.matches("<Trackpoint>").count(), ride.samples.len());
+        assert_eq!(tags(xml, "ns3:AvgWatts").len(), times.len());
+        assert!(xml.contains("<Name>VeloForge</Name><UnitId>0</UnitId><ProductID>0</ProductID>"));
+        // Every sample survives being read back.
+        let back = crate::activity::parse_tcx(xml).unwrap();
+        assert_eq!(back.samples.len(), ride.samples.len());
+    }
+
+    #[test]
+    fn saved_workout_rides_have_a_lap_per_interval() {
+        let r = &route::builtin()[1];
+        let mut ride = Ride::new(Mode::Workout, Some(lap_workout()), None);
+        ride.start();
+        // The whole workout, then half a minute of cooling down.
+        ride_seconds(&mut ride, r, 390);
+        let xml = ride.to_tcx();
+        let times: Vec<usize> = tags(&xml, "TotalTimeSeconds")
+            .iter()
+            .map(|v| v.parse().unwrap())
+            .collect();
+        // One lap per interval, and one for the riding after the workout.
+        assert_eq!(times.len(), 7);
+        let near = |got: usize, want: usize| got.abs_diff(want) <= 1;
+        for (got, want) in times.iter().zip([120, 30, 60, 30, 60, 60, 30]) {
+            assert!(near(*got, want), "lap times {times:?}");
+        }
+        check_laps_add_up(&ride, &xml);
+        // Laps carry their own averages.
+        assert_eq!(tags(&xml, "Cadence").len(), 7 + ride.samples.len());
+        assert!(xml.contains("<AverageHeartRateBpm><Value>140</Value></AverageHeartRateBpm>"));
+    }
+
+    #[test]
+    fn skipping_a_step_starts_a_new_lap() {
+        let r = &route::builtin()[1];
+        let mut ride = Ride::new(Mode::Workout, Some(lap_workout()), None);
+        ride.start();
+        ride_seconds(&mut ride, r, 45);
+        ride.skip_step(); // leave the ramp after 45 s
+        ride_seconds(&mut ride, r, 100);
+        let xml = ride.to_tcx();
+        let times: Vec<usize> = tags(&xml, "TotalTimeSeconds")
+            .iter()
+            .map(|v| v.parse().unwrap())
+            .collect();
+        // 45 s of ramp, then the 30 s effort, the 60 s recovery and the
+        // first 10 s of the second effort.
+        assert_eq!(times.len(), 4, "{times:?}");
+        for (got, want) in times.iter().zip([45, 30, 60, 10]) {
+            assert!(got.abs_diff(want) <= 1, "{times:?}");
+        }
+        check_laps_add_up(&ride, &xml);
+    }
+
+    #[test]
+    fn rides_without_a_workout_are_one_lap() {
+        let r = &route::builtin()[1];
+        let mut ride = Ride::new(Mode::Route, None, None);
+        ride.start();
+        ride_seconds(&mut ride, r, 120);
+        let xml = ride.to_tcx();
+        assert_eq!(xml.matches("<Lap ").count(), 1);
+        check_laps_add_up(&ride, &xml);
     }
 
     #[test]

@@ -19,7 +19,7 @@ A free, local indoor-cycling app for Linux, with a Windows version in testing: s
 - **Progress**: fitness, fatigue and form, weekly hours, your power curve, FTP history and monthly totals.
 - **Heart rate, power and cadence sensors**, with heart rate zones, and noise detection that ignores a strap reading nonsense.
 - **Audio cues**: a 3-2-1 countdown before interval changes, a chime at the end, and a warning if the trainer disconnects.
-- **Your rides**: every ride is saved as a `.tcx` file for Strava, intervals.icu, TrainingPeaks or GoldenCheetah. History shows charts, time in zones and best efforts. A ride survives crashes and power cuts and is recovered on the next start.
+- **Your rides**: every ride is saved as a `.tcx` file for Strava, intervals.icu, TrainingPeaks or GoldenCheetah, with a lap for each workout interval so every effort shows up on its own. History shows charts, time in zones and best efforts. A ride survives crashes and power cuts and is recovered on the next start.
 
 | | |
 |---|---|
