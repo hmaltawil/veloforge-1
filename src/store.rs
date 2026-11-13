@@ -35,6 +35,9 @@ pub struct Settings {
     pub gpu_3d: bool,
     /// How much detail the GPU view draws.
     pub gfx_quality: crate::gfx::Quality,
+    /// Most frames per second on the ride screen; 0 = as often as the
+    /// screen refreshes.
+    pub fps_limit: u32,
     /// The first-run welcome has been completed.
     pub onboarded: bool,
     /// Download planned workouts from intervals.icu into the calendar.
@@ -73,6 +76,7 @@ impl Default for Settings {
             volume: 0.6,
             gpu_3d: true,
             gfx_quality: Default::default(),
+            fps_limit: 60,
             onboarded: false,
             icu_sync_plan: true,
             icu_upload: true,

@@ -411,6 +411,22 @@ impl App {
                     .inner
                 },
             );
+            changed |= row(
+                ui,
+                "Frame rate",
+                "How often the ride screen is drawn. 30 fps is smooth enough for riding and \
+                 halves the work for older graphics cards and laptop batteries.",
+                |ui| {
+                    ui.horizontal(|ui| {
+                        let mut c = false;
+                        for (fps, label) in [(30, "30 fps"), (60, "60 fps"), (0, "Screen rate")] {
+                            c |= ui.radio_value(&mut s.fps_limit, fps, label).changed();
+                        }
+                        c
+                    })
+                    .inner
+                },
+            );
         });
         card(ui, "Ride screen", |ui| {
             changed |= row(ui, "Show", "Press V while riding to switch.", |ui| {

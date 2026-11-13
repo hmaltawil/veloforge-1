@@ -901,6 +901,17 @@ impl App {
         );
     }
 
+    /// How long to wait before drawing the next frame while riding: what is
+    /// left of this frame's share of a second under the frame-rate limit, or
+    /// nothing when there is no limit (the screen's own rate).
+    fn frame_wait(&self) -> std::time::Duration {
+        match self.store.settings.fps_limit {
+            0 => std::time::Duration::ZERO,
+            fps => std::time::Duration::from_secs_f64(1.0 / fps as f64)
+                .saturating_sub(self.last_frame.elapsed()),
+        }
+    }
+
     fn tick_ride(&mut self) {
         // While the window is hidden ticks can be a second or more apart;
         // integrate in small steps so physics and timing stay accurate.
@@ -2168,7 +2179,7 @@ impl eframe::App for App {
         }
 
         if self.tab == Tab::Ride || self.ride.state == ride::State::Running {
-            ctx.request_repaint();
+            ctx.request_repaint_after(self.frame_wait());
         } else {
             ctx.request_repaint_after(std::time::Duration::from_millis(500));
         }

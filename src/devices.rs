@@ -140,7 +140,11 @@ struct Ui {
 impl Ui {
     fn send(&self, e: Event) {
         let _ = self.tx.send(e);
-        self.ctx.request_repaint();
+        // Shown with the next frame, at most 1/30 s away, rather than
+        // forcing a frame of its own for every reading: keeps the ride
+        // screen's frame-rate limit.
+        self.ctx
+            .request_repaint_after(std::time::Duration::from_millis(33));
     }
     fn log(&self, s: impl Into<String>) {
         self.send(Event::Log(s.into()));
