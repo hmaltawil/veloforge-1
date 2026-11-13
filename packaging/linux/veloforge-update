@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Update VeloForge to the newest release: download the Linux .tar.gz from
+# GitHub, check it against the release's SHA256SUMS and install it with its
+# own install.sh (into ~/.local, as before). Your settings and rides are kept.
+#
+# install.sh puts this in ~/.local/bin, so updating is one command:
+#   veloforge-update
+# (If you installed the .deb instead, download and open the new .deb.)
+set -euo pipefail
+
+# Everything is in a function, so bash has read the whole script before it
+# runs: the new install.sh may replace this very file.
+main() {
+    repo=hmaltawil/veloforge-1
+    tmp=$(mktemp -d)
+    trap 'rm -rf "${tmp:?}"' EXIT
+    cd "$tmp"
+
+    echo "Asking GitHub for the newest VeloForge…"
+    # Read the whole reply before searching it: stopping early would cut
+    # curl off and count as a failure.
+    if ! json=$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest"); then
+        echo "error: could not reach GitHub" >&2
+        exit 1
+    fi
+    tag=$(grep -o '"tag_name": *"[^"]*"' <<<"$json" | cut -d'"' -f4) || true
+    if [ -z "$tag" ]; then
+        echo "error: could not find the latest release on GitHub" >&2
+        exit 1
+    fi
+    version=${tag#v}
+    file="VeloForge-$version-linux-x64.tar.gz"
+    url="https://github.com/$repo/releases/download/$tag"
+
+    echo "Downloading VeloForge $version…"
+    curl -fsSLO "$url/$file"
+    curl -fsSLO "$url/SHA256SUMS"
+    if ! grep " $file\$" SHA256SUMS | sha256sum -c --quiet; then
+        echo "error: the download does not match its checksum; nothing was installed" >&2
+        exit 1
+    fi
+
+    tar -xzf "$file"
+    ./VeloForge/install.sh
+    echo "VeloForge is now at version $version."
+}
+
+main "$@"
+exit

@@ -5,6 +5,9 @@
 #   ./install.sh --uninstall  remove the program, menu entry and icons
 #                             (your settings and rides are kept)
 #
+# It also installs `veloforge-update`, which updates to the newest release
+# with one command.
+#
 # In the downloaded VeloForge-*-linux-x64.tar.gz this installs the ready-built
 # program. In a copy of the source code it builds it first, which needs Rust;
 # run it again after `git pull` to update.
@@ -18,7 +21,7 @@ apps="$HOME/.local/share/applications"
 case "${1:-}" in
     "") ;;
     --uninstall)
-        rm -f "$bin" "$apps/veloforge.desktop" "$icons/scalable/apps/veloforge.svg"
+        rm -f "$bin" "$bin-update" "$apps/veloforge.desktop" "$icons/scalable/apps/veloforge.svg"
         for size in 48 64 128 256; do
             rm -f "$icons/${size}x${size}/apps/veloforge.png"
         done
@@ -40,6 +43,7 @@ else
     program=./veloforge
 fi
 install -Dm755 "$program" "$bin"
+install -Dm755 packaging/linux/veloforge-update "$bin-update"
 
 # Desktop menus do not always search ~/.local/bin, so use the full path.
 for size in 48 64 128 256; do
@@ -54,3 +58,4 @@ update-desktop-database "$apps" 2>/dev/null || true
 
 echo
 echo "VeloForge installed. Open it from your app menu, or run: $bin"
+echo "To update to a new release later, run: veloforge-update"

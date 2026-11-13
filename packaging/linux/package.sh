@@ -21,10 +21,11 @@ echo "Needs $newest at most: runs on Ubuntu 22.04, Debian 12, Fedora 36 and newe
 
 mkdir -p dist
 rm -rf dist/VeloForge
-mkdir -p dist/VeloForge/packaging/icons
+mkdir -p dist/VeloForge/packaging/icons dist/VeloForge/packaging/linux
 strip -o dist/VeloForge/veloforge "$program"
 cp install.sh LICENSE packaging/linux/README-Linux.txt dist/VeloForge/
 cp packaging/veloforge.desktop dist/VeloForge/packaging/
+cp packaging/linux/veloforge-update dist/VeloForge/packaging/linux/
 cp packaging/icons/veloforge-{48,64,128,256}.png packaging/icons/veloforge.svg \
     dist/VeloForge/packaging/icons/
 tar -C dist --owner=0 --group=0 -czf "dist/VeloForge-$version-linux-x64.tar.gz" VeloForge

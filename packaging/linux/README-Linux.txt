@@ -16,7 +16,9 @@ To look around without a trainer:
 
     ~/.local/bin/veloforge --demo --workout
 
-Update: download the new version and run ./install.sh again.
+Update: run  veloforge-update  in a terminal. It downloads the newest
+release from GitHub, checks it and installs it. (Or download the new
+version yourself and run ./install.sh again.)
 Remove: ./install.sh --uninstall (your settings and rides are kept).
 
 

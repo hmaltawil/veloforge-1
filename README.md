@@ -36,7 +36,7 @@ Download VeloForge from the [Releases page](https://github.com/hmaltawil/velofor
 - **Other Linux (Fedora, Arch, openSUSE…):** the `linux-x64.tar.gz` file. Unpack it and run `./install.sh` in the `VeloForge` folder; it installs for your user, with an app-menu entry and icon. `./install.sh --uninstall` removes it again.
 - **Windows:** the `windows-x64.zip` file (see [Windows](#windows-test-version) below).
 
-The Linux downloads need Ubuntu 22.04, Debian 12, Fedora 36 or newer. **To update**, install the new version the same way; your settings, calendar and rides are kept. VeloForge tells you when a new version is out.
+The Linux downloads need Ubuntu 22.04, Debian 12, Fedora 36 or newer. VeloForge tells you when a new version is out. **To update**, install the new version the same way; your settings, calendar and rides are kept. If you installed the `.tar.gz`, one command does it: `veloforge-update` downloads the newest release, checks it against `SHA256SUMS` and installs it.
 
 ### Build it yourself
 

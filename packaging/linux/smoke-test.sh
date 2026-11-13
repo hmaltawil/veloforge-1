@@ -42,6 +42,9 @@ case $kind in
         "$work/VeloForge/install.sh"
         program="$HOME/.local/bin/veloforge"
         grep -qx "Exec=$program" "$HOME/.local/share/applications/veloforge.desktop"
+        # The one-command updater comes with it (not run here: it downloads
+        # the published release from GitHub).
+        bash -n "$HOME/.local/bin/veloforge-update"
         test -f "$HOME/.local/share/icons/hicolor/256x256/apps/veloforge.png"
         ;;
     *)
@@ -73,6 +76,7 @@ grep -q "VeloForge .* started" "$data/veloforge.log"
 if [ "$kind" = tar ]; then
     "$work/VeloForge/install.sh" --uninstall
     test ! -e "$program"
+    test ! -e "$HOME/.local/bin/veloforge-update"
     test ! -e "$HOME/.local/share/applications/veloforge.desktop"
 fi
 echo "OK: the $kind package installs and VeloForge starts"
