@@ -7,3 +7,6 @@ Icon=veloforge
 Terminal=false
 Categories=Sports;Utility;
 StartupWMClass=veloforge
+# On laptops with two graphics chips, start on the dedicated one: the 3D
+# world runs smoother there (GNOME and KDE honour this; others ignore it).
+PrefersNonDefaultGPU=true

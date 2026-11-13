@@ -33,7 +33,7 @@ case $kind in
                 exit 1
             fi
         done
-        test -f /usr/share/applications/veloforge.desktop
+        grep -qx "PrefersNonDefaultGPU=true" /usr/share/applications/veloforge.desktop
         test -f /usr/share/icons/hicolor/256x256/apps/veloforge.png
         ;;
     tar)
@@ -42,6 +42,7 @@ case $kind in
         "$work/VeloForge/install.sh"
         program="$HOME/.local/bin/veloforge"
         grep -qx "Exec=$program" "$HOME/.local/share/applications/veloforge.desktop"
+        grep -qx "PrefersNonDefaultGPU=true" "$HOME/.local/share/applications/veloforge.desktop"
         # The one-command updater comes with it (not run here: it downloads
         # the published release from GitHub).
         bash -n "$HOME/.local/bin/veloforge-update"

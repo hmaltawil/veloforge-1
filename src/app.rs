@@ -323,6 +323,18 @@ impl App {
                 "simple"
             }
         ));
+        if let Some(gl) = &cc.gl {
+            use eframe::glow::HasContext;
+            // SAFETY: plain queries on the context eframe has just made current.
+            let (renderer, version) = unsafe {
+                (
+                    gl.get_parameter_string(eframe::glow::RENDERER),
+                    gl.get_parameter_string(eframe::glow::VERSION),
+                )
+            };
+            // Which graphics chip draws the app (two on many laptops).
+            app.log_line(format!("Graphics: {renderer} (OpenGL {version})"));
+        }
         app.icu_creds = crate::icu::Credentials::load(&app.paths.credentials_file());
         app.icu_edit = app.icu_creds.clone();
         if app.icu_creds.is_set() {

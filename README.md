@@ -141,6 +141,7 @@ Wheel-on trainers such as the KICKR SNAP read power more accurately after a **sp
 - **Heart rate is hidden or looks wrong**: check the strap's card in **Devices**. It shows skin contact and warns when the strap is measuring noise. Wet the electrodes, wear it snug, and replace its battery (CR2032) if it's old.
 - **No sound**: install a player with `sudo dnf install pipewire-utils`, then test in **Settings → Sound**.
 - **3D view is slow**: lower **Settings → Display → Detail**. *Medium* halves the shadow sharpness, grass and edge smoothing; *Low* drops shadows and grass, for older graphics cards.
+- **Laptop with two graphics chips**: started from the app menu, VeloForge asks GNOME or KDE for the dedicated one. **Devices → Log** shows which one it got ("Graphics: …"). From a terminal, start it with `__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia veloforge` (NVIDIA driver) or `DRI_PRIME=1 veloforge` (AMD and other cards).
 - **3D view looks wrong**: choose **Settings → Display → Simple**, or try `VELOFORGE_POST=0 veloforge`, which draws the world without the finishing pass (no glow, light shafts or frosted panels). If the window doesn't open at all, run `VELOFORGE_GL=1 veloforge` (no anti-aliasing) or `VELOFORGE_GL=2 veloforge` (simple view).
 - **Something else**: **Devices → Open full log** shows everything VeloForge did. Tick **Log raw sensor data** to record exactly what your devices send.
 
