@@ -31,6 +31,13 @@ main() {
     version=${tag#v}
     file="VeloForge-$version-linux-x64.tar.gz"
     url="https://github.com/$repo/releases/download/$tag"
+    # Right after a release is published its files take a few minutes to be
+    # built and attached.
+    if ! grep -q "\"name\": *\"$file\"" <<<"$json"; then
+        echo "VeloForge $version was just published and its downloads are still being prepared."
+        echo "Try again in a few minutes."
+        exit 1
+    fi
 
     echo "Downloading VeloForge $version…"
     curl -fsSLO "$url/$file"

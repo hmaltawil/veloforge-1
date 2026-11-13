@@ -18,7 +18,17 @@ pub struct Release {
     pub version: String,
     /// The release's page on GitHub, where the downloads are.
     pub url: String,
+    /// Its download for this computer is attached. Right after a release
+    /// is published, its files take a few minutes to be built and added.
+    pub ready: bool,
 }
+
+/// The end of the download's name for this kind of computer.
+const DOWNLOAD_SUFFIX: &str = if cfg!(windows) {
+    "-windows-x64.zip"
+} else {
+    "-linux-x64.tar.gz"
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Status {
@@ -92,9 +102,16 @@ pub fn fetch_latest(url: &str) -> Result<Option<Release>> {
     if parse_version(tag).is_none() {
         bail!("GitHub's latest release has an unexpected version: {tag}");
     }
+    let ready = v["assets"].as_array().is_some_and(|files| {
+        files
+            .iter()
+            .filter_map(|f| f["name"].as_str())
+            .any(|name| name.ends_with(DOWNLOAD_SUFFIX))
+    });
     Ok(Some(Release {
         version: tag.trim_start_matches(['v', 'V']).to_string(),
         url: url.to_string(),
+        ready,
     }))
 }
 
@@ -106,7 +123,8 @@ pub fn check(ctx: eframe::egui::Context, url: String) -> Receiver<Status> {
         .name("update-check".into())
         .spawn(move || {
             let status = match fetch_latest(&url) {
-                Ok(Some(r)) if is_newer(&r.version, env!("CARGO_PKG_VERSION")) => {
+                // Announced only once its download is there to fetch.
+                Ok(Some(r)) if r.ready && is_newer(&r.version, env!("CARGO_PKG_VERSION")) => {
                     Status::Available(r)
                 }
                 Ok(_) => Status::UpToDate,
@@ -182,12 +200,34 @@ mod tests {
             r,
             Release {
                 version: "1.2.0".into(),
-                url: "https://github.com/hmaltawil/veloforge-1/releases/tag/v1.2.0".into()
+                url: "https://github.com/hmaltawil/veloforge-1/releases/tag/v1.2.0".into(),
+                ready: false,
             }
         );
         let head = server.join().unwrap().to_ascii_lowercase();
         assert!(head.starts_with("get /releases/latest http/1.1"), "{head}");
         assert!(head.contains("user-agent: veloforge/"), "{head}");
+    }
+
+    #[test]
+    fn a_release_is_ready_once_its_download_is_attached() {
+        // Just published: the files are still being built.
+        let (url, _server) = mock(200, r#"{"tag_name":"v9.0.0","assets":[]}"#);
+        assert!(!fetch_latest(&url).unwrap().unwrap().ready);
+        // Only the other system's file so far.
+        let other = if cfg!(windows) {
+            r#"{"tag_name":"v9.0.0","assets":[{"name":"VeloForge-9.0.0-linux-x64.tar.gz"}]}"#
+        } else {
+            r#"{"tag_name":"v9.0.0","assets":[{"name":"VeloForge-9.0.0-windows-x64.zip"}]}"#
+        };
+        let (url, _server) = mock(200, other);
+        assert!(!fetch_latest(&url).unwrap().unwrap().ready);
+        // All files attached.
+        let (url, _server) = mock(
+            200,
+            r#"{"tag_name":"v9.0.0","assets":[{"name":"SHA256SUMS"},{"name":"VeloForge-9.0.0-linux-x64.tar.gz"},{"name":"VeloForge-9.0.0-windows-x64.zip"},{"name":"veloforge_9.0.0-1_amd64.deb"}]}"#,
+        );
+        assert!(fetch_latest(&url).unwrap().unwrap().ready);
     }
 
     #[test]
