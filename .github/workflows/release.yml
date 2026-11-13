@@ -5,28 +5,29 @@
 #   SHA256SUMS                            checksums of the three
 #
 # Either publish a release on GitHub (Releases > Draft a new release, with
-# a new tag such as v1.2.0), or push a version tag from a computer. In both
-# cases the files are added to the release a few minutes later, once the
-# Linux packages have been installed and started on fresh systems. The tag
-# must match the version in Cargo.toml. A tag with a dash (v1.2.0-beta)
-# becomes a pre-release.
+# a new tag such as v1.2.0), or push a version tag from a computer. Either
+# way the new tag starts this once, and the files are added to the release
+# (made here if there is none yet) a few minutes later, once the Linux
+# packages have been installed and started on fresh systems. The tag must
+# match the version in Cargo.toml. A tag with a dash (v1.2.0-beta) becomes a
+# pre-release.
 #
-# "Run workflow" (Actions > Release) builds and tests everything without
-# publishing; the files are kept with that run for a few days.
+# "Run workflow" (Actions > Release) on a branch builds and tests everything
+# without publishing; the files are kept with that run for a few days. Run
+# on a tag, it builds, tests and publishes to that tag's release, for a
+# release made with a tag that already existed.
 name: Release
 
 on:
   push:
     tags: ["v*"]
-  release:
-    types: [published]
   workflow_dispatch:
 
 permissions:
   contents: write
 
-# Publishing a release with a new tag can start this twice (the tag and the
-# release); run one after the other so they never upload at the same time.
+# Never publish to the same release from two runs at once (for example a
+# tag push and a manual run on that tag).
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -125,7 +126,7 @@ jobs:
 
   publish:
     needs: [windows, test-linux]
-    if: github.event_name != 'workflow_dispatch'
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
