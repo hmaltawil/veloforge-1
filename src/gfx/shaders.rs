@@ -104,12 +104,28 @@ float cloud_cover(vec2 q) {
     float v = fbm(q * 0.0009) + 0.26 * (fbm3(q * 0.0042 + 7.3) - 0.5);
     return smoothstep(0.57 - u_clouds * 0.43, 0.8 - u_clouds * 0.33, v);
 }
-// How much sun reaches the ground at `p` through the drifting clouds.
-float cloud_shadow(vec3 p) {
-    float t = (u_cam.y + 1400.0 - p.y) / max(u_sun.y, 0.12);
-    vec2 q = world_xz(p + u_sun * t) + u_time * vec2(6.0, 2.0);
+// How much sun gets through the cloud deck at `q` (from `cloud_q`).
+float cloud_light(vec2 q) {
     float cov = smoothstep(0.57 - u_clouds * 0.43, 0.8 - u_clouds * 0.33, fbm(q * 0.0009));
     return 1.0 - cov * 0.72 * (1.0 - 0.6 * u_clouds);
+}
+// Where the line from `p` towards the sun meets the drifting cloud deck.
+vec2 cloud_q(vec3 p) {
+    float t = (u_cam.y + 1400.0 - p.y) / max(u_sun.y, 0.12);
+    return world_xz(p + u_sun * t) + u_time * vec2(6.0, 2.0);
+}
+// `cloud_light` worked out once per frame for the deck above the view
+// (`CLOUD_MAP_FS`): centre and half size, or a size of 0 when there is none.
+uniform sampler2D u_cloud_map;
+uniform vec3 u_cloud_box;
+// How much sun reaches the ground at `p` through the drifting clouds.
+float cloud_shadow(vec3 p) {
+    vec2 q = cloud_q(p);
+    if (u_cloud_box.z > 0.0) {
+        vec2 uv = (q - u_cloud_box.xy) / (2.0 * u_cloud_box.z) + 0.5;
+        if (uv == clamp(uv, 0.0, 1.0)) return texture(u_cloud_map, uv).r;
+    }
+    return cloud_light(q);
 }
 
 float sm_pcf(sampler2DShadow sm, vec3 c, float r) {
@@ -344,9 +360,11 @@ void main() {
     float detail = 1.0 - smoothstep(40.0, 260.0, dcam);
     float near = 1.0 - smoothstep(10.0, 90.0, dcam);
     float n1 = fbm(w * 0.012);
-    float n2 = mix(0.5, fbm(w * 0.11), 0.4 + 0.6 * detail);
-    float n3 = mix(0.5, vnoise(w * 1.7), detail);
-    float n4 = mix(0.5, vnoise(w * 7.0), near);
+    // Far away, the finest noise is smaller than a pixel: skip it.
+    float n2 = detail > 0.0 ? mix(0.5, fbm(w * 0.11), 0.4 + 0.6 * detail)
+                            : mix(0.5, fbm3(w * 0.11), 0.4);
+    float n3 = detail > 0.0 ? mix(0.5, vnoise(w * 1.7), detail) : 0.5;
+    float n4 = near > 0.0 ? mix(0.5, vnoise(w * 7.0), near) : 0.5;
     vec3 grass = grass_albedo(n1) * (0.76 + 0.36 * n2 + 0.1 * n3) * (0.88 + 0.24 * n4);
     // Wild flowers scattered through the meadows.
     if (near > 0.0) {
@@ -917,6 +935,15 @@ void main() {
 // Post-processing
 
 /// Downsample with a wide 13-tap kernel (stable, no flicker).
+/// The cloud shadow map: `cloud_light` across the cloud deck above the view.
+pub const CLOUD_MAP_FS: &str = r#"
+in vec2 v_uv;
+out vec4 frag;
+void main() {
+    frag = vec4(cloud_light(u_cloud_box.xy + (v_uv * 2.0 - 1.0) * u_cloud_box.z));
+}
+"#;
+
 pub const DOWN_FS: &str = r#"
 uniform sampler2D u_tex;
 uniform vec2 u_texel;

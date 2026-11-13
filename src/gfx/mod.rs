@@ -1192,6 +1192,13 @@ struct GlState {
     /// Off-screen rendering is not possible here: draw straight to the screen.
     direct: bool,
     shadow_maps: Option<ShadowMaps>,
+    /// Cloud shadows for the deck above the view, made once per frame.
+    cloud_map: Option<Target>,
+    cloud_map_failed: bool,
+    /// Its centre and half size in cloud-deck coordinates (0: no map).
+    cloud_box: V3,
+    /// Scratch space for sorting nearby objects by distance.
+    order: [Vec<(f32, [f32; INSTANCE_STRIDE])>; KINDS],
 }
 
 fn bytes(v: &[f32]) -> &[u8] {
@@ -1233,6 +1240,12 @@ const RAIN_DROPS: usize = 6000;
 const UNIT_HEIGHT: u32 = 4;
 const UNIT_SM0: u32 = 5;
 const UNIT_SM1: u32 = 6;
+const UNIT_CLOUD: u32 = 7;
+/// The cloud shadow map: texels per side, and the half size of the patch of
+/// cloud deck it covers, in metres. The finest cloud detail is about 65 m
+/// across, several texels.
+const CLOUD_MAP_SIZE: i32 = 256;
+const CLOUD_MAP_HALF: f32 = 1500.0;
 
 /// Deterministic random numbers in 0..1 for instance buffers.
 fn noise_stream(seed: u64) -> impl FnMut() -> f32 {
@@ -1324,6 +1337,13 @@ impl GlState {
                 "i_tint",
             ];
             self.compile(gl, "sky", &[SCREEN_VS], &[NOISE, LIGHT, SKY_FS], &[])?;
+            self.compile(
+                gl,
+                "cloud_map",
+                &[SCREEN_VS],
+                &[NOISE, LIGHT, CLOUD_MAP_FS],
+                &[],
+            )?;
             self.compile(
                 gl,
                 "terrain",
@@ -1587,6 +1607,18 @@ impl GlState {
                     near[kind].extend_from_slice(inst);
                 }
             }
+        }
+        // Nearest first, so what they hide is not worked out at all.
+        for (kind, list) in near.iter_mut().enumerate() {
+            let order = &mut self.order[kind];
+            order.clear();
+            order.extend(list.as_chunks::<INSTANCE_STRIDE>().0.iter().map(|inst| {
+                let rel = sub([inst[0], inst[1], inst[2]], f.cam);
+                (dot(rel, rel), *inst)
+            }));
+            order.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+            list.clear();
+            list.extend(order.iter().flat_map(|(_, inst)| *inst));
         }
         unsafe {
             for (kind, list) in near.iter().enumerate() {
@@ -2058,6 +2090,8 @@ impl GlState {
             p.m4(gl, "u_lvp1", &f.light_vp[1]);
             p.i1(gl, "u_sm0", UNIT_SM0 as i32);
             p.i1(gl, "u_sm1", UNIT_SM1 as i32);
+            p.i1(gl, "u_cloud_map", UNIT_CLOUD as i32);
+            p.v3(gl, "u_cloud_box", self.cloud_box);
             let strength = if f.quality == Quality::Low {
                 0.0
             } else {
@@ -2121,6 +2155,40 @@ impl GlState {
             }
             gl.disable(glow::POLYGON_OFFSET_FILL);
             gl.color_mask(true, true, true, true);
+        }
+    }
+
+    /// Work out the cloud shadows once, for the patch of cloud deck above
+    /// the view, instead of for every pixel that is lit (`CLOUD_MAP_FS`).
+    /// Without the map, each pixel works them out itself.
+    unsafe fn cloud_pass(&mut self, gl: &glow::Context, f: &FrameData) {
+        unsafe {
+            if self.cloud_map.is_none() && !self.cloud_map_failed {
+                Self::drain_errors(gl);
+                match Self::target(gl, CLOUD_MAP_SIZE, CLOUD_MAP_SIZE, false) {
+                    Ok(t) => self.cloud_map = Some(t),
+                    Err(_) => self.cloud_map_failed = true,
+                }
+                Self::drain_errors(gl);
+            }
+            let Some(fbo) = self.cloud_map.as_ref().map(|m| m.fbo) else {
+                self.cloud_box = [0.0; 3];
+                return;
+            };
+            // Centred where the line from the camera towards the sun meets
+            // the deck (as `cloud_q` in the shaders).
+            let t = 1400.0 / f.sun[1].max(0.12);
+            self.cloud_box = [
+                f.cam[0] + f.sun[0] * t + f.origin.0 as f32 + f.time * 6.0,
+                -(f.cam[2] + f.sun[2] * t) + f.origin.1 as f32 + f.time * 2.0,
+                CLOUD_MAP_HALF,
+            ];
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+            gl.viewport(0, 0, CLOUD_MAP_SIZE, CLOUD_MAP_SIZE);
+            gl.disable(glow::DEPTH_TEST);
+            self.common(gl, "cloud_map", f);
+            gl.bind_vertex_array(self.sky_vao);
+            gl.draw_arrays(glow::TRIANGLES, 0, 3);
         }
     }
 
@@ -2219,6 +2287,7 @@ impl GlState {
             gl.disable(glow::CULL_FACE);
             gl.disable(glow::SCISSOR_TEST);
 
+            self.cloud_pass(gl, f);
             let shadows = f.quality != Quality::Low && f.look.shadow > 0.0;
             if shadows {
                 self.shadow_pass(gl, f);
@@ -2231,6 +2300,8 @@ impl GlState {
             }
             gl.active_texture(glow::TEXTURE0 + UNIT_HEIGHT);
             gl.bind_texture(glow::TEXTURE_2D, self.height_tex);
+            gl.active_texture(glow::TEXTURE0 + UNIT_CLOUD);
+            gl.bind_texture(glow::TEXTURE_2D, self.cloud_map.as_ref().map(|m| m.tex));
             gl.active_texture(glow::TEXTURE0);
 
             // --- the scene ---------------------------------------------------
@@ -2257,18 +2328,41 @@ impl GlState {
             gl.clear_depth_f32(1.0);
             gl.clear(glow::DEPTH_BUFFER_BIT);
 
-            // Sky.
-            gl.disable(glow::DEPTH_TEST);
-            gl.depth_mask(false);
-            self.common(gl, "sky", f);
-            let p = self.programs.get_mut("sky").unwrap();
-            p.m4(gl, "u_inv_vp", &f.inv_vp);
-            gl.bind_vertex_array(self.sky_vao);
-            gl.draw_arrays(glow::TRIANGLES, 0, 3);
-
             gl.enable(glow::DEPTH_TEST);
             gl.depth_func(glow::LEQUAL);
             gl.depth_mask(true);
+
+            // Objects first: the ground hidden behind them then fails the
+            // depth test and is not worked out at all. Trees and bushes sway
+            // in the wind; everything else stands still.
+            self.common(gl, "object", f);
+            let p = self.programs.get_mut("object").unwrap();
+            p.f1(gl, "u_obj_time", f.time);
+            p.f1(gl, "u_wind", f.look.wind);
+            self.draw_instanced(
+                gl,
+                &[
+                    OBJ_PINE,
+                    OBJ_BROAD,
+                    OBJ_BIRCH,
+                    OBJ_BUSH,
+                    OBJ_PINE_FAR,
+                    OBJ_BROAD_FAR,
+                ],
+            );
+            let p = self.programs.get_mut("object").unwrap();
+            p.f1(gl, "u_wind", 0.0);
+            self.draw_instanced(
+                gl,
+                &[
+                    OBJ_ROCK,
+                    OBJ_HOUSE,
+                    OBJ_POST,
+                    OBJ_REFLECTOR,
+                    OBJ_PLANK,
+                    OBJ_RIDER,
+                ],
+            );
 
             // Distant mountains, far to near.
             if let Some((b, rings)) = self.mountains.as_ref().filter(|_| f.look.mountains) {
@@ -2311,36 +2405,6 @@ impl GlState {
             gl.bind_vertex_array(Some(rvao));
             gl.draw_arrays(glow::TRIANGLES, 0, rcount);
             gl.disable(glow::POLYGON_OFFSET_FILL);
-
-            // Trees and bushes sway in the wind; everything else stands still.
-            self.common(gl, "object", f);
-            let p = self.programs.get_mut("object").unwrap();
-            p.f1(gl, "u_obj_time", f.time);
-            p.f1(gl, "u_wind", f.look.wind);
-            self.draw_instanced(
-                gl,
-                &[
-                    OBJ_PINE,
-                    OBJ_BROAD,
-                    OBJ_BIRCH,
-                    OBJ_BUSH,
-                    OBJ_PINE_FAR,
-                    OBJ_BROAD_FAR,
-                ],
-            );
-            let p = self.programs.get_mut("object").unwrap();
-            p.f1(gl, "u_wind", 0.0);
-            self.draw_instanced(
-                gl,
-                &[
-                    OBJ_ROCK,
-                    OBJ_HOUSE,
-                    OBJ_POST,
-                    OBJ_REFLECTOR,
-                    OBJ_PLANK,
-                    OBJ_RIDER,
-                ],
-            );
 
             // Grass around the camera.
             if !self.grass.is_empty() && self.height_tex.is_some() {
@@ -2388,6 +2452,16 @@ impl GlState {
             }
             gl.disable(glow::POLYGON_OFFSET_FILL);
             gl.disable(glow::BLEND);
+            gl.depth_mask(true);
+
+            // Sky: after everything solid, so it is worked out only where it
+            // shows. It sits at the far end of the depth range, behind all.
+            gl.depth_mask(false);
+            self.common(gl, "sky", f);
+            let p = self.programs.get_mut("sky").unwrap();
+            p.m4(gl, "u_inv_vp", &f.inv_vp);
+            gl.bind_vertex_array(self.sky_vao);
+            gl.draw_arrays(glow::TRIANGLES, 0, 3);
             gl.depth_mask(true);
 
             // Water sees what lies beneath it through a copy of the scene so far.
@@ -2447,7 +2521,7 @@ impl GlState {
                 gl.draw_arrays(glow::TRIANGLES, 0, 3);
                 self.targets = Some(t);
             }
-            for unit in [1, 2, 3, UNIT_HEIGHT, UNIT_SM0, UNIT_SM1] {
+            for unit in [1, 2, 3, UNIT_HEIGHT, UNIT_SM0, UNIT_SM1, UNIT_CLOUD] {
                 gl.active_texture(glow::TEXTURE0 + unit);
                 gl.bind_texture(glow::TEXTURE_2D, None);
             }
