@@ -4789,20 +4789,12 @@ impl App {
                 row(ui, "Power", fresh(&self.metrics.power), "W", source(&self.metrics.power));
                 row(ui, "Cadence", fresh(&self.metrics.cadence), "rpm", source(&self.metrics.cadence));
                 if !self.has_cadence() {
-                    ui.label(RichText::new("No cadence sensor connected (the KICKR SNAP does not measure cadence). Cadence is optional.").weak());
+                    ui.label(RichText::new("No cadence sensor connected. Cadence is optional: pair a cadence sensor, or a power meter that measures it, to see rpm.").weak());
                 }
                 row(ui, "Heart rate", fresh(&self.metrics.hr), "bpm", source(&self.metrics.hr));
                 if fresh(&self.metrics.hr).is_none() && self.per_device.values().any(|d| d.hr_noisy == Some(true)) {
                     ui.colored_label(Color32::from_rgb(240, 150, 80), "Heart rate hidden: the strap's signal is noisy (see its card on the left).");
                 }
-                ui.add_space(10.0);
-                egui::CollapsingHeader::new(crate::platform::TIPS_TITLE).default_open(true).show(ui, |ui| {
-                    ui.label("• Close the Wahoo or Zwift app on your phone: a trainer accepts only one controlling connection.");
-                    ui.label("• VeloForge does not need the trainer to be paired in your system Bluetooth settings. If it connects but shows no data, remove (forget) it there and connect again from here.");
-                    ui.label("• Update the trainer firmware once with the Wahoo app; recent firmware adds standard FTMS control. Older firmware is still supported via Wahoo's legacy protocol.");
-                    ui.label("• The KICKR SNAP does not measure cadence by itself — pair any Bluetooth cadence sensor or a power meter if you want rpm.");
-                    ui.label(crate::platform::SCAN_HINT);
-                });
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     ui.heading("Log");

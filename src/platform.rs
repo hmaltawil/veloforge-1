@@ -68,19 +68,6 @@ pub const BLUETOOTH_HINT: &str =
 #[cfg(not(windows))]
 pub const BLUETOOTH_HINT: &str = "Is bluetoothd running and the adapter powered on?";
 
-/// What to try when a scan finds nothing.
-#[cfg(windows)]
-pub const SCAN_HINT: &str = "• If scanning finds nothing: check that Bluetooth is on in Windows Settings → Bluetooth & devices.";
-#[cfg(not(windows))]
-pub const SCAN_HINT: &str =
-    "• If scanning finds nothing: `systemctl status bluetooth` and `bluetoothctl power on`.";
-
-/// Title of the device tips section.
-#[cfg(windows)]
-pub const TIPS_TITLE: &str = "KICKR SNAP / Windows tips";
-#[cfg(not(windows))]
-pub const TIPS_TITLE: &str = "KICKR SNAP / Linux tips";
-
 /// How to let the phone remote through the firewall: an explanation and a
 /// command to copy.
 #[cfg(windows)]
