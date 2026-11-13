@@ -1,12 +1,23 @@
 # Check every change: formatting, lints and tests on Linux, and lints, tests
 # and a build on a real Windows machine (with Microsoft's compiler, the way
-# someone building VeloForge on Windows would).
+# someone building VeloForge on Windows would). A change that only touches
+# documentation is not checked: none of these files are built into the app.
 name: CI
 
 on:
   push:
     branches: ["**"]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
+      - "packaging/**/*.txt"
   pull_request:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
+      - "packaging/**/*.txt"
 
 permissions:
   contents: read
