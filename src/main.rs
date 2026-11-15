@@ -16,6 +16,7 @@ mod protocol;
 mod remote;
 mod ride;
 mod route;
+mod segment;
 mod sound;
 mod store;
 mod strava;

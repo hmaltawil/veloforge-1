@@ -204,6 +204,13 @@ pub struct App {
     strava_busy: bool,
     /// Rides (by file) on their way to Strava.
     strava_pending: Vec<String>,
+    /// The selected route's segments (worked out once per route).
+    segments: (String, Vec<crate::segment::Segment>),
+    seg_tracker: crate::segment::Tracker,
+    /// Segments timed on this ride, saved with it.
+    ride_efforts: Vec<crate::segment::Effort>,
+    /// The latest segment result, shown in the banner for a while.
+    seg_flash: Option<(Vec<BannerLine>, Instant)>,
     last_checkpoint: Instant,
     /// Rides whose power curve could not be computed (missing file).
     curve_failed: std::collections::HashSet<String>,
@@ -315,6 +322,10 @@ impl App {
             strava_status: None,
             strava_busy: false,
             strava_pending: Vec::new(),
+            segments: (String::new(), Vec::new()),
+            seg_tracker: Default::default(),
+            ride_efforts: Vec::new(),
+            seg_flash: None,
             egui_ctx: cc.egui_ctx.clone(),
             remote: None,
             remote_url: String::new(),
@@ -502,6 +513,160 @@ impl App {
         ride.companion = self.ride.companion.as_ref().map(ride::Companion::restarted);
         ride.hr_control.target_bpm = self.ride.hr_control.target_bpm;
         self.ride = ride;
+        self.seg_tracker.reset();
+        self.ride_efforts.clear();
+        self.seg_flash = None;
+    }
+
+    /// The selected route's segments.
+    fn route_segments(&mut self) -> &[crate::segment::Segment] {
+        let route = &self.routes[self.route_idx];
+        if self.segments.0 != route.id {
+            self.segments = (route.id.clone(), crate::segment::for_route(route));
+        }
+        &self.segments.1
+    }
+
+    /// Your best on segment `key` of the selected route, before this ride
+    /// and so far on it.
+    fn segment_best(&self, key: &str) -> Option<f32> {
+        let route = &self.routes[self.route_idx].id;
+        self.store
+            .efforts
+            .iter()
+            .chain(&self.ride_efforts)
+            .filter(|e| &e.route_id == route && e.key == key)
+            .map(|e| e.secs)
+            .reduce(f32::min)
+    }
+
+    /// Time the segments ridden since the last frame, and say how each
+    /// finished one went.
+    fn track_segments(&mut self, power: f32, hr: Option<f32>) {
+        if self.ride.state != ride::State::Running {
+            return;
+        }
+        let length = self.routes[self.route_idx].length;
+        let (pos, t) = (self.ride.route_pos(), self.ride.elapsed);
+        let segs = self.route_segments().to_vec();
+        let done = self.seg_tracker.update(&segs, length, pos, t, power, hr);
+        for (i, secs, avg_power, avg_hr) in done {
+            let seg = &segs[i];
+            let best = self.segment_best(&seg.key);
+            use crate::segment::fmt_time;
+            let (headline, colour, detail) = match best {
+                Some(b) if secs < b => (
+                    format!("New personal record! {} · {}", seg.name, fmt_time(secs)),
+                    theme::GOOD,
+                    format!("{} faster than your best", fmt_time(b - secs)),
+                ),
+                Some(b) => (
+                    format!("{} · {}", seg.name, fmt_time(secs)),
+                    theme::TEXT,
+                    format!(
+                        "{} slower than your best ({})",
+                        fmt_time(secs - b),
+                        fmt_time(b)
+                    ),
+                ),
+                None => (
+                    format!("{} · {}", seg.name, fmt_time(secs)),
+                    theme::TEXT,
+                    "Your first time: that's the one to beat".to_string(),
+                ),
+            };
+            if best.is_some_and(|b| secs < b) {
+                self.cue(Cue::Done);
+            }
+            self.log_line(format!("{headline} ({detail}, {avg_power:.0} W)"));
+            self.seg_flash = Some((
+                vec![
+                    (headline, 17.0, colour, true),
+                    (
+                        format!("{detail}  ·  {avg_power:.0} W"),
+                        12.5,
+                        theme::TEXT_DIM,
+                        false,
+                    ),
+                ],
+                Instant::now(),
+            ));
+            let started = self.ride.started.unwrap_or_else(Local::now);
+            self.ride_efforts.push(crate::segment::Effort {
+                route_id: self.routes[self.route_idx].id.clone(),
+                key: seg.key.clone(),
+                name: seg.name.clone(),
+                date: started,
+                secs,
+                avg_power,
+                avg_hr,
+            });
+        }
+    }
+
+    /// Banner lines about segments: the result just in, the one being
+    /// ridden, or the next one coming up.
+    pub(crate) fn segment_lines(&self) -> Vec<BannerLine> {
+        use crate::segment::{fmt_time, Kind};
+        if let Some((lines, at)) = &self.seg_flash {
+            if at.elapsed().as_secs_f32() < 8.0 {
+                return lines.clone();
+            }
+        }
+        if self.segments.0 != self.routes[self.route_idx].id
+            || self.ride.state == ride::State::Ready
+        {
+            return Vec::new();
+        }
+        let segs = &self.segments.1;
+        let best = |key: &str| {
+            self.segment_best(key)
+                .map(|b| format!("best {}", fmt_time(b)))
+                .unwrap_or_else(|| "no time yet".into())
+        };
+        if let Some((i, done_m, secs)) = self.seg_tracker.current(segs) {
+            let s = &segs[i];
+            let left = (s.length - done_m).max(0.0);
+            return vec![
+                (
+                    format!("{}  ·  {} to go", s.name, fmt_km(left)),
+                    15.0,
+                    theme::ACCENT,
+                    true,
+                ),
+                (
+                    format!("{}  ·  {}", fmt_time(secs as f32), best(&s.key)),
+                    12.5,
+                    theme::TEXT_DIM,
+                    false,
+                ),
+            ];
+        }
+        // The next climb, within half a kilometre.
+        let route = &self.routes[self.route_idx];
+        let pos = self.ride.route_pos().rem_euclid(route.length);
+        segs.iter()
+            .filter(|s| s.kind == Kind::Climb)
+            .map(|s| (s, (s.start - pos).rem_euclid(route.length)))
+            .filter(|(_, ahead)| *ahead <= 500.0)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(s, ahead)| {
+                vec![
+                    (
+                        format!("{} in {}", s.name, fmt_km(ahead)),
+                        13.0,
+                        theme::TEXT,
+                        true,
+                    ),
+                    (
+                        format!("{}  ·  {}", s.describe(), best(&s.key)),
+                        12.5,
+                        theme::TEXT_DIM,
+                        false,
+                    ),
+                ]
+            })
+            .unwrap_or_default()
     }
 
     /// Previous rides on the selected route a ghost can replay, fastest first.
@@ -964,6 +1129,7 @@ impl App {
         if let Some(c) = control {
             self.dev.send(Cmd::Control(c));
         }
+        self.track_segments(live.power, live.hr);
         let after = self.ride.workout_time() as f32;
         if self.ride.mode == Mode::Workout && after > before {
             match workout::beep_between(&self.ride.segs, before, after) {
@@ -1060,6 +1226,7 @@ impl App {
             started.date_naive(),
         );
         self.store.history.push(summary.clone());
+        self.store.efforts.append(&mut self.ride_efforts);
         if self.store.settings.icu_upload {
             self.icu_upload(summary.file.clone(), summary.name.clone());
         }
@@ -1364,16 +1531,23 @@ impl App {
         if !ours || shared || !path.exists() {
             return;
         }
-        match crate::activity::move_to_trash(path) {
-            Ok(()) => self.log_line(format!("Moved {} to the {TRASH}", path.display())),
-            Err(e) => {
-                self.log_line(format!(
-                    "Could not move {} to the {TRASH}: {e}",
-                    path.display()
-                ));
-                self.notify(format!(
-                    "The ride was removed, but its file could not be moved to the {TRASH}"
-                ));
+        // The ride's .tcx, and the .fit saved next to it.
+        let fit = path.with_extension("fit");
+        for p in [path, fit.as_path()] {
+            if p != path && !p.exists() {
+                continue;
+            }
+            match crate::activity::move_to_trash(p) {
+                Ok(()) => self.log_line(format!("Moved {} to the {TRASH}", p.display())),
+                Err(e) => {
+                    self.log_line(format!(
+                        "Could not move {} to the {TRASH}: {e}",
+                        p.display()
+                    ));
+                    self.notify(format!(
+                        "The ride was removed, but its files could not be moved to the {TRASH}"
+                    ));
+                }
             }
         }
     }
@@ -1971,6 +2145,18 @@ fn date_picker(ui: &mut egui::Ui, date: &mut NaiveDate) -> bool {
         }
     });
     changed
+}
+
+/// A line of the banner over the 3D view: text, size, colour, emphasised.
+pub(crate) type BannerLine = (String, f32, Color32, bool);
+
+/// "320 m" or "1.2 km".
+fn fmt_km(m: f64) -> String {
+    if m < 950.0 {
+        format!("{:.0} m", (m / 10.0).round() * 10.0)
+    } else {
+        format!("{:.1} km", m / 1000.0)
+    }
 }
 
 pub(crate) fn secs_edit(ui: &mut egui::Ui, secs: &mut u32) -> bool {
@@ -4554,6 +4740,107 @@ impl App {
                     ui.end_row();
                 }
             });
+        self.personal_records(ui);
+    }
+
+    /// The segments timed on ride `s`, each with how it ranks.
+    fn segment_results(&self, ui: &mut egui::Ui, s: &ride::Summary) {
+        use crate::segment::fmt_time;
+        let mine: Vec<&crate::segment::Effort> = self
+            .store
+            .efforts
+            .iter()
+            .filter(|e| e.date == s.start && Some(&e.route_id) == s.route_id.as_ref())
+            .collect();
+        if mine.is_empty() {
+            return;
+        }
+        ui.add_space(6.0);
+        ui.label(RichText::new("Segments").strong());
+        egui::Grid::new(("segments", s.file.as_str()))
+            .num_columns(4)
+            .spacing([16.0, 4.0])
+            .show(ui, |ui| {
+                for e in mine {
+                    let mut times: Vec<f32> = self
+                        .store
+                        .efforts
+                        .iter()
+                        .filter(|o| o.route_id == e.route_id && o.key == e.key)
+                        .map(|o| o.secs)
+                        .collect();
+                    times.sort_by(f32::total_cmp);
+                    let rank = times.iter().position(|t| *t >= e.secs).unwrap_or(0) + 1;
+                    ui.label(&e.name);
+                    ui.label(RichText::new(fmt_time(e.secs)).strong());
+                    ui.label(RichText::new(format!("{:.0} W", e.avg_power)).weak());
+                    let (text, colour) = match (rank, times.len()) {
+                        (_, 1) => ("First time".to_string(), theme::TEXT_DIM),
+                        (1, _) => ("Personal record".to_string(), theme::GOOD),
+                        (2, _) => ("2nd best".to_string(), theme::WARN),
+                        (3, _) => ("3rd best".to_string(), theme::WARN),
+                        _ => (
+                            format!("+{} on your best", fmt_time(e.secs - times[0])),
+                            theme::TEXT_DIM,
+                        ),
+                    };
+                    ui.colored_label(colour, text);
+                    ui.end_row();
+                }
+            });
+    }
+
+    /// Your best time on every segment you have ridden, route by route.
+    fn personal_records(&self, ui: &mut egui::Ui) {
+        use crate::segment::fmt_time;
+        if self.store.efforts.is_empty() {
+            return;
+        }
+        ui.add_space(16.0);
+        ui.heading("Personal records");
+        ui.label(
+            RichText::new("Your best time on each climb and lap, from every ride on the route.")
+                .weak(),
+        );
+        ui.add_space(6.0);
+        for route in &self.routes {
+            let efforts: Vec<&crate::segment::Effort> = self
+                .store
+                .efforts
+                .iter()
+                .filter(|e| e.route_id == route.id)
+                .collect();
+            if efforts.is_empty() {
+                continue;
+            }
+            ui.label(RichText::new(&route.name).strong());
+            egui::Grid::new(("records", route.id.as_str()))
+                .striped(true)
+                .num_columns(6)
+                .spacing([24.0, 5.0])
+                .show(ui, |ui| {
+                    for h in ["Segment", "", "Best", "Power", "When", "Times ridden"] {
+                        ui.label(RichText::new(h).weak());
+                    }
+                    ui.end_row();
+                    for seg in crate::segment::for_route(route) {
+                        let Some(best) =
+                            crate::segment::best(&self.store.efforts, &route.id, &seg.key)
+                        else {
+                            continue;
+                        };
+                        let count = efforts.iter().filter(|e| e.key == seg.key).count();
+                        ui.label(&seg.name);
+                        ui.label(RichText::new(seg.describe()).weak());
+                        ui.label(RichText::new(fmt_time(best.secs)).strong());
+                        ui.label(format!("{:.0} W", best.avg_power));
+                        ui.label(best.date.format("%d %b %Y").to_string());
+                        ui.label(count.to_string());
+                        ui.end_row();
+                    }
+                });
+            ui.add_space(8.0);
+        }
     }
 
     fn history_tab(&mut self, ui: &mut egui::Ui) {
@@ -5271,6 +5558,7 @@ impl App {
                                 ui.colored_label(Color32::from_rgb(240, 150, 80), e);
                             }
                         }
+                        self.segment_results(ui, s);
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
                             if ui.button("Show file").on_hover_text(&s.file).clicked() {
@@ -5389,67 +5677,74 @@ impl App {
                     .collapsible(false)
                     .resizable(false)
                     .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
-                    // Scroll rather than run off a short screen.
-                    .max_height(ctx.content_rect().height() - 80.0)
-                    .vscroll(true)
                     .show(ctx, |ui| {
-                        ui.heading(&s.name);
-                        egui::Grid::new("sum").num_columns(2).show(ui, |ui| {
-                            for (k, v) in [
-                                ("Time", fmt_dur(s.secs)),
-                                ("Distance", format!("{:.2} km", s.distance_m / 1000.0)),
-                                ("Climbing", format!("{:.0} m", s.ascent_m)),
-                                ("Average power", format!("{:.0} W", s.avg_power)),
-                                ("Normalized power", format!("{:.0} W", s.np)),
-                                ("Training stress", format!("{:.0} TSS", s.tss)),
-                                ("Work", format!("{:.0} kJ", s.kj)),
-                            ] {
-                                ui.label(k);
-                                ui.label(RichText::new(v).strong());
-                                ui.end_row();
-                            }
-                        });
-                        zone_breakdown(ui, &s);
-                        ui.add_space(4.0);
-                        ui.label(RichText::new(&s.file).small().weak());
-                        if self.strava_creds.is_connected() {
-                            ui.horizontal(|ui| {
-                                if s.strava_id.is_some() {
-                                    ui.colored_label(theme::GOOD, "Uploaded to Strava");
-                                } else if self.strava_pending.contains(&s.file) {
-                                    ui.spinner();
-                                    ui.label("Uploading to Strava…");
-                                } else if ui.button("Upload to Strava").clicked() {
-                                    strava = Some(s.clone());
+                        // Scroll rather than run off a short screen.
+                        let room = (ui.ctx().content_rect().height() - 120.0).max(200.0);
+                        egui::ScrollArea::vertical()
+                            .max_height(room)
+                            .min_scrolled_height(room)
+                            .show(ui, |ui| {
+                                ui.heading(&s.name);
+                                egui::Grid::new("sum").num_columns(2).show(ui, |ui| {
+                                    for (k, v) in [
+                                        ("Time", fmt_dur(s.secs)),
+                                        ("Distance", format!("{:.2} km", s.distance_m / 1000.0)),
+                                        ("Climbing", format!("{:.0} m", s.ascent_m)),
+                                        ("Average power", format!("{:.0} W", s.avg_power)),
+                                        ("Normalized power", format!("{:.0} W", s.np)),
+                                        ("Training stress", format!("{:.0} TSS", s.tss)),
+                                        ("Work", format!("{:.0} kJ", s.kj)),
+                                    ] {
+                                        ui.label(k);
+                                        ui.label(RichText::new(v).strong());
+                                        ui.end_row();
+                                    }
+                                });
+                                zone_breakdown(ui, &s);
+                                self.segment_results(ui, &s);
+                                ui.add_space(4.0);
+                                ui.label(RichText::new(&s.file).small().weak());
+                                if self.strava_creds.is_connected() {
+                                    ui.horizontal(|ui| {
+                                        if s.strava_id.is_some() {
+                                            ui.colored_label(theme::GOOD, "Uploaded to Strava");
+                                        } else if self.strava_pending.contains(&s.file) {
+                                            ui.spinner();
+                                            ui.label("Uploading to Strava…");
+                                        } else if ui.button("Upload to Strava").clicked() {
+                                            strava = Some(s.clone());
+                                        }
+                                    });
                                 }
-                            });
-                        }
-                        if let Some(m) = s.max_hr.filter(|m| *m > self.store.settings.max_hr) {
-                            ui.separator();
-                            ui.label(format!(
-                                "New highest heart rate: {m:.0} bpm (max is set to {:.0}).",
-                                self.store.settings.max_hr
-                            ));
-                            if ui.button(format!("Set max heart rate to {m:.0}")).clicked() {
-                                self.store.settings.max_hr = m.round();
-                                self.mark_dirty();
-                            }
-                        }
-                        if let Some(t) = s.lthr_estimate {
-                            ui.separator();
-                            let set = &self.store.settings;
-                            let current = if set.lthr > 0.0 {
-                                format!("currently {:.0} bpm", set.lthr)
-                            } else {
-                                "not set yet".to_string()
-                            };
-                            ui.label(
-                                RichText::new(format!(
-                                    "Threshold heart rate: {t:.0} bpm ({current})"
-                                ))
-                                .size(16.0),
-                            );
-                            ui.label(
+                                if let Some(m) =
+                                    s.max_hr.filter(|m| *m > self.store.settings.max_hr)
+                                {
+                                    ui.separator();
+                                    ui.label(format!(
+                                        "New highest heart rate: {m:.0} bpm (max is set to {:.0}).",
+                                        self.store.settings.max_hr
+                                    ));
+                                    if ui.button(format!("Set max heart rate to {m:.0}")).clicked()
+                                    {
+                                        self.store.settings.max_hr = m.round();
+                                        self.mark_dirty();
+                                    }
+                                }
+                                if let Some(t) = s.lthr_estimate {
+                                    ui.separator();
+                                    let set = &self.store.settings;
+                                    let current = if set.lthr > 0.0 {
+                                        format!("currently {:.0} bpm", set.lthr)
+                                    } else {
+                                        "not set yet".to_string()
+                                    };
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "Threshold heart rate: {t:.0} bpm ({current})"
+                                        ))
+                                        .size(16.0),
+                                    );
+                                    ui.label(
                                 RichText::new(
                                     "95% of your average heart rate over the 20 minutes. Heart \
                                      rate zones based on it fit your fitness better than ones \
@@ -5458,37 +5753,40 @@ impl App {
                                 .small()
                                 .weak(),
                             );
-                            let using = set.hr_basis == crate::store::HrBasis::Threshold
-                                && (set.lthr - t).abs() < 0.5;
-                            if !using
-                                && ui
-                                    .button(format!("Use {t:.0} bpm for my heart rate zones"))
-                                    .clicked()
-                            {
-                                let set = &mut self.store.settings;
-                                set.lthr = t;
-                                set.hr_basis = crate::store::HrBasis::Threshold;
-                                self.mark_dirty();
-                            }
-                        }
-                        if let Some(f) = s.ftp_estimate {
-                            ui.separator();
-                            ui.label(
-                                RichText::new(format!(
-                                    "Estimated FTP: {f:.0} W (currently {:.0} W)",
-                                    self.store.settings.ftp
-                                ))
-                                .size(16.0),
-                            );
-                            if ui.button(format!("Set FTP to {f:.0} W")).clicked() {
-                                self.store.settings.ftp = f;
-                                self.mark_dirty();
-                                close = true;
-                            }
-                        }
-                        if ui.button("Close").clicked() {
-                            close = true;
-                        }
+                                    let using = set.hr_basis == crate::store::HrBasis::Threshold
+                                        && (set.lthr - t).abs() < 0.5;
+                                    if !using
+                                        && ui
+                                            .button(format!(
+                                                "Use {t:.0} bpm for my heart rate zones"
+                                            ))
+                                            .clicked()
+                                    {
+                                        let set = &mut self.store.settings;
+                                        set.lthr = t;
+                                        set.hr_basis = crate::store::HrBasis::Threshold;
+                                        self.mark_dirty();
+                                    }
+                                }
+                                if let Some(f) = s.ftp_estimate {
+                                    ui.separator();
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "Estimated FTP: {f:.0} W (currently {:.0} W)",
+                                            self.store.settings.ftp
+                                        ))
+                                        .size(16.0),
+                                    );
+                                    if ui.button(format!("Set FTP to {f:.0} W")).clicked() {
+                                        self.store.settings.ftp = f;
+                                        self.mark_dirty();
+                                        close = true;
+                                    }
+                                }
+                                if ui.button("Close").clicked() {
+                                    close = true;
+                                }
+                            });
                     });
             }
             Some(Modal::ConfirmDelete(i)) => {
@@ -5507,7 +5805,7 @@ impl App {
                         ui.label(format!("Delete {name}?"));
                         ui.label(
                             RichText::new(format!(
-                                "Its .tcx file goes to the {TRASH}, so you can still restore it from there."
+                                "Its files go to the {TRASH}, so you can still restore them from there."
                             ))
                             .weak(),
                         );
@@ -5516,6 +5814,11 @@ impl App {
                                 if i < self.store.history.len() {
                                     let ride = self.store.history.remove(i);
                                     self.trash_activity(&ride.file);
+                                    // Its segment times go with it.
+                                    self.store.efforts.retain(|e| {
+                                        e.date != ride.start
+                                            || Some(&e.route_id) != ride.route_id.as_ref()
+                                    });
                                     if self
                                         .details
                                         .as_ref()

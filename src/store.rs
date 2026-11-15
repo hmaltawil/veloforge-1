@@ -136,6 +136,8 @@ pub struct Store {
     pub gpx_routes: Vec<GpxRoute>,
     /// FTP over time, one entry per day it changed.
     pub ftp_history: Vec<crate::progress::FtpEntry>,
+    /// Every timed ride of a route's segments.
+    pub efforts: Vec<crate::segment::Effort>,
 }
 
 pub struct Paths {

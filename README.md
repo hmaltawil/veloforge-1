@@ -13,13 +13,14 @@ A free, local indoor-cycling app for Linux, with a Windows version in testing: s
 - **Training plans and a calendar**. VeloForge generates a periodized plan (FTP builder, aerobic base or maintenance) on the days you ride: three build weeks, then a recovery week. Missed a key workout? It offers to move it to your next free day. Tired? It suggests an easier ride instead.
 - **Heart-rate rides**: pick a target heart rate and VeloForge sets the trainer's power to hold it.
 - **Ride with someone**: a pacer at a power you choose, or a ghost of your own best ride on the same route.
-- **3D world** rendered on your graphics card: farmland, lakes, snowy mountains, an island coast road and a hairpin climb, by day, at sunset or at night, in sun, cloud, fog or rain. Trees cast shadows across the road, grass and wild flowers bend in the wind, clouds drift and shade the hills, and the low sun glitters on the water. Your rider pedals, breathes, stands up on steep climbs and tucks on fast descents. Watch from behind, close up, alongside or from above (press **C**). Import any `.gpx` file to ride a real route. A **dashboard** view shows the numbers instead (press **V**).
+- **3D world** rendered on your graphics card: farmland, lakes, snowy mountains, an island coast road and a hairpin climb, by day, at sunset or at night, in sun, cloud, fog or rain. Trees cast shadows across the road, grass and wild flowers bend in the wind, clouds drift and shade the hills, and the low sun glitters on the water. Your rider pedals, breathes, stands up on steep climbs and tucks on fast descents. Watch from behind, close up, alongside or from above (press **C**). Every climb is a timed **segment**: VeloForge finds them on each route (imported ones too), shows your time and your best as you ride, cheers a new personal record, and keeps a table of your records. Import any `.gpx` file to ride a real route. A **dashboard** view shows the numbers instead (press **V**).
 - **Phone remote**: your phone shows the live numbers and starts, pauses, skips steps or changes the intensity, over your home Wi-Fi.
 - **intervals.icu**: the rides you plan there appear in your calendar, and finished rides upload by themselves.
+- **Strava**: finished rides upload by themselves, as indoor rides (connect once in **Settings → Strava**, through your own free Strava API application; VeloForge shows you how).
 - **Progress**: fitness, fatigue and form, weekly hours, your power curve, FTP history and monthly totals.
 - **Heart rate, power and cadence sensors**, with heart rate zones from your max or your threshold heart rate (the 20-minute FTP test measures it), and noise detection that ignores a strap reading nonsense.
 - **Audio cues**: a 3-2-1 countdown before interval changes, a chime at the end, and a warning if the trainer disconnects.
-- **Your rides**: every ride is saved as a `.tcx` file for Strava, intervals.icu, TrainingPeaks or GoldenCheetah, with a lap for each workout interval so every effort shows up on its own. History shows charts, time in zones and best efforts. A ride survives crashes and power cuts and is recovered on the next start.
+- **Your rides**: every ride is saved as a `.fit` and a `.tcx` file for Strava, Garmin Connect, intervals.icu, TrainingPeaks or GoldenCheetah, with a lap for each workout interval so every effort shows up on its own. History shows charts, time in zones and best efforts. A ride survives crashes and power cuts and is recovered on the next start.
 
 | | |
 |---|---|
@@ -151,12 +152,13 @@ Everything stays on your computer in `~/.local/share/veloforge/` (on Windows: `%
 
 | File | Contents |
 |---|---|
-| `state.json` | settings, calendar, history, custom workouts, imported routes, FTP history |
+| `state.json` | settings, calendar, history, custom workouts, imported routes, FTP history, segment times |
 | `credentials.json` | your intervals.icu athlete ID and API key (readable only by you) |
-| `activities/*.tcx` | your rides |
+| `strava.json` | your Strava app's ID and secret and the access it was given (readable only by you) |
+| `activities/*.fit`, `*.tcx` | your rides |
 | `veloforge.log` | the log, for troubleshooting |
 
-Deleting a ride in **History** moves its `.tcx` file to the Trash (the Recycle Bin on Windows), so you can restore it from there. Set `VELOFORGE_DATA=/some/dir` to use a different folder.
+Deleting a ride in **History** moves its files to the Trash (the Recycle Bin on Windows), so you can restore it from there. Set `VELOFORGE_DATA=/some/dir` to use a different folder.
 
 **Updates:** when it starts, VeloForge asks GitHub once whether a newer version has been released, and shows **Update** in the top bar if so. The request contains only the app's version, nothing about you or your rides. Turn it off in **Settings → Data & about**.
 

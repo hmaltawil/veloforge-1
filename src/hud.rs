@@ -97,7 +97,18 @@ impl App {
     }
 
     /// What the banner at the top says right now, if anything.
+    /// The ride's banner, with segment news below it.
     fn banner_lines(&self) -> Vec<Line> {
+        let mut lines = self.ride_banner_lines();
+        let seg = self.segment_lines();
+        if !seg.is_empty() && !lines.is_empty() {
+            lines.push((String::new(), 2.0, theme::TEXT_DIM, false));
+        }
+        lines.extend(seg);
+        lines
+    }
+
+    fn ride_banner_lines(&self) -> Vec<Line> {
         let ftp = self.store.settings.ftp;
         let dim = theme::TEXT_DIM;
         let ready = self.ride.state == ride::State::Ready;
