@@ -762,7 +762,7 @@ pub fn sculpt(j: &Joints) -> Sculpt {
         }
         let heel = add(
             j.ball[k],
-            add(scale(j.foot_fwd[k], -0.175), scale(j.foot_up[k], 0.052)),
+            add(scale(j.foot_fwd[k], -0.16), scale(j.foot_up[k], 0.052)),
         );
         add_part(part(
             cone(son(0.66, -0.026, 0.0), heel, 0.017, 0.012),
@@ -951,7 +951,7 @@ pub fn sculpt(j: &Joints) -> Sculpt {
                 let (x, y) = (dot(q, f), dot(q, n));
                 // The rim of the ankle opening, and a strap across the
                 // forefoot.
-                if (x < -0.11 && y > 0.072 + (x + 0.11) * -0.25)
+                if (x < -0.1 && y > 0.072 + (x + 0.1) * -0.25)
                     || ((-0.012..0.006).contains(&(x + 0.02 * y)) && y > 0.03)
                 {
                     Paint::Dial
@@ -964,35 +964,35 @@ pub fn sculpt(j: &Joints) -> Sculpt {
         // Low, narrow toe; the forefoot over the cleat; the instep rising
         // to the ankle; the heel cup.
         shoes.parts.push(upper(
-            ell(on(0.072, 0.019, 0.0), ax, [0.05, 0.019, 0.035]),
+            ell(on(0.05, 0.019, 0.0), ax, [0.045, 0.019, 0.034]),
             0.02,
         ));
         shoes.parts.push(upper(
-            ell(on(0.0, 0.026, 0.0), ax, [0.07, 0.024, 0.04]),
+            ell(on(-0.01, 0.026, 0.0), ax, [0.062, 0.024, 0.039]),
             0.02,
         ));
         shoes.parts.push(upper(
             Shape::Box {
-                c: on(-0.06, 0.03, 0.0),
+                c: on(-0.065, 0.03, 0.0),
                 axes: ax,
-                half: [0.075, 0.012, 0.019],
+                half: [0.065, 0.012, 0.019],
                 round: 0.016,
             },
             0.02,
         ));
         shoes.parts.push(upper(
-            ell(on(-0.085, 0.042, 0.0), ax, [0.062, 0.03, 0.035]),
+            ell(on(-0.085, 0.042, 0.0), ax, [0.058, 0.03, 0.034]),
             0.02,
         ));
         shoes.parts.push(upper(
-            ell(on(-0.15, 0.043, 0.0), ax, [0.042, 0.04, 0.033]),
+            ell(on(-0.135, 0.043, 0.0), ax, [0.037, 0.04, 0.032]),
             0.02,
         ));
         shoes.parts.push(shoe(
             Shape::Box {
-                c: on(-0.04, 0.003, 0.0),
+                c: on(-0.043, 0.003, 0.0),
                 axes: ax,
-                half: [0.125, 0.004, 0.038],
+                half: [0.112, 0.004, 0.033],
                 round: 0.005,
             },
             0.004,
@@ -1006,7 +1006,7 @@ pub fn sculpt(j: &Joints) -> Sculpt {
         ));
         shoes.parts.push(shoe(
             Shape::Box {
-                c: on(-0.19, 0.052, 0.0),
+                c: on(-0.172, 0.052, 0.0),
                 axes: ax,
                 half: [0.004, 0.022, 0.01],
                 round: 0.003,

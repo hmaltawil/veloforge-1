@@ -1289,7 +1289,15 @@ pub fn bike(p: &RiderPose, j: &Joints) -> Mesh {
             5,
             metal,
         );
-        m.cuboid_at(spindle, &bike, [0.045, 0.008, 0.04], rubber);
+        // Clipped in, the pedal tilts with the shoe.
+        let k = if side > 0.0 { 0 } else { 1 };
+        let pedal = Frame {
+            pos: spindle,
+            fwd: j.foot_fwd[k],
+            up: j.foot_up[k],
+            right: bike.right,
+        };
+        m.cuboid_at(spindle, &pedal, [0.04, 0.008, 0.038], rubber);
     }
     m.mat = MAT_MATT;
     m
