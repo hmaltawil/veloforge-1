@@ -26,6 +26,8 @@ pub struct Release {
 /// The end of the download's name for this kind of computer.
 const DOWNLOAD_SUFFIX: &str = if cfg!(windows) {
     "-windows-x64.zip"
+} else if cfg!(target_os = "macos") {
+    "-macos.dmg"
 } else {
     "-linux-x64.tar.gz"
 };
@@ -225,7 +227,7 @@ mod tests {
         // All files attached.
         let (url, _server) = mock(
             200,
-            r#"{"tag_name":"v9.0.0","assets":[{"name":"SHA256SUMS"},{"name":"VeloForge-9.0.0-linux-x64.tar.gz"},{"name":"VeloForge-9.0.0-windows-x64.zip"},{"name":"veloforge_9.0.0-1_amd64.deb"}]}"#,
+            r#"{"tag_name":"v9.0.0","assets":[{"name":"SHA256SUMS"},{"name":"VeloForge-9.0.0-linux-x64.tar.gz"},{"name":"VeloForge-9.0.0-windows-x64.zip"},{"name":"VeloForge-9.0.0-macos.dmg"},{"name":"veloforge_9.0.0-1_amd64.deb"}]}"#,
         );
         assert!(fetch_latest(&url).unwrap().unwrap().ready);
     }

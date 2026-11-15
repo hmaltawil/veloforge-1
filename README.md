@@ -2,17 +2,17 @@
 
 [![CI](https://github.com/hmaltawil/veloforge-1/actions/workflows/ci.yml/badge.svg)](https://github.com/hmaltawil/veloforge-1/actions/workflows/ci.yml)
 
-A free, local indoor-cycling app for Linux, with a Windows version in testing: smart trainer control, structured workouts, training plans and a 3D world to ride in. Everything runs on your computer, with no account and no subscription.
+A free, local indoor-cycling app for Linux, with Windows and macOS versions in testing: smart trainer control, structured workouts, training plans and a 3D world to ride in. Everything runs on your computer, with no account and no subscription.
 
 ![Workout on the Col Loop](docs/ride-workout.png)
 
 ## What it does
 
 - **Controls your smart trainer** over Bluetooth. ERG mode holds a target power, and simulation mode makes the resistance follow the road. It works with trainers that use the standard FTMS protocol, and with older Wahoo KICKR / SNAP firmware through Wahoo's legacy protocol.
-- **Structured workouts**: about 30 built in (recovery, endurance, tempo, sweet spot, threshold, VO2 max, sprints, ramp test, 20-minute test), a visual builder for your own (drag blocks to set their power and length, or to move them, with undo), and import of `.zwo` files from intervals.icu, TrainerRoad, WhatsOnZwift and others. Steps can have a cadence target, shown next to your live cadence (green when you're within 5 rpm).
+- **Structured workouts**: about 30 built in (recovery, endurance, tempo, sweet spot, threshold, VO2 max, sprints, ramp test, 20-minute test), a visual builder for your own (drag blocks to set their power and length, or to move them, with undo), import of `.zwo` files from intervals.icu, TrainerRoad, WhatsOnZwift and others, and export of any workout as a `.zwo` file for other apps. Steps can have a cadence target, shown next to your live cadence (green when you're within 5 rpm).
 - **Training plans and a calendar**. VeloForge generates a periodized plan (FTP builder, aerobic base or maintenance) on the days you ride: three build weeks, then a recovery week. Missed a key workout? It offers to move it to your next free day. Tired? It suggests an easier ride instead.
 - **Heart-rate rides**: pick a target heart rate and VeloForge sets the trainer's power to hold it.
-- **Ride with someone**: a pacer at a power you choose, or a ghost of your own best ride on the same route.
+- **Ride with someone**: a pacer at a power you choose, or a ghost of your own best ride on the same route. Tuck in close behind and you **draft**: up to a third less air to push, so you go faster and the trainer gets easier.
 - **3D world** rendered on your graphics card: farmland, lakes, snowy mountains, an island coast road and a hairpin climb, by day, at sunset or at night, in sun, cloud, fog or rain. Trees cast shadows across the road, grass and wild flowers bend in the wind, clouds drift and shade the hills, and the low sun glitters on the water. Your rider pedals, breathes, stands up on steep climbs and tucks on fast descents. Watch from behind, close up, alongside or from above (press **C**). Every climb is a timed **segment**: VeloForge finds them on each route (imported ones too), shows your time and your best as you ride, cheers a new personal record, and keeps a table of your records. Import any `.gpx` file to ride a real route. A **dashboard** view shows the numbers instead (press **V**).
 - **Phone remote**: your phone shows the live numbers and starts, pauses, skips steps or changes the intensity, over your home Wi-Fi.
 - **intervals.icu**: the rides you plan there appear in your calendar, and finished rides upload by themselves.
@@ -36,6 +36,7 @@ Download VeloForge from the [Releases page](https://github.com/hmaltawil/velofor
 - **Ubuntu, Debian, Linux Mint, Pop!_OS:** the `.deb` file. Open it to install, or run `sudo apt install ./veloforge_*_amd64.deb` in the download folder.
 - **Other Linux (Fedora, Arch, openSUSE…):** the `linux-x64.tar.gz` file. Unpack it and run `./install.sh` in the `VeloForge` folder; it installs for your user, with an app-menu entry and icon. `./install.sh --uninstall` removes it again.
 - **Windows:** the `windows-x64.zip` file (see [Windows](#windows-test-version) below).
+- **macOS 11 or newer (Apple Silicon and Intel):** the `macos.dmg` file (see [macOS](#macos-test-version) below).
 
 The Linux downloads need Ubuntu 22.04, Debian 12, Fedora 36 or newer. VeloForge tells you when a new version is out. **To update**, install the new version the same way; your settings, calendar and rides are kept. If you installed the `.tar.gz`, one command does it: `veloforge-update` downloads the newest release, checks it against `SHA256SUMS` and installs it.
 
@@ -87,9 +88,18 @@ VeloForge also runs on Windows 10 and 11 (64-bit). This version is new: the app,
 - **Build it yourself:** install Rust from https://rustup.rs, then run `cargo build --release` in the downloaded folder. The program is `target\release\veloforge.exe`.
 - **Phone remote:** when Windows Firewall asks, allow VeloForge on private networks.
 
+### macOS (test version)
+
+VeloForge runs on macOS 11 Big Sur or newer, on Apple Silicon and Intel Macs (one universal app). This version is new and has not been tried on a real Mac with a trainer yet. Reports are welcome.
+
+- **Install:** download the `macos.dmg` file from the [Releases page](https://github.com/hmaltawil/veloforge-1/releases), open it and drag VeloForge onto Applications.
+- **First start:** the app is not signed with an Apple developer certificate, so macOS stops it the first time. Open **System Settings → Privacy & Security**, scroll to the message about VeloForge and click **Open Anyway**. Or run `xattr -dr com.apple.quarantine /Applications/VeloForge.app` in Terminal.
+- **Bluetooth:** allow it when macOS asks; it can be changed later in **System Settings → Privacy & Security → Bluetooth**.
+- **Build it yourself:** install Rust from https://rustup.rs and the Xcode command-line tools (`xcode-select --install`), then run `cargo build --release`. `packaging/macos/package.sh` builds the `.app` and `.dmg`.
+
 ## Getting started
 
-1. On first start, enter your **FTP**, weight and **max heart rate**. If you don't know your FTP, start with 2.5 × your weight in kg and ride the **Ramp Test**.
+1. On first start, choose metric or imperial units and enter your **FTP**, weight and **max heart rate**. If you don't know your FTP, start with 2.5 × your weight in kg and ride the **Ramp Test**.
 2. Open **Devices**, pedal to wake your trainer, click **Scan**, then **Connect** next to it. Do the same for a heart rate strap. VeloForge remembers your devices and reconnects them automatically.
 3. Go to **Ride**, choose **Workout**, **Free ride**, **Slope** or **Heart rate**, and press **Start** (or Space).
 4. Press **Finish** when you're done. The ride goes to History and ticks off the planned workout in your calendar.
@@ -105,7 +115,7 @@ VeloForge also runs on Windows 10 and 11 (64-bit). This version is new: the app,
 
 Shortcuts: **Space** start/pause, **↑/↓** intensity / slope / difficulty / target heart rate, **N** skip step, **V** 3D view ↔ dashboard, **C** camera. By default the clock pauses automatically when you stop pedalling.
 
-**Ride with**: the menu next to the route lets you ride alone, with a **pacer** holding a steady power (with the same weight and bike as you), or against a **ghost**: a replay of one of your earlier rides on the same route, fastest first. The gap shows in metres (pacer) or seconds (ghost).
+**Ride with**: the menu next to the route lets you ride alone, with a **pacer** holding a steady power (with the same weight and bike as you), or against a **ghost**: a replay of one of your earlier rides on the same route, fastest first. The gap shows in metres (pacer) or seconds (ghost). Riding a few metres behind either one saves effort, as on the road: the dashboard shows **DRAFT** and how much you save (switch it off in **Settings → Riding**).
 
 **Time of day and weather**: the menu next to *3D* sets day, sunset or night (with stars, a moon and a bike light) and clear, cloudy, fog or rain. The same choices are in **Settings → Display**.
 
@@ -150,7 +160,7 @@ Wheel-on trainers such as the KICKR SNAP read power more accurately after a **sp
 
 ## Your data
 
-Everything stays on your computer in `~/.local/share/veloforge/` (on Windows: `%APPDATA%\veloforge\data\`):
+Everything stays on your computer in `~/.local/share/veloforge/` (on Windows: `%APPDATA%\veloforge\data\`; on macOS: `~/Library/Application Support/veloforge/`):
 
 | File | Contents |
 |---|---|
@@ -187,9 +197,10 @@ VeloForge is written in Rust with [egui](https://github.com/emilk/egui) for the 
 | `src/world.rs` | Simple software 3D view (fallback), time of day and weather |
 | `src/sound.rs` | Audio cues |
 | `src/charts.rs` | Charts and zone colours |
-| `src/platform.rs` | The few differences between Linux and Windows |
+| `src/platform.rs` | The few differences between Linux, Windows and macOS |
 | `build.rs` | Gives the Windows `.exe` its icon, name and version |
 | `packaging/linux/` | Builds and tests the Linux `.deb` and `.tar.gz` downloads |
+| `packaging/macos/` | Builds and tests the macOS `.app` in a `.dmg` |
 | `src/app.rs` | The user interface |
 
 The interface is set in [Inter](https://rsms.me/inter/), used under the SIL Open Font License (`assets/fonts/LICENSE.txt`).

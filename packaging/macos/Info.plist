@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>VeloForge</string>
+	<key>CFBundleDisplayName</key>
+	<string>VeloForge</string>
+	<key>CFBundleIdentifier</key>
+	<string>io.github.hmaltawil.veloforge</string>
+	<key>CFBundleExecutable</key>
+	<string>veloforge</string>
+	<key>CFBundleIconFile</key>
+	<string>veloforge</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.healthcare-fitness</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright (c) 2026 hmaltawil. MIT License.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>VeloForge connects to your smart trainer, power meter and heart rate strap over Bluetooth.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>VeloForge serves the phone remote to your phone on this network.</string>
+</dict>
+</plist>

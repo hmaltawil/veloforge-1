@@ -26,6 +26,9 @@ epaint_default_fonts = "0.37"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Media_Audio", "Win32_UI_Shell"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+trash = "5"
+
 [profile.release]
 opt-level = 3
 

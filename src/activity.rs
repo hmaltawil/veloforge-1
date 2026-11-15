@@ -98,9 +98,16 @@ pub fn move_to_trash(path: &std::path::Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Move a file to the Trash with the Finder's own mechanism, so "Put Back"
+/// works.
+#[cfg(target_os = "macos")]
+pub fn move_to_trash(path: &std::path::Path) -> std::io::Result<()> {
+    trash::delete(path).map_err(|e| std::io::Error::other(e.to_string()))
+}
+
 /// Move a file to the desktop's Trash (the freedesktop.org layout that
 /// Dolphin, Nautilus and others use), so it can be restored from there.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn move_to_trash(path: &std::path::Path) -> std::io::Result<()> {
     let data_home = std::env::var_os("XDG_DATA_HOME")
         .map(std::path::PathBuf::from)
@@ -116,7 +123,7 @@ pub fn move_to_trash(path: &std::path::Path) -> std::io::Result<()> {
     )
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn trash_into(
     path: &std::path::Path,
     trash: &std::path::Path,
@@ -179,7 +186,7 @@ fn trash_into(
 }
 
 /// Percent-encode a path for a .trashinfo file.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn url_path(path: &std::path::Path) -> String {
     use std::os::unix::ffi::OsStrExt;
     path.as_os_str()
@@ -248,7 +255,7 @@ mod tests {
         assert!(best_efforts(&a.samples).iter().any(|b| b.0 == "1 min"));
     }
 
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     #[test]
     fn trashed_rides_can_be_restored() {
         let dir = std::env::temp_dir().join(format!("vf-trash-{}", std::process::id()));

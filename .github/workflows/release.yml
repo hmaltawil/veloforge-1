@@ -2,7 +2,8 @@
 #   VeloForge-<version>-windows-x64.zip   Windows 10 and 11
 #   veloforge_<version>-1_amd64.deb       Ubuntu, Debian, Linux Mint, Pop!_OS
 #   VeloForge-<version>-linux-x64.tar.gz  any other Linux (./install.sh)
-#   SHA256SUMS                            checksums of the three
+#   VeloForge-<version>-macos.dmg         macOS 11 or newer, Apple Silicon and Intel
+#   SHA256SUMS                            checksums of the four
 #
 # Either publish a release on GitHub (Releases > Draft a new release, with
 # a new tag such as v1.2.0), or push a version tag from a computer. Either
@@ -102,6 +103,28 @@ jobs:
             dist/*.deb
           if-no-files-found: error
 
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust and both Mac targets
+        run: |
+          rustup toolchain install
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Build VeloForge.app (universal) and the .dmg
+        run: packaging/macos/package.sh
+
+      - name: Open the .dmg and start VeloForge
+        run: packaging/macos/smoke-test.sh dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos
+          path: dist/*.dmg
+          if-no-files-found: error
+
   test-linux:
     needs: linux
     strategy:
@@ -125,7 +148,7 @@ jobs:
         run: bash packaging/linux/smoke-test.sh ${{ matrix.package }} dist
 
   publish:
-    needs: [windows, test-linux]
+    needs: [windows, test-linux, macos]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     steps:

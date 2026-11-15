@@ -1,7 +1,7 @@
 //! Audio cues for workouts. Tones are rendered to small WAV files once and
 //! played with the desktop's command-line player (PipeWire, PulseAudio or
-//! ALSA) on Linux, or with the system's own sound player on Windows, so no
-//! audio libraries are needed at build time.
+//! ALSA) on Linux, afplay on macOS, or with the system's own sound player on
+//! Windows, so no audio libraries are needed at build time.
 
 use std::path::PathBuf;
 
@@ -47,7 +47,9 @@ impl Cue {
 }
 
 const RATE: u32 = 44_100;
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+const PLAYERS: [&str; 1] = ["afplay"];
+#[cfg(not(any(windows, target_os = "macos")))]
 const PLAYERS: [&str; 3] = ["pw-play", "paplay", "aplay"];
 
 pub struct Sound {

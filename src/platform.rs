@@ -1,6 +1,6 @@
-//! The few things that differ between Linux and Windows: opening files and
-//! folders, what the bin for deleted files is called, fallback fonts and the
-//! hints shown when Bluetooth or the firewall gets in the way.
+//! The few things that differ between Linux, Windows and macOS: opening
+//! files and folders, what the bin for deleted files is called, fallback
+//! fonts and the hints shown when Bluetooth or the firewall gets in the way.
 
 use std::path::{Path, PathBuf};
 
@@ -14,7 +14,9 @@ pub const TRASH: &str = "Trash";
 pub fn open(path: impl AsRef<Path>) {
     #[cfg(windows)]
     let program = "explorer";
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    let program = "open";
+    #[cfg(not(any(windows, target_os = "macos")))]
     let program = "xdg-open";
     let _ = std::process::Command::new(program)
         .arg(path.as_ref())
@@ -35,7 +37,20 @@ pub fn fallback_fonts() -> Vec<PathBuf> {
         .collect()
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub fn fallback_fonts() -> Vec<PathBuf> {
+    [
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/Library/Fonts/Arial Unicode.ttf",
+        "/System/Library/Fonts/Apple Symbols.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .collect()
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn fallback_fonts() -> Vec<PathBuf> {
     // Ask fontconfig first: it knows the distribution's font layout.
     let fc = std::process::Command::new("fc-match")
@@ -65,7 +80,11 @@ pub fn fallback_fonts() -> Vec<PathBuf> {
 #[cfg(windows)]
 pub const BLUETOOTH_HINT: &str =
     "Is Bluetooth turned on in Windows Settings → Bluetooth & devices?";
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub const BLUETOOTH_HINT: &str =
+    "Is Bluetooth turned on, and is VeloForge allowed in System Settings → \
+     Privacy & Security → Bluetooth?";
+#[cfg(not(any(windows, target_os = "macos")))]
 pub const BLUETOOTH_HINT: &str = "Is bluetoothd running and the adapter powered on?";
 
 /// How to let the phone remote through the firewall: an explanation and a
@@ -81,7 +100,18 @@ pub fn firewall_hint(port: u16) -> (&'static str, String) {
     )
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub fn firewall_hint(_port: u16) -> (&'static str, String) {
+    (
+        "Check that the phone is on the same Wi-Fi. If it is, the macOS firewall may be \
+         blocking it: allow VeloForge in System Settings → Network → Firewall → Options, \
+         or in Terminal with:",
+        "sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp /Applications/VeloForge.app"
+            .to_string(),
+    )
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn firewall_hint(port: u16) -> (&'static str, String) {
     (
         "Check that the phone is on the same Wi-Fi. If it is, the firewall may be \

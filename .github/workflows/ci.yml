@@ -1,6 +1,6 @@
-# Check every change: formatting, lints and tests on Linux, and lints, tests
+# Check every change: formatting, lints and tests on Linux, lints, tests
 # and a build on a real Windows machine (with Microsoft's compiler, the way
-# someone building VeloForge on Windows would). A change that only touches
+# someone building VeloForge on Windows would), and lints and tests on a Mac. A change that only touches
 # documentation is not checked: none of these files are built into the app.
 name: CI
 
@@ -72,3 +72,16 @@ jobs:
           $info = (Get-Item target\debug\veloforge.exe).VersionInfo
           "FileDescription: $($info.FileDescription), version: $($info.FileVersion)"
           if ($info.FileDescription -ne 'VeloForge') { throw 'veloforge.exe is missing its Windows resources (name and icon)' }
+
+  macos:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust (the version in rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Lints
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Tests
+        run: cargo test --locked
