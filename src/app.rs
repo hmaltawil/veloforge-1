@@ -2824,6 +2824,8 @@ impl App {
             lateral: crate::world::LANE,
             crank: self.ride.crank_angle,
             speed: self.ride.speed,
+            effort: self.ride.effort,
+            pedalling: self.ride.pedalling,
             jersey: Color32::from_rgb(r, g, b),
             tag: None,
         }];
@@ -2843,6 +2845,8 @@ impl App {
                 lateral: crate::world::COMPANION_LANE,
                 crank: self.ride.companion_crank,
                 speed: self.ride.speed,
+                effort: self.ride.companion_effort,
+                pedalling: self.ride.companion_pedalling,
                 jersey,
                 tag: Some(tag),
             });

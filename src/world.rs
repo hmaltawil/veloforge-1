@@ -413,6 +413,10 @@ pub struct Figure {
     pub crank: f32,
     /// Metres per second, for leaning into bends.
     pub speed: f64,
+    /// Power as a share of FTP, and whether the pedals turn: for standing
+    /// up on climbs and holding the pedals level when coasting.
+    pub effort: f32,
+    pub pedalling: bool,
     pub jersey: Color32,
     /// Name tag shown above the rider (companions only).
     pub tag: Option<String>,

@@ -334,11 +334,26 @@ pub struct Ride {
     pub speed_from_trainer: bool,
     pub companion: Option<Companion>,
     pub companion_crank: f32,
+    /// For the riders in the 3D view: how hard you ride (power / FTP) and
+    /// whether your pedals turn; the same for your companion.
+    pub effort: f32,
+    pub pedalling: bool,
+    pub companion_effort: f32,
+    pub companion_pedalling: bool,
     next_sample: f64,
     idle_for: f64,
     last_ele: Option<f64>,
     last_sent: Option<(Control, f64)>,
     clock: f64,
+}
+
+/// Coasting riders hold their pedals level: ease the crank angle (0 with
+/// the right pedal at the top) towards the nearest level position.
+fn level_cranks(angle: f32, dt: f64) -> f32 {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    let level = ((angle - FRAC_PI_2) / PI).round() * PI + FRAC_PI_2;
+    let k = 1.0 - (-dt as f32 * 4.0).exp();
+    (angle + (level - angle) * k).rem_euclid(std::f32::consts::TAU)
 }
 
 impl Ride {
@@ -364,6 +379,10 @@ impl Ride {
             speed_from_trainer: false,
             companion: None,
             companion_crank: 0.0,
+            effort: 0.0,
+            pedalling: false,
+            companion_effort: 0.0,
+            companion_pedalling: false,
             next_sample: 0.0,
             idle_for: 0.0,
             last_ele: None,
@@ -504,11 +523,17 @@ impl Ride {
                 };
                 // About 90 rpm at 32 km/h, slower on climbs.
                 let rpm = (55.0 + companion_speed as f32 * 3.6).min(95.0);
-                if companion_speed > 0.5 {
-                    self.companion_crank = (self.companion_crank
-                        + rpm / 60.0 * std::f32::consts::TAU * dt as f32)
-                        % std::f32::consts::TAU;
-                }
+                self.companion_pedalling = companion_speed > 0.5;
+                self.companion_effort = match &self.companion {
+                    Some(Companion::Pacer(p)) => p.watts / ftp.max(1.0),
+                    _ => 0.75,
+                };
+                self.companion_crank = if self.companion_pedalling {
+                    (self.companion_crank + rpm / 60.0 * std::f32::consts::TAU * dt as f32)
+                        % std::f32::consts::TAU
+                } else {
+                    level_cranks(self.companion_crank, dt)
+                };
                 let ele = route.at(self.route_pos()).ele;
                 if let Some(prev) = self.last_ele {
                     // Ignore the jump when a point-to-point route wraps to its start.
@@ -535,8 +560,14 @@ impl Ride {
             let rpm = live
                 .cadence
                 .unwrap_or(if live.power > 0.0 { 85.0 } else { 0.0 });
-            self.crank_angle = (self.crank_angle + rpm / 60.0 * std::f32::consts::TAU * dt as f32)
-                % std::f32::consts::TAU;
+            self.pedalling = rpm > 0.0;
+            self.effort = live.power / ftp.max(1.0);
+            self.crank_angle = if self.pedalling {
+                (self.crank_angle + rpm / 60.0 * std::f32::consts::TAU * dt as f32)
+                    % std::f32::consts::TAU
+            } else {
+                level_cranks(self.crank_angle, dt)
+            };
         }
 
         let desired = match self.mode {
@@ -782,6 +813,26 @@ fn xml_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn coasting_pedals_settle_level() {
+        use std::f32::consts::{FRAC_PI_2, PI};
+        for (start, level) in [
+            (0.3, FRAC_PI_2),
+            (2.0, FRAC_PI_2),
+            (3.5, 3.0 * FRAC_PI_2),
+            (6.0, 3.0 * FRAC_PI_2),
+        ] {
+            let mut a: f32 = start;
+            for _ in 0..100 {
+                a = level_cranks(a, 0.05);
+            }
+            assert!((a - level).abs() < 0.01, "{start} -> {a}");
+        }
+        // Already level stays put.
+        assert!((level_cranks(FRAC_PI_2, 0.1) - FRAC_PI_2).abs() < 1e-6);
+        assert!((level_cranks(PI + FRAC_PI_2, 0.1) - (PI + FRAC_PI_2)).abs() < 1e-5);
+    }
     use crate::route;
 
     fn phys() -> Physics {

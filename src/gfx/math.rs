@@ -149,6 +149,12 @@ pub fn project(vp: &M4, p: V3, width: f32, height: f32) -> Option<(f32, f32, f32
     Some(((x * 0.5 + 0.5) * width, (0.5 - y * 0.5) * height, c[3]))
 }
 
+/// 0 below `a`, 1 above `b`, smooth in between.
+pub fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
+    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

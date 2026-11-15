@@ -13,6 +13,53 @@ pub const MAT_GLOSS: f32 = 3.0;
 pub const MAT_REFLECTOR: f32 = 4.0;
 pub const MAT_LEAF: f32 = 5.0;
 
+/// One cross-section of a `Mesh::loft`: centre, a direction across it,
+/// half width along that direction and half depth at right angles to it,
+/// and the colour from here to the next ring.
+#[derive(Clone, Copy)]
+pub struct Ring {
+    pub c: V3,
+    pub side: V3,
+    pub w: f32,
+    pub d: f32,
+    pub col: V3,
+}
+
+/// A place and three unit directions: forward, up and right.
+#[derive(Clone, Copy)]
+pub struct Frame {
+    pub pos: V3,
+    pub fwd: V3,
+    pub up: V3,
+    pub right: V3,
+}
+
+impl Frame {
+    /// A point `x` forward, `y` up and `z` right of `pos`.
+    pub fn at(&self, x: f32, y: f32, z: f32) -> V3 {
+        add(self.pos, self.dir(x, y, z))
+    }
+    /// A direction given in this frame's terms.
+    pub fn dir(&self, x: f32, y: f32, z: f32) -> V3 {
+        add(
+            add(scale(self.fwd, x), scale(self.up, y)),
+            scale(self.right, z),
+        )
+    }
+    /// Leaned `a` radians to the right about the forward axis through `pos`.
+    pub fn rolled(&self, a: f32) -> Frame {
+        let (s, c) = a.sin_cos();
+        Frame {
+            up: add(scale(self.up, c), scale(self.right, s)),
+            right: sub(scale(self.right, c), scale(self.up, s)),
+            ..*self
+        }
+    }
+    fn axes(&self) -> [V3; 3] {
+        [self.fwd, self.up, self.right]
+    }
+}
+
 #[derive(Default)]
 pub struct Mesh {
     pub v: Vec<f32>,
@@ -148,13 +195,47 @@ impl Mesh {
     }
 
     /// Ellipsoid with smooth normals; `jitter` varies the colour per vertex.
-    pub fn ellipsoid(&mut self, c: V3, r: V3, rings: usize, segs: usize, col: V3, jitter: f32) {
+    /// Ellipsoid with its radii along `axes` (unit, at right angles; the
+    /// second is its top), so it turns with whatever it belongs to.
+    pub fn ellipsoid_in(
+        &mut self,
+        c: V3,
+        axes: [V3; 3],
+        r: V3,
+        rings: usize,
+        segs: usize,
+        col: V3,
+    ) {
+        self.ellipsoid_shaded(c, axes, r, rings, segs, col, 0.0);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn ellipsoid_shaded(
+        &mut self,
+        c: V3,
+        axes: [V3; 3],
+        r: V3,
+        rings: usize,
+        segs: usize,
+        col: V3,
+        jitter: f32,
+    ) {
         let pt = |i: usize, j: usize| -> (V3, V3) {
             let th = i as f32 / rings as f32 * std::f32::consts::PI;
             let ph = j as f32 / segs as f32 * std::f32::consts::TAU;
             let d = [th.sin() * ph.cos(), th.cos(), th.sin() * ph.sin()];
-            let p = add(c, [d[0] * r[0], d[1] * r[1], d[2] * r[2]]);
-            let n = norm([d[0] / r[0], d[1] / r[1], d[2] / r[2]]);
+            let along = |k: usize, v: f32| scale(axes[k], v);
+            let p = add(
+                c,
+                add(
+                    add(along(0, d[0] * r[0]), along(1, d[1] * r[1])),
+                    along(2, d[2] * r[2]),
+                ),
+            );
+            let n = norm(add(
+                add(along(0, d[0] / r[0]), along(1, d[1] / r[1])),
+                along(2, d[2] / r[2]),
+            ));
             (p, n)
         };
         let shade = |i: usize, j: usize| {
@@ -181,6 +262,55 @@ impl Mesh {
                 self.push(a, na, ca);
                 self.push(cc, nc, ccc);
                 self.push(d, nd, cd);
+            }
+        }
+    }
+
+    /// A smooth body through `rings` (at least two, at different places):
+    /// each ring is an ellipse across the line through them, and its colour
+    /// covers the stretch to the next ring.
+    pub fn loft(&mut self, rings: &[Ring], sides: usize) {
+        let n = rings.len();
+        if n < 2 {
+            return;
+        }
+        // Each ring's directions across: along `side`, and at right angles.
+        let across: Vec<(V3, V3)> = (0..n)
+            .map(|i| {
+                let t = norm(sub(
+                    rings[(i + 1).min(n - 1)].c,
+                    rings[i.saturating_sub(1)].c,
+                ));
+                let side = rings[i].side;
+                let s = norm(sub(side, scale(t, dot(side, t))));
+                (s, cross(t, s))
+            })
+            .collect();
+        let pt = |i: usize, k: usize| -> (V3, V3) {
+            let a = k as f32 / sides as f32 * std::f32::consts::TAU;
+            let (ca, sa) = (a.cos(), a.sin());
+            let (s, q) = across[i];
+            let r = &rings[i];
+            let p = add(r.c, add(scale(s, r.w * ca), scale(q, r.d * sa)));
+            let nrm = norm(add(
+                scale(s, ca / r.w.max(1e-4)),
+                scale(q, sa / r.d.max(1e-4)),
+            ));
+            (p, nrm)
+        };
+        for (i, ring) in rings[..n - 1].iter().enumerate() {
+            let col = ring.col;
+            for k in 0..sides {
+                let (a, na) = pt(i, k);
+                let (b, nb) = pt(i, k + 1);
+                let (c, nc) = pt(i + 1, k + 1);
+                let (d, nd) = pt(i + 1, k);
+                self.push(a, na, col);
+                self.push(b, nb, col);
+                self.push(c, nc, col);
+                self.push(a, na, col);
+                self.push(c, nc, col);
+                self.push(d, nd, col);
             }
         }
     }
@@ -835,10 +965,20 @@ pub struct RiderPose {
     pub fwd: V3,
     pub up: V3,
     pub right: V3,
+    /// The right pedal's angle: 0 at the top, growing as the pedals turn
+    /// forward. The left pedal is opposite.
     pub crank: f32,
     /// How far the wheels have turned, in radians.
     pub wheel: f32,
     pub jersey: V3,
+    /// 0 seated .. 1 standing on the pedals.
+    pub stand: f32,
+    /// 0 .. 1 crouched low for a fast descent.
+    pub tuck: f32,
+    /// Power as a share of FTP: harder work, deeper breaths.
+    pub effort: f32,
+    /// Seconds, for breathing.
+    pub time: f32,
 }
 
 /// Two-bone IK: the joint between `a` and `c` with bone lengths `l1`, `l2`,
@@ -853,21 +993,63 @@ fn ik(a: V3, c: V3, l1: f32, l2: f32, hint: V3) -> V3 {
     add(add(a, scale(dir, x)), scale(bend, h))
 }
 
+/// Bone lengths, in metres.
+const THIGH: f32 = 0.41;
+const SHIN: f32 = 0.40;
+const UPPER_ARM: f32 = 0.27;
+const FOREARM: f32 = 0.26;
+
+/// Rings along the straight line from `a` to `b`: (share of the way, half
+/// width, half depth, colour).
+fn limb(a: V3, b: V3, side: V3, rings: &[(f32, f32, f32, V3)]) -> Vec<Ring> {
+    rings
+        .iter()
+        .map(|&(t, w, d, col)| Ring {
+            c: lerp(a, b, t),
+            side,
+            w,
+            d,
+            col,
+        })
+        .collect()
+}
+
+/// Mix of three poses: seated, standing (`stand`) and tucked (`tuck`).
+fn pose3(
+    seated: [f32; 2],
+    standing: [f32; 2],
+    tucked: [f32; 2],
+    stand: f32,
+    tuck: f32,
+) -> [f32; 2] {
+    let mix =
+        |k: usize| seated[k] + (standing[k] - seated[k]) * stand + (tucked[k] - seated[k]) * tuck;
+    [mix(0), mix(1)]
+}
+
 /// A cyclist on a road bike, posed from the crank angle.
 pub fn rider(p: &RiderPose) -> Mesh {
+    use std::f32::consts::{PI, TAU};
     let mut m = Mesh::default();
-    let at = |x: f32, y: f32, z: f32| {
-        add(
-            p.pos,
-            add(add(scale(p.fwd, x), scale(p.up, y)), scale(p.right, z)),
-        )
+    let stand = p.stand.clamp(0.0, 1.0);
+    let tuck = p.tuck.clamp(0.0, 1.0) * (1.0 - stand);
+    let body = Frame {
+        pos: p.pos,
+        fwd: p.fwd,
+        up: p.up,
+        right: p.right,
     };
+    // Out of the saddle, riders rock the bike away from the pedal they push.
+    let bike = body.rolled(-0.13 * stand * p.crank.sin());
+    let at = |x: f32, y: f32, z: f32| bike.at(x, y, z);
+
     let rubber = [0.012, 0.012, 0.014];
     let frame = [0.028, 0.03, 0.036];
     let metal = [0.22, 0.22, 0.23];
     let skin = [0.5, 0.3, 0.2];
     let shorts = [0.012, 0.012, 0.016];
     let white = [0.78, 0.78, 0.78];
+    let sole = [0.03, 0.03, 0.035];
     let jersey = p.jersey;
     let jersey_dark = scale(jersey, 0.5);
 
@@ -875,9 +1057,9 @@ pub fn rider(p: &RiderPose) -> Mesh {
     for x in [-0.5f32, 0.5] {
         let hub = at(x, 0.34, 0.0);
         m.mat = MAT_MATT;
-        m.torus(hub, p.right, 0.326, 0.016, 28, 6, rubber);
+        m.torus(hub, bike.right, 0.326, 0.016, 28, 6, rubber);
         m.mat = MAT_GLOSS;
-        m.torus(hub, p.right, 0.296, 0.013, 28, 5, [0.06, 0.06, 0.065]);
+        m.torus(hub, bike.right, 0.296, 0.013, 28, 5, [0.06, 0.06, 0.065]);
         m.tube(
             at(x, 0.34, -0.035),
             at(x, 0.34, 0.035),
@@ -887,10 +1069,17 @@ pub fn rider(p: &RiderPose) -> Mesh {
             metal,
         );
         for k in 0..10 {
-            let a = p.wheel + k as f32 / 10.0 * std::f32::consts::TAU;
+            let a = p.wheel + k as f32 / 10.0 * TAU;
             let z = if k % 2 == 0 { 0.022 } else { -0.022 };
             let rim = at(x + a.sin() * 0.288, 0.34 + a.cos() * 0.288, 0.0);
-            m.tube(add(hub, scale(p.right, z)), rim, 0.0045, 0.0045, 3, metal);
+            m.tube(
+                add(hub, scale(bike.right, z)),
+                rim,
+                0.0045,
+                0.0045,
+                3,
+                metal,
+            );
         }
     }
     // Frame, fork and stays.
@@ -919,7 +1108,14 @@ pub fn rider(p: &RiderPose) -> Mesh {
         [0.02, 0.02, 0.022],
     );
     m.mat = MAT_MATT;
-    m.ellipsoid(at(-0.2, 0.905, 0.0), [0.13, 0.02, 0.065], 3, 7, rubber, 0.0);
+    m.ellipsoid_in(
+        at(-0.2, 0.905, 0.0),
+        bike.axes(),
+        [0.13, 0.02, 0.065],
+        3,
+        7,
+        rubber,
+    );
     // Stem and drop handlebar with hoods.
     m.mat = MAT_GLOSS;
     m.tube(
@@ -972,171 +1168,302 @@ pub fn rider(p: &RiderPose) -> Mesh {
     );
     m.mat = MAT_GLOSS;
     m.disc(
-        add(bb, scale(p.right, 0.05)),
+        add(bb, scale(bike.right, 0.05)),
         0.095,
-        p.right,
+        bike.right,
         14,
         [0.05, 0.05, 0.055],
     );
     m.mat = MAT_LAMP;
     m.cuboid_at(
         at(-0.2, 0.83, 0.0),
-        p,
+        &bike,
         [0.012, 0.02, 0.02],
         [0.9, 0.03, 0.02],
     );
     m.cuboid_at(
         at(0.53, 0.84, 0.0),
-        p,
+        &bike,
         [0.015, 0.014, 0.02],
         [0.9, 0.85, 0.7],
     );
     m.mat = MAT_MATT;
 
-    // Cranks and pedals: right foot at `crank`, left opposite.
-    let mut feet = [[0.0; 3]; 2];
-    for (k, (side, phase)) in [(1.0f32, 0.0f32), (-1.0, std::f32::consts::PI)]
-        .into_iter()
-        .enumerate()
-    {
-        let a = p.crank + phase;
-        let pedal = at(-0.02 + 0.17 * a.sin(), 0.28 - 0.17 * a.cos(), side * 0.1);
+    // Cranks, pedals and shoes. Ankling: the heel drops over the top of the
+    // stroke and the toes point down round the bottom.
+    let mut ankles = [[0.0; 3]; 2];
+    for (k, side) in [1.0f32, -1.0].into_iter().enumerate() {
+        let th = p.crank + if side > 0.0 { 0.0 } else { PI };
+        let spindle = at(-0.02 + 0.17 * th.sin(), 0.28 + 0.17 * th.cos(), side * 0.1);
         m.tube(
-            add(bb, scale(p.right, side * 0.07)),
-            pedal,
+            at(-0.02, 0.28, side * 0.07),
+            spindle,
             0.011,
             0.009,
             5,
             metal,
         );
-        feet[k] = add(pedal, scale(p.up, 0.035));
-        // Shoe: toes dip at the bottom of the stroke.
-        let dip = -0.25 * a.cos().max(0.0) - 0.08;
-        let heel = sub(feet[k], add(scale(p.fwd, 0.1), scale(p.up, 0.1 * dip)));
-        let toe = add(feet[k], add(scale(p.fwd, 0.13), scale(p.up, 0.13 * dip)));
+        m.cuboid_at(spindle, &bike, [0.045, 0.008, 0.04], rubber);
+        let toe_down = (0.32 - 0.22 * (th - 0.6).cos()) * (1.0 - 0.3 * stand);
+        // Heel to toe, and the top of the foot.
+        let f = bike.dir(toe_down.cos(), -toe_down.sin(), 0.0);
+        let n = bike.dir(toe_down.sin(), toe_down.cos(), 0.0);
+        let ball = add(spindle, scale(n, 0.012));
+        ankles[k] = add(ball, add(scale(f, -0.13), scale(n, 0.075)));
+        let along = |u: f32, h: f32| add(ball, add(scale(f, u), scale(n, h)));
+        let shoe: Vec<Ring> = [
+            (-0.178, 0.022, 0.026, 0.04),
+            (-0.168, 0.036, 0.042, 0.045),
+            (-0.11, 0.04, 0.05, 0.052),
+            (-0.03, 0.045, 0.038, 0.036),
+            (0.04, 0.043, 0.03, 0.028),
+            (0.085, 0.03, 0.02, 0.022),
+            (0.1, 0.012, 0.01, 0.02),
+        ]
+        .iter()
+        .map(|&(u, w, d, h)| Ring {
+            c: along(u, h),
+            side: bike.right,
+            w,
+            d,
+            col: white,
+        })
+        .collect();
         m.mat = MAT_GLOSS;
-        m.tube(heel, toe, 0.04, 0.03, 7, white);
-        m.ellipsoid(toe, [0.032, 0.03, 0.032], 3, 6, white, 0.0);
+        m.loft(&shoe, 9);
         m.mat = MAT_MATT;
+        let sole_rings: Vec<Ring> = [(-0.17, 0.034), (0.0, 0.046), (0.09, 0.025)]
+            .iter()
+            .map(|&(u, w)| Ring {
+                c: along(u, 0.006),
+                side: bike.right,
+                w,
+                d: 0.007,
+                col: sole,
+            })
+            .collect();
+        m.loft(&sole_rings, 8);
     }
 
-    // Legs.
-    let sway = 0.012 * p.crank.sin();
-    let hips = at(-0.16, 0.95, sway * 0.5);
+    // Hips: over the saddle, or forward over the pedals when standing,
+    // swaying towards the pedal being pushed.
+    let push = p.crank.sin();
+    let hc = pose3([-0.13, 1.03], [-0.02, 1.06], [-0.16, 1.02], stand, tuck);
+    let hips = body.at(hc[0], hc[1], (0.006 + 0.03 * stand) * push);
+    // The hip of the straightening leg dips a little.
+    let dip = 0.01 * p.crank.cos();
     for (k, side) in [1.0f32, -1.0].into_iter().enumerate() {
-        let hip = add(hips, scale(p.right, side * 0.085));
-        let ankle = add(feet[k], add(scale(p.up, 0.07), scale(p.fwd, -0.06)));
+        let hip = add(hips, body.dir(0.0, side * dip, side * 0.09));
+        let ankle = ankles[k];
         let knee = ik(
             hip,
             ankle,
-            0.44,
-            0.45,
-            add(p.fwd, scale(p.right, side * 0.12)),
+            THIGH,
+            SHIN,
+            add(body.fwd, scale(body.right, side * 0.1)),
         );
-        m.tube(hip, knee, 0.08, 0.058, 9, shorts);
-        // Shorts end above the knee.
-        let hem = lerp(hip, knee, 0.72);
-        m.tube(hem, knee, 0.064, 0.055, 9, skin);
-        let calf = lerp(knee, ankle, 0.3);
-        m.tube(knee, calf, 0.054, 0.06, 9, skin);
-        let sock = lerp(knee, ankle, 0.76);
-        m.tube(calf, sock, 0.06, 0.04, 9, skin);
-        m.tube(sock, ankle, 0.04, 0.037, 8, white);
-        m.ellipsoid(knee, [0.058, 0.058, 0.058], 4, 7, skin, 0.0);
+        m.loft(
+            &limb(
+                hip,
+                knee,
+                body.right,
+                &[
+                    (0.0, 0.085, 0.088, shorts),
+                    (0.35, 0.08, 0.086, shorts),
+                    (0.72, 0.064, 0.07, skin),
+                    (0.76, 0.061, 0.066, skin),
+                    (1.0, 0.052, 0.055, skin),
+                ],
+            ),
+            10,
+        );
+        // The calf bulges behind the shin.
+        let shin = norm(sub(ankle, knee));
+        let back = norm(sub(scale(shin, dot(body.fwd, shin)), body.fwd));
+        let mut calf = limb(
+            knee,
+            ankle,
+            body.right,
+            &[
+                (0.0, 0.05, 0.052, skin),
+                (0.14, 0.05, 0.058, skin),
+                (0.32, 0.05, 0.064, skin),
+                (0.62, 0.039, 0.044, white),
+                (0.75, 0.036, 0.04, white),
+                (1.0, 0.032, 0.035, white),
+            ],
+        );
+        for (r, b) in calf.iter_mut().zip([0.0, 0.008, 0.014, 0.004, 0.0, 0.0]) {
+            r.c = add(r.c, scale(back, b));
+        }
+        m.loft(&calf, 10);
+        m.ellipsoid_in(knee, body.axes(), [0.052, 0.052, 0.05], 4, 7, skin);
     }
-    m.ellipsoid(hips, [0.15, 0.105, 0.155], 5, 9, shorts, 0.0);
 
-    // Torso with an arched back, arms, head.
-    let shoulders = at(0.25, 1.27, -sway);
-    let mid = add(lerp(hips, shoulders, 0.5), scale(p.up, 0.045));
-    m.tube(hips, mid, 0.148, 0.165, 11, jersey);
-    m.tube(mid, shoulders, 0.165, 0.16, 11, jersey);
-    m.ellipsoid(mid, [0.165, 0.165, 0.165], 4, 9, jersey, 0.0);
-    m.ellipsoid(shoulders, [0.15, 0.1, 0.205], 5, 9, jersey, 0.0);
-    // Back pockets and a stripe.
-    m.tube(
-        lerp(hips, mid, 0.25),
-        lerp(hips, mid, 0.55),
-        0.158,
-        0.164,
-        11,
-        jersey_dark,
-    );
-    m.tube(
-        lerp(mid, shoulders, 0.35),
-        lerp(mid, shoulders, 0.5),
-        0.168,
-        0.168,
-        11,
-        white,
-    );
+    // Torso: an arched back from the hips to the shoulders, breathing.
+    let sc = pose3([0.26, 1.33], [0.38, 1.38], [0.3, 1.21], stand, tuck);
+    let sway = -0.008 * push;
+    let shoulders = body.at(sc[0], sc[1], sway);
+    let pelvis = add(hips, body.dir(-0.02, 0.0, 0.0));
+    let back_dir = norm(sub(shoulders, pelvis));
+    let arch = norm(cross(body.right, back_dir));
+    let ctrl = add(lerp(pelvis, shoulders, 0.5), scale(arch, 0.06));
+    let spine = |t: f32| {
+        let a = lerp(pelvis, ctrl, t);
+        let b = lerp(ctrl, shoulders, t);
+        lerp(a, b, t)
+    };
+    let rate = 0.25 + 0.2 * p.effort.clamp(0.0, 2.0);
+    let breath = (0.012 + 0.012 * p.effort.clamp(0.0, 2.0)) * (p.time * rate * TAU).sin();
+    let chest = 1.0 + breath;
+    let ring = |t: f32, w: f32, d: f32, col: V3| Ring {
+        c: spine(t),
+        side: body.right,
+        w,
+        d,
+        col,
+    };
+    let torso = [
+        Ring {
+            c: add(pelvis, add(scale(arch, -0.05), scale(back_dir, -0.03))),
+            side: body.right,
+            w: 0.1,
+            d: 0.07,
+            col: shorts,
+        },
+        ring(0.0, 0.165, 0.115, shorts),
+        ring(0.12, 0.155, 0.108, jersey_dark),
+        ring(0.3, 0.145, 0.105, jersey),
+        ring(0.5, 0.16 * chest, 0.118 * chest, jersey),
+        ring(0.7, 0.175 * chest, 0.12 * chest, white),
+        ring(0.78, 0.178 * chest, 0.116 * chest, jersey),
+        ring(0.9, 0.17, 0.1, jersey),
+        ring(1.0, 0.14, 0.075, jersey),
+        Ring {
+            c: add(shoulders, scale(back_dir, 0.035)),
+            side: body.right,
+            w: 0.065,
+            d: 0.055,
+            col: skin,
+        },
+    ];
+    m.loft(&torso, 14);
+
+    // Arms, from the shoulders to the hands on the brake hoods.
     for side in [1.0f32, -1.0] {
-        let sh = add(shoulders, scale(p.right, side * 0.18));
-        let hand = at(0.6, 0.93, side * 0.2);
+        let sh = add(shoulders, body.dir(0.0, -0.02, side * 0.17));
+        m.ellipsoid_in(sh, body.axes(), [0.054, 0.056, 0.05], 4, 8, jersey);
+        let grip = at(0.59, 0.89, side * 0.2);
+        let wrist = add(grip, bike.dir(-0.045, 0.035, 0.0));
         let elbow = ik(
             sh,
-            hand,
-            0.3,
-            0.3,
-            add(
-                scale(p.up, -0.6),
-                add(scale(p.fwd, -0.4), scale(p.right, side * 0.55)),
+            wrist,
+            UPPER_ARM,
+            FOREARM,
+            body.dir(-0.35 + 0.2 * tuck, -0.5, side * 0.55),
+        );
+        m.loft(
+            &limb(
+                sh,
+                elbow,
+                body.fwd,
+                &[
+                    (0.0, 0.05, 0.05, jersey),
+                    (0.44, 0.046, 0.047, jersey_dark),
+                    (0.52, 0.044, 0.045, skin),
+                    (1.0, 0.036, 0.038, skin),
+                ],
             ),
+            9,
         );
-        m.tube(sh, elbow, 0.052, 0.042, 8, jersey);
-        m.tube(
-            lerp(sh, elbow, 0.5),
-            lerp(sh, elbow, 0.58),
-            0.049,
-            0.047,
-            8,
-            jersey_dark,
+        m.loft(
+            &limb(
+                elbow,
+                wrist,
+                body.fwd,
+                &[
+                    (0.0, 0.037, 0.037, skin),
+                    (0.3, 0.042, 0.04, skin),
+                    (1.0, 0.029, 0.022, skin),
+                ],
+            ),
+            9,
         );
-        m.tube(lerp(sh, elbow, 0.58), elbow, 0.042, 0.038, 8, skin);
-        m.ellipsoid(elbow, [0.039, 0.039, 0.039], 3, 6, skin, 0.0);
-        m.tube(elbow, hand, 0.038, 0.03, 8, skin);
-        m.ellipsoid(hand, [0.042, 0.036, 0.042], 3, 6, rubber, 0.0);
+        m.ellipsoid_in(elbow, body.axes(), [0.037, 0.037, 0.037], 3, 6, skin);
+        // A gloved hand wrapped round the hood.
+        m.ellipsoid_in(
+            add(grip, bike.dir(-0.01, 0.01, 0.0)),
+            bike.axes(),
+            [0.055, 0.04, 0.042],
+            4,
+            7,
+            rubber,
+        );
     }
-    let neck = at(0.33, 1.38, -sway);
-    m.tube(shoulders, neck, 0.055, 0.05, 7, skin);
-    m.ellipsoid(at(0.38, 1.45, -sway), [0.1, 0.11, 0.09], 5, 8, skin, 0.0);
-    // Helmet with vents and a tail, sunglasses.
-    m.mat = MAT_GLOSS;
-    m.ellipsoid(
-        at(0.35, 1.51, -sway),
-        [0.165, 0.095, 0.122],
-        6,
-        10,
-        white,
-        0.0,
+
+    // Neck and head, held level to look up the road.
+    let hd = pose3([0.13, 0.15], [0.13, 0.14], [0.16, 0.12], stand, tuck);
+    let head = body.at(sc[0] + hd[0], sc[1] + hd[1], 0.0);
+    let hf = norm(body.dir(1.0, 0.12, 0.0));
+    let hu = cross(body.right, hf);
+    let head_axes = [hf, hu, body.right];
+    let neck_base = add(shoulders, scale(back_dir, 0.02));
+    m.loft(
+        &limb(
+            neck_base,
+            add(head, scale(hu, -0.04)),
+            body.right,
+            &[(0.0, 0.055, 0.06, skin), (1.0, 0.048, 0.052, skin)],
+        ),
+        8,
     );
-    m.ellipsoid(at(0.25, 1.5, -sway), [0.1, 0.06, 0.09], 4, 8, white, 0.0);
-    for z in [-0.05f32, 0.0, 0.05] {
-        m.ellipsoid(
-            at(0.36, 1.585, z - sway),
-            [0.11, 0.022, 0.014],
-            3,
-            6,
-            [0.02, 0.02, 0.022],
-            0.0,
-        );
-    }
-    m.ellipsoid(at(0.36, 1.56, -sway), [0.13, 0.05, 0.04], 3, 6, jersey, 0.0);
-    m.ellipsoid(
-        at(0.465, 1.46, -sway),
-        [0.03, 0.028, 0.085],
+    m.ellipsoid_in(head, head_axes, [0.095, 0.108, 0.078], 6, 10, skin);
+    m.ellipsoid_in(
+        add(head, add(scale(hf, 0.035), scale(hu, -0.05))),
+        head_axes,
+        [0.075, 0.062, 0.068],
+        4,
+        8,
+        skin,
+    );
+    m.ellipsoid_in(
+        add(head, add(scale(hf, 0.098), scale(hu, -0.015))),
+        head_axes,
+        [0.022, 0.025, 0.016],
         3,
-        7,
-        [0.015, 0.015, 0.02],
-        0.0,
+        5,
+        skin,
     );
+    // Helmet with vents and a tail, and sunglasses.
+    let on_head = |f: f32, u: f32, r: f32| {
+        add(
+            head,
+            add(scale(hf, f), add(scale(hu, u), scale(body.right, r))),
+        )
+    };
+    let dark = [0.02, 0.02, 0.022];
+    let lens = [0.015, 0.015, 0.02];
+    // (forward, up, right of the head's centre), radii, colour.
+    let parts: [((f32, f32, f32), V3, V3); 7] = [
+        ((-0.012, 0.045, 0.0), [0.145, 0.088, 0.108], white),
+        ((-0.1, 0.03, 0.0), [0.075, 0.05, 0.078], white),
+        ((0.0, 0.125, -0.042), [0.095, 0.018, 0.012], dark),
+        ((0.0, 0.127, 0.0), [0.095, 0.018, 0.012], dark),
+        ((0.0, 0.125, 0.042), [0.095, 0.018, 0.012], dark),
+        ((0.0, 0.104, 0.0), [0.115, 0.045, 0.035], jersey),
+        ((0.08, 0.002, 0.0), [0.024, 0.026, 0.08], lens),
+    ];
+    m.mat = MAT_GLOSS;
+    for ((f, u, r), radii, col) in parts {
+        m.ellipsoid_in(on_head(f, u, r), head_axes, radii, 5, 9, col);
+    }
     m.mat = MAT_MATT;
     m
 }
 
 impl Mesh {
-    /// Small box centred on `c`, aligned with the rider.
-    fn cuboid_at(&mut self, c: V3, p: &RiderPose, half: V3, col: V3) {
+    /// Small box centred on `c`, aligned with `p`.
+    fn cuboid_at(&mut self, c: V3, p: &Frame, half: V3, col: V3) {
         let corner = |x: f32, y: f32, z: f32| {
             add(
                 c,
@@ -1227,6 +1554,10 @@ mod tests {
             crank: 1.0,
             wheel: 0.4,
             jersey: [0.8, 0.2, 0.05],
+            stand: 0.0,
+            tuck: 0.0,
+            effort: 1.0,
+            time: 3.0,
         };
         let r = rider(&pose);
         assert!(r.v.iter().all(|v| v.is_finite()));
@@ -1246,6 +1577,73 @@ mod tests {
             assert_eq!(first[9], MAT_MATT);
             assert!(m.v.chunks(VERTEX_STRIDE).any(|v| v[9] == MAT_LEAF));
         }
+    }
+
+    fn pose(crank: f32, stand: f32, tuck: f32) -> RiderPose {
+        RiderPose {
+            pos: [0.0; 3],
+            fwd: [0.0, 0.0, -1.0],
+            up: [0.0, 1.0, 0.0],
+            right: [1.0, 0.0, 0.0],
+            crank,
+            wheel: 0.0,
+            jersey: [0.8, 0.2, 0.05],
+            stand,
+            tuck,
+            effort: 1.0,
+            time: 0.0,
+        }
+    }
+
+    /// Where the right shoe's lowest point is, forward of the bottom bracket.
+    fn right_foot_forward(crank: f32) -> f32 {
+        let r = rider(&pose(crank, 0.0, 0.0));
+        // The shoes are the only white parts below the wheel hubs on the
+        // right of the bike (x > 0.07).
+        let feet: Vec<&[f32]> =
+            r.v.chunks(VERTEX_STRIDE)
+                .filter(|v| v[1] < 0.6 && v[0] > 0.07 && v[6] > 0.7 && v[9] == MAT_GLOSS)
+                .collect();
+        assert!(!feet.is_empty());
+        -feet.iter().map(|v| v[2]).sum::<f32>() / feet.len() as f32
+    }
+
+    #[test]
+    fn pedals_turn_forwards() {
+        // Just past the top the right foot comes forward, and just past
+        // the bottom it goes back, as the pedals turn the way the wheels do.
+        assert!(right_foot_forward(0.3) > right_foot_forward(0.0));
+        assert!(
+            right_foot_forward(std::f32::consts::PI + 0.3)
+                < right_foot_forward(std::f32::consts::PI)
+        );
+    }
+
+    #[test]
+    fn every_pose_is_well_formed() {
+        for (stand, tuck) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (0.5, 0.5)] {
+            for k in 0..8 {
+                let r = rider(&pose(k as f32, stand, tuck));
+                assert_eq!(r.v.len() % (VERTEX_STRIDE * 3), 0);
+                assert!(r.v.iter().all(|v| v.is_finite()), "{stand} {tuck} {k}");
+            }
+        }
+    }
+
+    #[test]
+    fn ellipsoids_turn_with_their_axes() {
+        // Long along the first axis, wherever that points.
+        let mut m = Mesh::default();
+        let axes = [[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]];
+        m.ellipsoid_in([0.0; 3], axes, [0.3, 0.1, 0.05], 6, 12, [1.0; 3]);
+        let extent = |k: usize| {
+            m.v.chunks(VERTEX_STRIDE)
+                .map(|v| v[k].abs())
+                .fold(0.0f32, f32::max)
+        };
+        assert!((extent(2) - 0.3).abs() < 0.01);
+        assert!((extent(1) - 0.1).abs() < 0.01);
+        assert!((extent(0) - 0.05).abs() < 0.01);
     }
 
     #[test]

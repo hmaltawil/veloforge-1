@@ -407,6 +407,8 @@ pub struct GpuWorld {
     time: f64,
     /// Side of the road a lake is on (+1 right, -1 left).
     water_side: f64,
+    /// Each rider's standing and tucking, easing between poses.
+    stances: Vec<[f32; 2]>,
 }
 
 impl Default for GpuWorld {
@@ -423,6 +425,7 @@ impl Default for GpuWorld {
             initialised: false,
             time: 0.0,
             water_side: 1.0,
+            stances: Vec::new(),
         }
     }
 }
@@ -645,6 +648,21 @@ impl GpuWorld {
             let right = sub(scale(flat_right, lc), scale(flat_up, ls));
             let (rx, rz, re) = lane(fig.d, fig.lateral);
             let pos = rp(rx, re + 0.02, rz);
+            // Stand on steep climbs and in sprints; crouch low when
+            // freewheeling fast downhill.
+            let (stand_to, tuck_to) = if fig.pedalling {
+                let climb = smoothstep(0.075, 0.095, grade as f32);
+                (climb.max(smoothstep(1.6, 2.0, fig.effort)), 0.0)
+            } else {
+                (0.0, smoothstep(10.0, 14.0, fig.speed as f32))
+            };
+            if self.stances.len() <= i {
+                self.stances.resize(i + 1, [stand_to, tuck_to]);
+            }
+            let k = 1.0 - (-dt as f32 * 2.5).exp();
+            let stance = &mut self.stances[i];
+            stance[0] += (stand_to - stance[0]) * k;
+            stance[1] += (tuck_to - stance[1]) * k;
             let j = fig.jersey;
             rider.extend(
                 mesh::rider(&mesh::RiderPose {
@@ -655,6 +673,10 @@ impl GpuWorld {
                     crank: fig.crank,
                     wheel: ((fig.d / 0.34) % std::f64::consts::TAU) as f32,
                     jersey: srgb(j.r(), j.g(), j.b()),
+                    stand: stance[0],
+                    tuck: stance[1],
+                    effort: fig.effort,
+                    time: (self.time % 3600.0) as f32,
                 })
                 .v,
             );
