@@ -77,6 +77,8 @@ veloforge --demo --workout cadence-builder   # any workout by its id
 veloforge --demo --pacer     # free ride alongside a pacer
 ```
 
+Rides with the simulated trainer (also under **Devices**) are practice: they are not saved to History or Progress, uploaded, or counted for segment records.
+
 ### Windows (test version)
 
 VeloForge also runs on Windows 10 and 11 (64-bit). This version is new: the app, 3D world, workouts, sounds and phone remote work, but connecting to trainers and heart rate straps over Bluetooth has not yet been tested on Windows. Reports are welcome.

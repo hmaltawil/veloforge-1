@@ -230,8 +230,18 @@ pub fn move_step(steps: &mut Vec<Step>, from: usize, to: usize) {
     }
 }
 
+/// The zone blocks: (zone, power as a share of FTP, seconds).
+const ZONE_BLOCKS: [(&str, f32, u32); 6] = [
+    ("Recovery", 0.5, 600),
+    ("Endurance", 0.65, 600),
+    ("Tempo", 0.83, 600),
+    ("Threshold", 0.98, 480),
+    ("VO2 max", 1.13, 180),
+    ("Anaerobic", 1.3, 60),
+];
+
 /// The blocks the palette adds.
-fn templates() -> [(&'static str, &'static str, Step); 6] {
+fn templates() -> [(&'static str, &'static str, Step); 5] {
     [
         (
             "Warm-up",
@@ -240,15 +250,6 @@ fn templates() -> [(&'static str, &'static str, Step); 6] {
                 secs: 600,
                 from: 0.45,
                 to: 0.75,
-                cadence: None,
-            },
-        ),
-        (
-            "Steady",
-            "10 minutes at 75% of FTP",
-            Step::Steady {
-                secs: 600,
-                power: 0.75,
                 cadence: None,
             },
         ),
@@ -389,6 +390,39 @@ impl Builder {
     }
 
     fn palette(&mut self, ui: &mut egui::Ui, steps: &mut Vec<Step>) {
+        // A steady block in each zone, coloured like it.
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("Zone").color(theme::TEXT_DIM));
+            for (k, (name, power, secs)) in ZONE_BLOCKS.iter().enumerate() {
+                let colour = zone_color(*power);
+                let button = egui::Button::new(
+                    RichText::new(format!("Z{}", k + 1))
+                        .color(Color32::BLACK)
+                        .strong(),
+                )
+                .fill(colour)
+                .corner_radius(6.0)
+                .min_size(Vec2::new(40.0, 0.0));
+                if ui
+                    .add(button)
+                    .on_hover_text(format!(
+                        "{name}: {} at {:.0}% of FTP, after the selected block",
+                        fmt_dur(*secs as f32),
+                        power * 100.0
+                    ))
+                    .clicked()
+                {
+                    self.insert(
+                        steps,
+                        Step::Steady {
+                            secs: *secs,
+                            power: *power,
+                            cadence: None,
+                        },
+                    );
+                }
+            }
+        });
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("Add").color(theme::TEXT_DIM));
             for (label, help, step) in templates() {
@@ -404,9 +438,7 @@ impl Builder {
                     .on_hover_text(format!("{help}, after the selected block"))
                     .clicked()
                 {
-                    let at = self.selected.map(|i| i + 1).unwrap_or(steps.len());
-                    steps.insert(at.min(steps.len()), step);
-                    self.selected = Some(at.min(steps.len() - 1));
+                    self.insert(steps, step);
                 }
             }
             ui.add_space(12.0);
@@ -425,6 +457,14 @@ impl Builder {
                 self.redo(steps);
             }
         });
+    }
+
+    /// Add `step` after the selected block (or at the end) and select it.
+    fn insert(&mut self, steps: &mut Vec<Step>, step: Step) {
+        let at = self.selected.map(|i| i + 1).unwrap_or(steps.len());
+        let at = at.min(steps.len());
+        steps.insert(at, step);
+        self.selected = Some(at);
     }
 
     fn chart(&mut self, ui: &mut egui::Ui, steps: &mut Vec<Step>, ftp: f32) {
@@ -494,6 +534,26 @@ impl Builder {
                 .interact_pointer_pos()
                 .and_then(|p| hit(&view, steps, p))
                 .map(|(i, _)| i);
+        }
+
+        // The zones' colours up the side, as a scale.
+        let mut lo = 0.0;
+        for (k, hi) in crate::charts::ZONE_STARTS
+            .iter()
+            .copied()
+            .chain([view.max])
+            .enumerate()
+        {
+            let hi = hi.min(view.max);
+            if hi > lo {
+                let bar = Rect::from_min_max(
+                    Pos2::new(rect.left() + 4.0, view.y(hi)),
+                    Pos2::new(rect.left() + 8.0, view.y(lo)),
+                );
+                let mid = if k == 0 { lo + 0.2 } else { (lo + hi) / 2.0 };
+                painter.rect_filled(bar, 1.0, zone_color(mid).gamma_multiply(0.85));
+            }
+            lo = hi;
         }
 
         // Grid: 50%, FTP and 150%, and the time along the bottom.
@@ -719,7 +779,11 @@ impl Builder {
                     if ui.button("Duplicate").on_hover_text("Ctrl+D").clicked() {
                         action = Some(Action::Duplicate(i));
                     }
-                    if ui.button("Delete").on_hover_text("Delete key").clicked() {
+                    if ui
+                        .button("Delete block")
+                        .on_hover_text("Delete key")
+                        .clicked()
+                    {
                         action = Some(Action::Delete(i));
                     }
                 });
@@ -874,16 +938,6 @@ fn drop_index(view: &View, steps: &[Step], moving: usize, x: f32) -> usize {
 fn draw_piece(painter: &egui::Painter, view: &View, pc: &Piece, selected: bool, alpha: f32) {
     let (x0, x1) = (view.x(pc.t0), view.x(pc.t1));
     let gap = if x1 - x0 > 6.0 { 0.75 } else { 0.0 };
-    let mut col = if pc.free {
-        Color32::from_rgb(110, 116, 128)
-    } else {
-        zone_color((pc.p0 + pc.p1) / 2.0)
-    };
-    if selected {
-        col = theme::mix(col, Color32::WHITE, 0.18);
-    }
-    let col = col.gamma_multiply(alpha);
-    let foot = col.gamma_multiply(0.55);
     let pts = [
         Pos2::new(x0 + gap, view.y(pc.p0)),
         Pos2::new(x1 - gap, view.y(pc.p1)),
@@ -891,11 +945,22 @@ fn draw_piece(painter: &egui::Painter, view: &View, pc: &Piece, selected: bool, 
         Pos2::new(x0 + gap, view.plot.bottom()),
     ];
     let mut mesh = egui::Mesh::default();
-    for (k, p) in pts.iter().enumerate() {
-        mesh.colored_vertex(*p, if k < 2 { col } else { foot });
-    }
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(0, 2, 3);
+    crate::charts::block_mesh(
+        &mut mesh,
+        (x0 + gap, x1 - gap),
+        (pc.p0, pc.p1),
+        |p| view.y(p),
+        view.plot.bottom(),
+        pc.free.then_some(0.5),
+        |c| {
+            let c = if selected {
+                theme::mix(c, Color32::WHITE, 0.18)
+            } else {
+                c
+            };
+            c.gamma_multiply(alpha)
+        },
+    );
     painter.add(Shape::mesh(mesh));
     if selected {
         painter.add(Shape::closed_line(

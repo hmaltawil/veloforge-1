@@ -268,14 +268,26 @@ impl Sim {
 
     fn step(&mut self, dt: f32, control: Option<Control>) -> Reading {
         self.t += dt;
+        // Like a rider: harder up hills, easier down them, and freewheeling
+        // down steep ones.
+        let coasting = matches!(control, Some(Control::Grade(g)) if g <= -4.0);
         let target = match control {
             Some(Control::Erg(w)) => w as f32,
+            _ if coasting => 0.0,
             Some(Control::Grade(g)) => self.effort * (1.0 + g * 0.04).clamp(0.4, 1.8),
             None => self.effort,
         };
         self.power += (target - self.power) * (dt * 1.5).min(1.0);
-        let power = (self.power + self.noise() * 6.0).max(0.0);
-        let cadence = (88.0 + self.noise() * 2.0 + (self.t * 0.05).sin() * 3.0).max(0.0);
+        let power = if coasting {
+            0.0
+        } else {
+            (self.power + self.noise() * 6.0).max(0.0)
+        };
+        let cadence = if coasting {
+            0.0
+        } else {
+            (88.0 + self.noise() * 2.0 + (self.t * 0.05).sin() * 3.0).max(0.0)
+        };
         let hr_target = 62.0 + power * 0.42;
         self.hr += (hr_target - self.hr) * (dt * 0.04).min(1.0);
         Reading {

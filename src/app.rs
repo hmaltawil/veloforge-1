@@ -117,6 +117,8 @@ enum Modal {
     Saved(Box<Summary>),
     ConfirmDiscard,
     ConfirmDelete(usize),
+    /// A custom workout: its id and name.
+    ConfirmDeleteWorkout(String, String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -211,6 +213,9 @@ pub struct App {
     ride_efforts: Vec<crate::segment::Effort>,
     /// The latest segment result, shown in the banner for a while.
     seg_flash: Option<(Vec<BannerLine>, Instant)>,
+    /// The ride's power has come from the simulated trainer: practice, not
+    /// a real ride, so it is not saved.
+    ride_simulated: bool,
     last_checkpoint: Instant,
     /// Rides whose power curve could not be computed (missing file).
     curve_failed: std::collections::HashSet<String>,
@@ -326,6 +331,7 @@ impl App {
             seg_tracker: Default::default(),
             ride_efforts: Vec::new(),
             seg_flash: None,
+            ride_simulated: false,
             egui_ctx: cc.egui_ctx.clone(),
             remote: None,
             remote_url: String::new(),
@@ -516,6 +522,7 @@ impl App {
         self.seg_tracker.reset();
         self.ride_efforts.clear();
         self.seg_flash = None;
+        self.ride_simulated = false;
     }
 
     /// The selected route's segments.
@@ -1129,6 +1136,11 @@ impl App {
         if let Some(c) = control {
             self.dev.send(Cmd::Control(c));
         }
+        if self.ride.state == ride::State::Running
+            && self.metrics.power.as_ref().is_some_and(|m| m.src == SIM_ID)
+        {
+            self.ride_simulated = true;
+        }
         self.track_segments(live.power, live.hr);
         let after = self.ride.workout_time() as f32;
         if self.ride.mode == Mode::Workout && after > before {
@@ -1201,6 +1213,14 @@ impl App {
     fn finish_ride(&mut self) {
         if self.ride.samples.len() < 10 {
             self.notify("Ride too short to save");
+            self.reset_ride();
+            return;
+        }
+        if self.ride_simulated || self.demo {
+            // Practice with the simulator: no History, Progress, uploads or
+            // segment records.
+            self.log_line("Finished a simulated ride (not saved)".into());
+            self.notify("Simulated ride finished: practice rides are not saved");
             self.reset_ride();
             return;
         }
@@ -1601,6 +1621,7 @@ impl App {
             "plan_date": self.ride.plan_date,
             "started": self.ride.started,
             "route_id": self.routes[self.route_idx].id,
+            "simulated": self.ride_simulated || self.demo,
         });
         let res = std::fs::create_dir_all(&self.paths.activities)
             .and_then(|_| std::fs::write(&tcx, self.ride.to_tcx()))
@@ -1628,7 +1649,7 @@ impl App {
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
         let activity = match crate::activity::parse_tcx(&xml) {
-            Ok(a) if a.samples.len() >= 10 => a,
+            Ok(a) if a.samples.len() >= 10 && info["simulated"].as_bool() != Some(true) => a,
             _ => {
                 self.clear_checkpoint();
                 return;
@@ -2910,15 +2931,20 @@ impl App {
                             self.ride.start();
                         }
                     }
-                    if ui
+                    let finish = ui
                         .add(
                             egui::Button::new(
                                 RichText::new("Finish").color(Color32::WHITE),
                             )
                             .fill(Color32::from_rgb(44, 112, 196)),
                         )
-                        .clicked()
-                    {
+                        .on_hover_text(if self.ride_simulated || self.demo {
+                            "End the ride. Rides with the simulated trainer are practice: they \
+                             are not saved."
+                        } else {
+                            "End and save the ride"
+                        });
+                    if finish.clicked() {
                         self.finish_ride();
                     }
                     if ui.button("Discard").clicked() {
@@ -3982,10 +4008,12 @@ impl App {
                     if ui.selectable_label(self.editing, "Edit").clicked() {
                         self.editing = !self.editing;
                     }
-                    if ui.button("Delete").clicked() {
-                        self.store.custom_workouts.retain(|c| c.id != id);
-                        self.selected_workout = None;
-                        self.mark_dirty();
+                    if ui
+                        .button("Delete workout")
+                        .on_hover_text("Delete this whole workout (asks first)")
+                        .clicked()
+                    {
+                        self.modal = Some(Modal::ConfirmDeleteWorkout(id.clone(), w.name.clone()));
                     }
                 } else if ui.button("Copy to custom").clicked() {
                     let mut c = w.clone();
@@ -3999,6 +4027,13 @@ impl App {
                 }
             });
             ui.separator();
+            // The workout must still be there (and in the same place).
+            let custom = custom.filter(|&ci| {
+                self.store
+                    .custom_workouts
+                    .get(ci)
+                    .is_some_and(|c| c.id == id)
+            });
             match (custom, self.editing) {
                 (Some(ci), true) => {
                     if self.workout_editor(ui, ci, &id, ftp) {
@@ -5075,7 +5110,7 @@ impl App {
                         self.dev.send(Cmd::SimEnable(!sim_on));
                     }
                     ui.label("Rider effort");
-                    if ui.add(egui::Slider::new(&mut self.sim_effort, 50.0..=450.0).suffix(" W")).changed() {
+                    if ui.add(egui::Slider::new(&mut self.sim_effort, 50.0..=1500.0).logarithmic(true).suffix(" W")).changed() {
                         self.dev.send(Cmd::SimEffort(self.sim_effort));
                     }
                 });
@@ -5828,6 +5863,34 @@ impl App {
                                     }
                                     self.mark_dirty();
                                 }
+                                close = true;
+                            }
+                            if ui.button("Keep").clicked() {
+                                close = true;
+                            }
+                        });
+                    });
+            }
+            Some(Modal::ConfirmDeleteWorkout(id, name)) => {
+                let (id, name) = (id.clone(), name.clone());
+                egui::Window::new("Delete workout?")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+                    .show(ctx, |ui| {
+                        ui.label(format!("Delete the workout “{name}”?"));
+                        ui.label(
+                            RichText::new("This removes the whole workout, not just one block.")
+                                .weak(),
+                        );
+                        ui.horizontal(|ui| {
+                            if ui.button("Delete workout").clicked() {
+                                self.store.custom_workouts.retain(|c| c.id != id);
+                                if self.selected_workout.as_deref() == Some(id.as_str()) {
+                                    self.selected_workout = None;
+                                }
+                                self.editing = false;
+                                self.mark_dirty();
                                 close = true;
                             }
                             if ui.button("Keep").clicked() {

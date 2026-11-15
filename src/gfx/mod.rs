@@ -410,7 +410,7 @@ pub struct GpuWorld {
     /// Side of the road a lake is on (+1 right, -1 left).
     water_side: f64,
     /// Each rider's standing and tucking, easing between poses.
-    stances: Vec<[f32; 2]>,
+    stances: Vec<Stance>,
 }
 
 impl Default for GpuWorld {
@@ -429,6 +429,49 @@ impl Default for GpuWorld {
             water_side: 1.0,
             stances: Vec::new(),
         }
+    }
+}
+
+/// How a rider sits on the bike, easing from one pose to the next.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Stance {
+    /// 0 seated .. 1 standing; 0 .. 1 crouched low.
+    pub stand: f32,
+    pub tuck: f32,
+    /// Seconds of hard effort, and of steep climbing, so far.
+    hard: f32,
+    steep: f32,
+}
+
+impl Stance {
+    /// Move on `dt` seconds for a rider on a `grade` (a fraction) at
+    /// `speed` m/s, riding at `effort` × FTP.
+    pub fn update(&mut self, dt: f32, grade: f32, speed: f32, effort: f32, pedalling: bool) {
+        self.hard = if pedalling && effort >= 1.5 {
+            self.hard + dt
+        } else {
+            0.0
+        };
+        self.steep = if pedalling && grade >= 0.08 {
+            self.steep + dt
+        } else {
+            0.0
+        };
+        // Out of the saddle to launch a sprint, and now and then on a steep
+        // climb: 20 seconds up, then a minute and more seated.
+        let sprint = self.hard > 0.0 && self.hard < 15.0;
+        let climb = self.steep > 0.0 && self.steep % 90.0 < 20.0;
+        let stand_to = if sprint || climb { 1.0 } else { 0.0 };
+        // Low and narrow going fast downhill, or freewheeling fast.
+        let fast = smoothstep(10.0, 13.0, speed);
+        let tuck_to = if !pedalling || grade <= -0.03 {
+            fast * (1.0 - stand_to)
+        } else {
+            0.0
+        };
+        let k = 1.0 - (-dt * 2.5).exp();
+        self.stand += (stand_to - self.stand) * k;
+        self.tuck += (tuck_to - self.tuck) * k;
     }
 }
 
@@ -649,21 +692,18 @@ impl GpuWorld {
             let right = sub(scale(flat_right, lc), scale(flat_up, ls));
             let (rx, rz, re) = lane(fig.d, fig.lateral);
             let pos = rp(rx, re + 0.02, rz);
-            // Stand on steep climbs and in sprints; crouch low when
-            // freewheeling fast downhill.
-            let (stand_to, tuck_to) = if fig.pedalling {
-                let climb = smoothstep(0.075, 0.095, grade as f32);
-                (climb.max(smoothstep(1.6, 2.0, fig.effort)), 0.0)
-            } else {
-                (0.0, smoothstep(10.0, 14.0, fig.speed as f32))
-            };
             if self.stances.len() <= i {
-                self.stances.resize(i + 1, [stand_to, tuck_to]);
+                self.stances.resize(i + 1, Stance::default());
             }
-            let k = 1.0 - (-dt as f32 * 2.5).exp();
             let stance = &mut self.stances[i];
-            stance[0] += (stand_to - stance[0]) * k;
-            stance[1] += (tuck_to - stance[1]) * k;
+            stance.update(
+                dt as f32,
+                grade as f32,
+                fig.speed as f32,
+                fig.effort,
+                fig.pedalling,
+            );
+            let stance = *stance;
             let j = fig.jersey;
             rider.extend(
                 mesh::rider(&mesh::RiderPose {
@@ -674,8 +714,8 @@ impl GpuWorld {
                     crank: fig.crank,
                     wheel: ((fig.d / 0.34) % std::f64::consts::TAU) as f32,
                     jersey: srgb(j.r(), j.g(), j.b()),
-                    stand: stance[0],
-                    tuck: stance[1],
+                    stand: stance.stand,
+                    tuck: stance.tuck,
                     effort: fig.effort,
                     time: (self.time % 3600.0) as f32,
                 })
@@ -2689,6 +2729,50 @@ impl GlState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ride `secs` seconds in the same conditions.
+    fn hold(s: &mut Stance, secs: f32, grade: f32, speed: f32, effort: f32, pedalling: bool) {
+        for _ in 0..(secs * 10.0) as usize {
+            s.update(0.1, grade, speed, effort, pedalling);
+        }
+    }
+
+    #[test]
+    fn riders_stand_now_and_then_on_steep_climbs() {
+        let mut s = Stance::default();
+        hold(&mut s, 10.0, 0.1, 4.0, 0.9, true);
+        assert!(s.stand > 0.9, "up out of the saddle: {}", s.stand);
+        hold(&mut s, 30.0, 0.1, 4.0, 0.9, true);
+        assert!(s.stand < 0.1, "then seated again: {}", s.stand);
+        // A gentle climb: seated throughout.
+        let mut s = Stance::default();
+        hold(&mut s, 60.0, 0.05, 6.0, 0.9, true);
+        assert!(s.stand < 0.01);
+    }
+
+    #[test]
+    fn hard_efforts_stand_only_at_the_start() {
+        let mut s = Stance::default();
+        hold(&mut s, 8.0, 0.0, 12.0, 2.2, true);
+        assert!(s.stand > 0.9, "sprinting: {}", s.stand);
+        // Holding a lot of power for long is done seated.
+        hold(&mut s, 30.0, 0.0, 12.0, 2.2, true);
+        assert!(s.stand < 0.1, "{}", s.stand);
+    }
+
+    #[test]
+    fn fast_descents_are_ridden_low() {
+        let mut s = Stance::default();
+        hold(&mut s, 5.0, -0.06, 15.0, 1.0, true);
+        assert!(s.tuck > 0.9, "pedalling downhill fast: {}", s.tuck);
+        let mut s = Stance::default();
+        hold(&mut s, 5.0, 0.0, 14.0, 0.0, false);
+        assert!(s.tuck > 0.9, "freewheeling fast: {}", s.tuck);
+        // Fast on the flat while pedalling: upright.
+        let mut s = Stance::default();
+        hold(&mut s, 5.0, 0.0, 14.0, 1.0, true);
+        assert!(s.tuck < 0.01);
+    }
 
     #[test]
     fn mountain_ring_is_well_formed() {

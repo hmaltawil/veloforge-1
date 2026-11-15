@@ -16,6 +16,51 @@ pub fn zone_color(frac: f32) -> Color32 {
     }
 }
 
+/// Power zone boundaries as shares of FTP, matching `zone_color`.
+pub const ZONE_STARTS: [f32; 5] = [0.56, 0.76, 0.91, 1.06, 1.21];
+
+/// A workout block from `x0` to `x1`, rising from power `p0` to `p1` (shares
+/// of FTP) above `bottom`, in its zone's colour. A ramp is drawn in thin
+/// slices so its colour changes as it crosses zones. `tint` adjusts the
+/// colour (selection, done, dimmed); free-ride blocks are grey at `free`.
+#[allow(clippy::too_many_arguments)]
+pub fn block_mesh(
+    mesh: &mut Mesh,
+    (x0, x1): (f32, f32),
+    (p0, p1): (f32, f32),
+    y: impl Fn(f32) -> f32,
+    bottom: f32,
+    free: Option<f32>,
+    tint: impl Fn(Color32) -> Color32,
+) {
+    let slices = if free.is_none() && (p1 - p0).abs() > 1e-3 {
+        (((x1 - x0) / 3.0).ceil() as usize).clamp(1, 400)
+    } else {
+        1
+    };
+    for k in 0..slices {
+        let (u0, u1) = (k as f32 / slices as f32, (k + 1) as f32 / slices as f32);
+        let (a, b) = (p0 + (p1 - p0) * u0, p0 + (p1 - p0) * u1);
+        let (xa, xb) = (x0 + (x1 - x0) * u0, x0 + (x1 - x0) * u1);
+        let col = tint(match free {
+            Some(_) => Color32::from_rgb(110, 116, 128),
+            None => zone_color((a + b) / 2.0),
+        });
+        let foot = col.gamma_multiply(0.8);
+        let (ha, hb) = match free {
+            Some(h) => (h, h),
+            None => (a, b),
+        };
+        let base = mesh.vertices.len() as u32;
+        mesh.colored_vertex(Pos2::new(xa, y(ha)), col);
+        mesh.colored_vertex(Pos2::new(xb, y(hb)), col);
+        mesh.colored_vertex(Pos2::new(xb, bottom), foot);
+        mesh.colored_vertex(Pos2::new(xa, bottom), foot);
+        mesh.add_triangle(base, base + 1, base + 2);
+        mesh.add_triangle(base, base + 2, base + 3);
+    }
+}
+
 pub fn category_color(c: Category) -> Color32 {
     match c {
         Category::Recovery => zone_color(0.5),
@@ -84,24 +129,16 @@ pub fn workout_profile(
         0.0
     };
     for s in segs {
-        let (a, b) = (s.from * intensity, s.to * intensity);
-        let mut col = if s.free {
-            Color32::from_rgb(110, 116, 128)
-        } else {
-            zone_color((s.from + s.to) / 2.0)
-        };
-        if progress.is_some_and(|p| p >= s.end()) {
-            col = col.gamma_multiply(0.45);
-        }
-        let (h0, h1) = if s.free { (0.5, 0.5) } else { (a, b) };
-        let base = mesh.vertices.len() as u32;
-        let foot = col.gamma_multiply(0.55);
-        mesh.colored_vertex(Pos2::new(x(s.start) + gap, y(h0)), col);
-        mesh.colored_vertex(Pos2::new(x(s.end()) - gap, y(h1)), col);
-        mesh.colored_vertex(Pos2::new(x(s.end()) - gap, plot.bottom()), foot);
-        mesh.colored_vertex(Pos2::new(x(s.start) + gap, plot.bottom()), foot);
-        mesh.add_triangle(base, base + 1, base + 2);
-        mesh.add_triangle(base, base + 2, base + 3);
+        let done = progress.is_some_and(|p| p >= s.end());
+        block_mesh(
+            &mut mesh,
+            (x(s.start) + gap, x(s.end()) - gap),
+            (s.from * intensity, s.to * intensity),
+            y,
+            plot.bottom(),
+            s.free.then_some(0.5),
+            |c| if done { c.gamma_multiply(0.45) } else { c },
+        );
     }
     painter.add(Shape::mesh(mesh));
     // FTP line.

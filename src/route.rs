@@ -137,9 +137,14 @@ impl Route {
         }
     }
 
-    /// Road grade in percent at distance `d`.
+    /// Road grade in percent at distance `d` (any lap).
     pub fn grade(&self, d: f64) -> f64 {
         let h = 15.0;
+        if self.is_loop() {
+            // The road carries on round the start line.
+            return (self.at(d + h).ele - self.at(d - h).ele) / (2.0 * h) * 100.0;
+        }
+        let d = d.rem_euclid(self.length);
         let mut a = d - h;
         let mut b = d + h;
         // Do not average across the start/finish seam of a non-loop route.
@@ -533,6 +538,23 @@ pub fn parse_gpx(xml: &str, id: &str, fallback_name: &str) -> Result<GpxRoute> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_grade_is_the_same_on_every_lap() {
+        for r in builtin() {
+            for d in [100.0, 1234.0, r.length * 0.5, r.length - 5.0] {
+                let first = r.grade(d);
+                for lap in 1..4 {
+                    let later = r.grade(d + lap as f64 * r.length);
+                    assert!(
+                        (first - later).abs() < 1e-6,
+                        "{} at {d}: {first} vs {later}",
+                        r.name
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn builtin_loops_close() {
