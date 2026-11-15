@@ -29,6 +29,8 @@ pub struct Settings {
     pub trainer_speed: bool,
     /// Riding close behind the pacer or a ghost saves effort.
     pub drafting: bool,
+    /// Ride workouts as if the road were flat.
+    pub flat_workouts: bool,
     /// Metric or imperial units on screen.
     pub units: crate::units::Units,
     pub max_hr: f32,
@@ -107,6 +109,7 @@ impl Default for Settings {
             view_3d: true,
             trainer_speed: true,
             drafting: true,
+            flat_workouts: false,
             units: Default::default(),
             max_hr: 185.0,
             lthr: 0.0,

@@ -234,6 +234,7 @@ mod tests {
             crr: 0.004,
             drafting: false,
             trainer_speed: true,
+            flat_workouts: false,
         };
         for i in 0..900 {
             let live = Live {

@@ -574,13 +574,25 @@ pub fn zone_bar(painter: &Painter, rect: Rect, secs: &[f32], color: impl Fn(usiz
     }
 }
 
-/// Whole-ride chart: elevation (shaded), power (white, 30 s average over a
-/// faint raw trace) and heart rate (red, right axis).
+/// A workout step drawn behind a ride's power: start and end in seconds
+/// into the ride, target watts at each end, and whether it was free ride.
+pub struct TargetBlock {
+    pub start: f32,
+    pub end: f32,
+    pub from: f32,
+    pub to: f32,
+    pub free: bool,
+}
+
+/// Whole-ride chart: elevation (shaded) or, for a workout, its target steps
+/// (coloured by zone), with power (white, 30 s average over a faint raw
+/// trace) and heart rate (red, right axis).
 pub fn ride_chart(
     painter: &Painter,
     rect: Rect,
     samples: &[crate::ride::Sample],
     ftp: f32,
+    targets: Option<&[TargetBlock]>,
     bg: Color32,
 ) {
     painter.rect_filled(rect, 6.0, bg);
@@ -597,6 +609,44 @@ pub fn ride_chart(
     }
     let inner = rect.shrink2(eframe::egui::vec2(46.0, 26.0));
     let x = |i: usize| inner.left() + i as f32 / (n - 1) as f32 * inner.width();
+    let step = (n / 800).max(1);
+    let idx: Vec<usize> = (0..n).step_by(step).chain([n - 1]).collect();
+    let power: Vec<f32> = samples.iter().map(|s| s.power).collect();
+    let top = targets
+        .unwrap_or_default()
+        .iter()
+        .filter(|b| b.start < n as f32)
+        .map(|b| b.from.max(b.to))
+        .fold(ftp * 1.3, f32::max);
+    let pmax = power.iter().copied().fold(top, f32::max) * 1.05;
+    let yp = |p: f32| inner.bottom() - (p / pmax).clamp(0.0, 1.0) * inner.height();
+    if let Some(blocks) = targets {
+        // The workout's steps, up to where the ride stopped.
+        let end = (n - 1) as f32;
+        let xt = |t: f32| inner.left() + (t / end).clamp(0.0, 1.0) * inner.width();
+        for b in blocks.iter().filter(|b| b.start < end) {
+            let e = b.end.min(end);
+            let to = b.from + (b.to - b.from) * ((e - b.start) / (b.end - b.start).max(1e-3));
+            let (from, to) = if b.free {
+                (ftp * 0.5, ftp * 0.5)
+            } else {
+                (b.from, to)
+            };
+            let col = if b.free {
+                Color32::from_white_alpha(18)
+            } else {
+                let c = zone_color(0.5 * (from + to) / ftp.max(1.0));
+                Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 70)
+            };
+            let pts = vec![
+                Pos2::new(xt(b.start), inner.bottom()),
+                Pos2::new(xt(b.start), yp(from)),
+                Pos2::new(xt(e), yp(to)),
+                Pos2::new(xt(e), inner.bottom()),
+            ];
+            painter.add(Shape::convex_polygon(pts, col, Stroke::NONE));
+        }
+    }
     // Elevation backdrop.
     let (lo, hi) = samples.iter().fold((f64::MAX, f64::MIN), |(a, b), s| {
         (a.min(s.ele), b.max(s.ele))
@@ -605,9 +655,7 @@ pub fn ride_chart(
     let ye = |e: f64| inner.bottom() - ((e - lo) / span) as f32 * inner.height() * 0.45;
     let mut mesh = Mesh::default();
     let ecol = Color32::from_rgb(52, 66, 58);
-    let step = (n / 800).max(1);
-    let idx: Vec<usize> = (0..n).step_by(step).chain([n - 1]).collect();
-    for w in idx.windows(2) {
+    for w in idx.windows(2).filter(|_| targets.is_none()) {
         let base = mesh.vertices.len() as u32;
         mesh.colored_vertex(Pos2::new(x(w[0]), ye(samples[w[0]].ele)), ecol);
         mesh.colored_vertex(Pos2::new(x(w[1]), ye(samples[w[1]].ele)), ecol);
@@ -618,9 +666,6 @@ pub fn ride_chart(
     }
     painter.add(Shape::mesh(mesh));
 
-    let power: Vec<f32> = samples.iter().map(|s| s.power).collect();
-    let pmax = power.iter().copied().fold(ftp * 1.3, f32::max) * 1.05;
-    let yp = |p: f32| inner.bottom() - (p / pmax).clamp(0.0, 1.0) * inner.height();
     let yh = |h: f32| inner.bottom() - ((h - 50.0) / 150.0).clamp(0.0, 1.0) * inner.height();
     let grid = Color32::from_white_alpha(22);
     let label = |p: Pos2, a: Align2, t: String, c: Color32| {
@@ -722,11 +767,16 @@ pub fn ride_chart(
         "Heart rate (bpm)".into(),
         Color32::from_rgb(230, 70, 90),
     );
+    let (what, col) = if targets.is_some() {
+        ("Workout target", Color32::from_rgb(240, 196, 90))
+    } else {
+        ("Elevation", Color32::from_rgb(110, 150, 120))
+    };
     label(
         Pos2::new(rect.left() + 285.0, rect.top() + 6.0),
         Align2::LEFT_TOP,
-        "Elevation".into(),
-        Color32::from_rgb(110, 150, 120),
+        what.into(),
+        col,
     );
 }
 

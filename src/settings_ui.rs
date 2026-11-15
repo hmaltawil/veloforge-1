@@ -421,6 +421,17 @@ impl App {
                         .changed()
                 },
             );
+            changed |= row(
+                ui,
+                "Workouts",
+                "The trainer always holds a workout's power. On the flat, the route's hills \
+                 don't change your speed, distance or climbing either, so rides of the same \
+                 workout compare. Free-ride steps then ride flat too.",
+                |ui| {
+                    ui.checkbox(&mut s.flat_workouts, "Ride workouts on the flat")
+                        .changed()
+                },
+            );
         });
         card(ui, "Advanced: virtual speed", |ui| {
             ui.label(

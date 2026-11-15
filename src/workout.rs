@@ -733,7 +733,7 @@ pub fn builtin() -> Vec<Workout> {
         w("ramp-test", "Ramp Test", Test, "Ride each 1-minute step until you can't hold it, then press Finish. FTP is estimated as 75% of your best minute.", {
             let mut s = vec![ramp(5 * MIN, 0.40, 0.50)];
             for i in 0..25 {
-                s.push(Step::Steady { secs: MIN, power: 0.40 + 0.06 * i as f32, cadence: None });
+                s.push(Step::Steady { secs: MIN, power: 0.50 + 0.06 * i as f32, cadence: None });
             }
             s
         }),

@@ -83,6 +83,7 @@ fn ride_one(
         crr: s.crr,
         trainer_speed: false,
         drafting: false,
+        flat_workouts: false,
     };
     let segs = segment::for_route(route);
     let mut tracker = segment::Tracker::default();

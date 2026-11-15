@@ -125,6 +125,8 @@ Shortcuts: **Space** start/pause, **↑/↓** intensity / slope / difficulty / t
 
 **Units**: metric or imperial, chosen on the welcome screen or in **Settings → Riding**. Everything is stored in metric, so you can switch at any time.
 
+**Workouts on a route**: the trainer holds each step's power whatever the road does, while your speed still follows the hills. Tick **Settings → Riding → Ride workouts on the flat** to have speed, distance and climbing ignore the hills too, so rides of the same workout compare. A finished workout's chart shows its target steps behind your power.
+
 **Speed** comes from your trainer's wheel speed when it reports one, or is calculated from your power, weight and the gradient. Choose which in **Settings → Riding**.
 
 ### Workouts and plans

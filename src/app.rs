@@ -461,6 +461,30 @@ impl App {
         v
     }
 
+    /// A saved workout ride's target steps in watts, with the FTP the ride
+    /// was done at (worked out from its stored training load).
+    fn ride_targets(&self, s: &Summary) -> Option<Vec<charts::TargetBlock>> {
+        let w = self.find_workout(s.workout_id.as_deref()?)?;
+        let ifac = (s.tss * 36.0 / s.secs.max(1.0)).sqrt();
+        let ftp = if ifac > 0.05 {
+            s.np / ifac
+        } else {
+            self.store.settings.ftp
+        };
+        Some(
+            w.segments()
+                .iter()
+                .map(|g| charts::TargetBlock {
+                    start: g.start,
+                    end: g.end(),
+                    from: g.from * ftp,
+                    to: g.to * ftp,
+                    free: g.free,
+                })
+                .collect(),
+        )
+    }
+
     fn find_workout(&self, id: &str) -> Option<Workout> {
         self.store
             .custom_workouts
@@ -1166,6 +1190,7 @@ impl App {
             crr: s.crr,
             trainer_speed: s.trainer_speed,
             drafting: s.drafting,
+            flat_workouts: s.flat_workouts,
         };
         let route = &self.routes[self.route_idx];
         let before = self.ride.workout_time() as f32;
@@ -5707,7 +5732,15 @@ impl App {
                                     Vec2::new(ui.available_width(), 230.0),
                                     Sense::hover(),
                                 );
-                                charts::ride_chart(ui.painter(), r, &a.samples, ftp, CARD);
+                                let targets = self.ride_targets(s);
+                                charts::ride_chart(
+                                    ui.painter(),
+                                    r,
+                                    &a.samples,
+                                    ftp,
+                                    targets.as_deref(),
+                                    CARD,
+                                );
                                 ui.add_space(6.0);
                                 ui.columns(2, |cols| {
                                     zone_breakdown(&mut cols[0], s);

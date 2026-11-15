@@ -108,6 +108,9 @@ pub struct Physics {
     pub trainer_speed: bool,
     /// Riding close behind your companion saves effort, as outdoors.
     pub drafting: bool,
+    /// Ride workouts as if the road were flat: speed, distance and climbing
+    /// then depend on power alone, so rides of a workout compare.
+    pub flat_workouts: bool,
 }
 
 /// The share of air drag saved riding `gap` metres behind another rider:
@@ -524,7 +527,12 @@ impl Ride {
         auto_pause: bool,
     ) -> Option<Control> {
         self.clock += dt;
-        let road_grade = route.grade(self.route_pos());
+        let flat = phys.flat_workouts && self.mode == Mode::Workout;
+        let road_grade = if flat {
+            0.0
+        } else {
+            route.grade(self.route_pos())
+        };
         let running = self.state == State::Running;
         if running {
             let trainer = live.speed_kmh.filter(|_| phys.trainer_speed);
@@ -594,7 +602,7 @@ impl Ride {
                 if let Some(prev) = self.last_ele {
                     // Ignore the jump when a point-to-point route wraps to its start.
                     let climb = ele - prev;
-                    if climb > 0.0 && climb < 5.0 {
+                    if climb > 0.0 && climb < 5.0 && !flat {
                         self.ascent += climb;
                     }
                 }
@@ -930,6 +938,7 @@ mod tests {
             crr: 0.004,
             trainer_speed: true,
             drafting: true,
+            flat_workouts: false,
         }
     }
 
@@ -1280,6 +1289,55 @@ mod tests {
         // A third of the drag at 10 m/s is about 0.7% of gradient.
         let g = draft_grade(0.3, 10.0, &phys());
         assert!((0.6..0.8).contains(&g), "{g}");
+    }
+
+    #[test]
+    fn flat_workouts_ignore_the_hills() {
+        // Col Loop climbs for kilometres from about 1 km in.
+        let r = &route::builtin()[2];
+        let wk = Workout {
+            id: "t".into(),
+            name: "t".into(),
+            description: String::new(),
+            category: workout::Category::Custom,
+            steps: vec![workout::Step::Steady {
+                secs: 3600,
+                power: 0.8,
+                cadence: None,
+            }],
+        };
+        let live = Live {
+            power: 200.0,
+            cadence: Some(90.0),
+            hr: None,
+            speed_kmh: None,
+        };
+        let ride_up = |flat_workouts: bool| {
+            let phys = Physics {
+                trainer_speed: false,
+                flat_workouts,
+                ..phys()
+            };
+            let mut ride = Ride::new(Mode::Workout, Some(wk.clone()), None);
+            ride.start();
+            ride.distance = 2000.0;
+            for _ in 0..1200 {
+                ride.update(0.1, live, r, phys, 250.0, 0.5, false);
+            }
+            (ride.speed * 3.6, ride.ascent)
+        };
+        let (hilly, climbed) = ride_up(false);
+        let (flat, none) = ride_up(true);
+        assert!(r.grade(2500.0) > 4.0, "the test needs a climb");
+        assert!(
+            flat > hilly + 5.0,
+            "flat {flat:.1} km/h vs climbing {hilly:.1} km/h"
+        );
+        assert!(
+            (33.0..38.0).contains(&flat),
+            "200 W on the flat: {flat:.1} km/h"
+        );
+        assert!(climbed > 10.0 && none == 0.0);
     }
 
     #[test]
