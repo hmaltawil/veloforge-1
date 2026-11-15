@@ -6,6 +6,7 @@ mod app;
 mod builder;
 mod charts;
 mod devices;
+mod fit;
 mod gfx;
 mod icu;
 mod plan;

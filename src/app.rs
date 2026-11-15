@@ -1031,6 +1031,10 @@ impl App {
             self.notify(format!("Could not write activity: {e}"));
             return;
         }
+        // The same ride as a FIT file, which Strava and others read best.
+        if let Err(e) = std::fs::write(file.with_extension("fit"), self.ride.to_fit()) {
+            self.log_line(format!("Could not write the FIT file: {e}"));
+        }
         let zones = self.store.settings.hr_zones();
         let mut summary = self.ride.summary(ftp, &zones, file.display().to_string());
         summary.route_id = Some(self.routes[self.route_idx].id.clone());
@@ -1386,6 +1390,10 @@ impl App {
             s.ftp,
             &s.hr_zones(),
             file.display().to_string(),
+        );
+        let _ = std::fs::write(
+            file.with_extension("fit"),
+            crate::fit::activity(&activity.samples, &[0], summary.np),
         );
         summary.route_id = info["route_id"].as_str().map(String::from);
         self.tick_off_plan(workout_id.as_deref(), plan_date, started.date_naive());

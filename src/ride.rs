@@ -700,6 +700,12 @@ impl Ride {
         starts
     }
 
+    /// The ride as a FIT file, with the same laps as the TCX file.
+    pub fn to_fit(&self) -> Vec<u8> {
+        let np = workout::normalized_power(&self.power_series());
+        crate::fit::activity(&self.samples, &self.lap_starts(), np)
+    }
+
     pub fn to_tcx(&self) -> String {
         let start = self
             .samples
