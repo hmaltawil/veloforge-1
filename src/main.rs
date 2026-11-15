@@ -46,6 +46,11 @@ fn run(attempt: usize) -> eframe::Result {
                 width: 64,
                 height: 64,
             })),
+        // The benchmark measures as fast as it can draw, not the screen's rate.
+        glow_options: eframe::egui_glow::GlowConfiguration {
+            vsync: !std::env::args().any(|a| a == "--bench"),
+            ..Default::default()
+        },
         multisampling: msaa,
         depth_buffer: depth,
         ..Default::default()

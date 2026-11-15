@@ -8,6 +8,17 @@ use std::sync::Arc;
 
 /// Floats per terrain vertex: position (3), normal (3), road distance, forest.
 pub const TERRAIN_STRIDE: usize = 8;
+/// Cells per side of a terrain tile.
+const TILE_CELLS: usize = 32;
+
+/// A run of the terrain's index list and the box around its triangles.
+#[derive(Debug, Clone, Copy)]
+pub struct Tile {
+    pub first: u32,
+    pub count: u32,
+    pub lo: [f32; 3],
+    pub hi: [f32; 3],
+}
 /// Floats per object instance: position (3), rotation, scale (2), tint (3).
 pub const INSTANCE_STRIDE: usize = 9;
 
@@ -347,18 +358,44 @@ impl RouteGeo {
                 ]);
             }
         }
+        // Triangles in square tiles, each a run of the index list with its
+        // bounding box, so tiles out of view can be skipped when drawing.
         let mut indices = Vec::with_capacity((n - 1) * (n - 1) * 6);
-        for j in 0..n - 1 {
-            for i in 0..n - 1 {
-                let a = (j * n + i) as u32;
-                let b = a + 1;
-                let c = a + n as u32;
-                let d = c + 1;
-                indices.extend_from_slice(&[a, c, b, b, c, d]);
+        let mut tiles = Vec::new();
+        for tj in (0..n - 1).step_by(TILE_CELLS) {
+            for ti in (0..n - 1).step_by(TILE_CELLS) {
+                let first = indices.len() as u32;
+                let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                for j in tj..(tj + TILE_CELLS).min(n - 1) {
+                    for i in ti..(ti + TILE_CELLS).min(n - 1) {
+                        let a = (j * n + i) as u32;
+                        let b = a + 1;
+                        let c = a + n as u32;
+                        let d = c + 1;
+                        indices.extend_from_slice(&[a, c, b, b, c, d]);
+                        for v in [a, d] {
+                            let p = &verts[v as usize * TERRAIN_STRIDE..][..3];
+                            for k in 0..3 {
+                                lo[k] = lo[k].min(p[k]);
+                                hi[k] = hi[k].max(p[k]);
+                            }
+                        }
+                    }
+                }
+                // Room for heights between the corners sampled.
+                lo[1] -= 2.0;
+                hi[1] += 2.0;
+                tiles.push(Tile {
+                    first,
+                    count: indices.len() as u32 - first,
+                    lo,
+                    hi,
+                });
             }
         }
         let (instances, shadows) = self.scatter(ox, oz, x0, z0, size);
         TerrainData {
+            tiles,
             ox,
             oz,
             size,
@@ -639,6 +676,8 @@ impl NearGrid {
 }
 
 pub struct TerrainData {
+    /// Square tiles of the index list, to skip those out of view.
+    pub tiles: Vec<Tile>,
     /// World position of the window centre (the render origin).
     pub ox: f64,
     pub oz: f64,

@@ -747,6 +747,9 @@ void main() {
     float size = (0.55 + 0.9 * rnd);
     // No grass on the road, in water, on rock or snow, or far away.
     size *= smoothstep(u_patch * 0.5, u_patch * 0.34, length(rel));
+    // Further off, fewer but slightly bigger tufts look the same.
+    float far = smoothstep(14.0, 28.0, length(xz - u_cam.xz));
+    size *= (fract(rnd * 7.31) < 1.0 - 0.55 * far ? 1.0 + 0.3 * far : 0.0);
     size *= smoothstep(4.1, 6.5, g.y) * (0.45 + 0.55 * smoothstep(5.0, 14.0, g.y));
     size *= smoothstep(u_water + 0.5, u_water + 1.6, g.x);
     size *= 1.0 - smoothstep(0.45, 0.7, steep);
@@ -997,6 +1000,7 @@ pub const DOWN_FS: &str = r#"
 uniform sampler2D u_tex;
 uniform vec2 u_texel;
 uniform float u_first;
+uniform float u_cheap;
 in vec2 v_uv;
 out vec4 frag;
 vec3 tap(vec2 o) {
@@ -1006,6 +1010,11 @@ vec3 tap(vec2 o) {
     return c;
 }
 void main() {
+    if (u_cheap > 0.5) {
+        // Four bilinear taps: sixteen texels for a quarter of the work.
+        frag = vec4((tap(vec2(-1.0, 1.0)) + tap(vec2(1.0, 1.0)) + tap(vec2(-1.0, -1.0)) + tap(vec2(1.0, -1.0))) * 0.25, 1.0);
+        return;
+    }
     vec3 a = tap(vec2(-2.0, 2.0));
     vec3 b = tap(vec2(0.0, 2.0));
     vec3 c = tap(vec2(2.0, 2.0));
@@ -1049,26 +1058,29 @@ pub const RAYS_FS: &str = r#"
 uniform sampler2D u_depth;
 uniform vec2 u_sun_uv;
 uniform float u_aspect;
+uniform int u_samples;
 in vec2 v_uv;
 out vec4 frag;
 float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
 void main() {
     vec2 delta = u_sun_uv - v_uv;
     float span = length(delta * vec2(u_aspect, 1.0));
-    vec2 stepv = delta / 28.0 * min(1.0, 0.9 / max(span, 0.001));
+    float n = float(u_samples);
+    vec2 stepv = delta / n * min(1.0, 0.9 / max(span, 0.001));
     vec2 uv = v_uv + stepv * ign(gl_FragCoord.xy);
     float sum = 0.0;
     float wgt = 1.0;
     for (int i = 0; i < 28; i++) {
+        if (i >= u_samples) break;
         vec2 c = clamp(uv, vec2(0.001), vec2(0.999));
         float sky = step(0.99999, texture(u_depth, c).r);
         // Sky close to the sun counts most.
         vec2 ds = (u_sun_uv - uv) * vec2(u_aspect, 1.0);
         sum += sky * wgt * exp(-dot(ds, ds) * 5.0);
-        wgt *= 0.955;
+        wgt *= pow(0.955, 28.0 / n);
         uv += stepv;
     }
-    frag = vec4(vec3(sum / 28.0), 1.0);
+    frag = vec4(vec3(sum / n), 1.0);
 }
 "#;
 

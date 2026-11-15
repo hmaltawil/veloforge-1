@@ -67,6 +67,29 @@ impl Quality {
             Quality::Low => 2.0 / 3.0,
         }
     }
+    /// Trees closer than this use the detailed meshes.
+    fn near_trees(self) -> f32 {
+        match self {
+            Quality::High => NEAR_TREES,
+            Quality::Medium => 140.0,
+            Quality::Low => 100.0,
+        }
+    }
+    /// Levels of the blur pyramid (bloom and the frosted glass).
+    fn blur_levels(self) -> usize {
+        match self {
+            Quality::High => 6,
+            Quality::Medium => 5,
+            Quality::Low => 4,
+        }
+    }
+    /// Samples along each light shaft.
+    fn ray_samples(self) -> i32 {
+        match self {
+            Quality::High => 28,
+            _ => 16,
+        }
+    }
     fn grass(self) -> usize {
         match self {
             Quality::High => 30_000,
@@ -533,6 +556,19 @@ impl GpuWorld {
     /// Why the GPU renderer gave up, if it did.
     pub fn error(&self) -> Option<String> {
         self.gl.lock().ok().and_then(|g| g.error.clone())
+    }
+
+    /// Time the GPU's work on each frame (for `--bench`).
+    pub fn set_timing(&self, on: bool) {
+        if let Ok(mut g) = self.gl.lock() {
+            g.timing = on;
+        }
+    }
+
+    /// Milliseconds the GPU spent on the last timed frame: shadows, the
+    /// scene, and the finishing pass (None if it cannot be measured here).
+    pub fn gpu_ms(&self) -> Option<[f32; 3]> {
+        self.gl.lock().ok().and_then(|g| g.gpu_ms)
     }
 
     /// Whether the view blurs what lies behind the HUD's glass panels (it
@@ -1297,6 +1333,61 @@ struct GlState {
     cloud_box: V3,
     /// Scratch space for sorting nearby objects by distance.
     order: [Vec<(f32, [f32; INSTANCE_STRIDE])>; KINDS],
+    /// The terrain's tiles, to draw only those in view.
+    tiles: Vec<terrain::Tile>,
+    /// Timing the passes on the GPU (for `--bench`).
+    timing: bool,
+    timers: Option<Timers>,
+    timers_failed: bool,
+    /// Milliseconds the GPU last spent on shadows, the scene and finishing.
+    gpu_ms: Option<[f32; 3]>,
+}
+
+/// GPU timer queries for the three stages of a frame, a few frames deep so
+/// results are read without waiting for the GPU.
+struct Timers {
+    q: Vec<[glow::Query; 3]>,
+    used: Vec<bool>,
+    frame: usize,
+}
+
+/// Index runs of the terrain tiles that `vp` can see, merged where they
+/// follow each other: (byte offset, count).
+fn visible_runs(vp: &M4, tiles: &[terrain::Tile]) -> Vec<(i32, i32)> {
+    let mut runs: Vec<(i32, i32)> = Vec::new();
+    for t in tiles {
+        // Outside if all eight corners are beyond the same clip plane.
+        let mut out = [true; 6];
+        for c in 0..8 {
+            let p = [
+                if c & 1 == 0 { t.lo[0] } else { t.hi[0] },
+                if c & 2 == 0 { t.lo[1] } else { t.hi[1] },
+                if c & 4 == 0 { t.lo[2] } else { t.hi[2] },
+                1.0,
+            ];
+            let q = transform(vp, p);
+            let tests = [
+                q[0] < -q[3],
+                q[0] > q[3],
+                q[1] < -q[3],
+                q[1] > q[3],
+                q[2] < -q[3],
+                q[2] > q[3],
+            ];
+            for k in 0..6 {
+                out[k] &= tests[k];
+            }
+        }
+        if out.iter().any(|&o| o) {
+            continue;
+        }
+        let (first, count) = (t.first as i32 * 4, t.count as i32);
+        match runs.last_mut() {
+            Some(r) if r.0 + r.1 * 4 == first => r.1 += count,
+            _ => runs.push((first, count)),
+        }
+    }
+    runs
 }
 
 fn bytes(v: &[f32]) -> &[u8] {
@@ -1714,7 +1805,7 @@ impl GlState {
                 {
                     continue;
                 }
-                if tree && dist > NEAR_TREES {
+                if tree && dist > f.quality.near_trees() {
                     far[if kind == OBJ_PINE { 0 } else { 1 }].extend_from_slice(inst);
                 } else {
                     near[kind].extend_from_slice(inst);
@@ -1781,6 +1872,7 @@ impl GlState {
             );
             gl.bind_vertex_array(None);
             b.count = t.indices.len() as i32;
+            self.tiles = t.tiles.clone();
             self.scattered = t.instances.clone();
             Self::set_instances(gl, self.blobs.as_mut().unwrap(), &t.shadows, 4);
 
@@ -2258,6 +2350,81 @@ impl GlState {
     }
 
     /// Draw instanced objects with the program that is bound.
+    /// The terrain tiles `vp` can see (all `count` indices without tiles).
+    unsafe fn draw_terrain(&self, gl: &glow::Context, vp: &M4, count: i32) {
+        unsafe {
+            if self.tiles.is_empty() {
+                gl.draw_elements(glow::TRIANGLES, count, glow::UNSIGNED_INT, 0);
+                return;
+            }
+            for (offset, n) in visible_runs(vp, &self.tiles) {
+                gl.draw_elements(glow::TRIANGLES, n, glow::UNSIGNED_INT, offset);
+            }
+        }
+    }
+
+    /// Start timing stage `k` of this frame (0 shadows, 1 scene, 2
+    /// finishing); `k == 0` also collects the results from a few frames ago.
+    unsafe fn time_stage(&mut self, gl: &glow::Context, k: usize) {
+        if !self.timing || self.timers_failed {
+            return;
+        }
+        unsafe {
+            if self.timers.is_none() {
+                let v = gl.version();
+                if v.is_embedded || (v.major, v.minor) < (3, 3) {
+                    self.timers_failed = true;
+                    return;
+                }
+                let mut q = Vec::new();
+                for _ in 0..4 {
+                    let mut set = Vec::new();
+                    for _ in 0..3 {
+                        match gl.create_query() {
+                            Ok(x) => set.push(x),
+                            Err(_) => {
+                                self.timers_failed = true;
+                                return;
+                            }
+                        }
+                    }
+                    q.push([set[0], set[1], set[2]]);
+                }
+                self.timers = Some(Timers {
+                    used: vec![false; q.len()],
+                    q,
+                    frame: 0,
+                });
+            }
+            let t = self.timers.as_mut().unwrap();
+            if k > 0 {
+                gl.end_query(glow::TIME_ELAPSED);
+            } else {
+                t.frame = (t.frame + 1) % t.q.len();
+                let slot = t.frame;
+                if t.used[slot] {
+                    let set = t.q[slot];
+                    if gl.get_query_parameter_u32(set[2], glow::QUERY_RESULT_AVAILABLE) != 0 {
+                        let ms = set.map(|q| {
+                            gl.get_query_parameter_u64(q, glow::QUERY_RESULT) as f32 / 1.0e6
+                        });
+                        self.gpu_ms = Some(ms);
+                    }
+                }
+                t.used[slot] = true;
+            }
+            let q = self.timers.as_ref().unwrap();
+            gl.begin_query(glow::TIME_ELAPSED, q.q[q.frame][k]);
+        }
+    }
+
+    /// End the last stage of this frame.
+    unsafe fn time_end(&mut self, gl: &glow::Context) {
+        if self.timing && self.timers.is_some() && !self.timers_failed {
+            unsafe { gl.end_query(glow::TIME_ELAPSED) };
+        }
+    }
+
     unsafe fn draw_instanced(&self, gl: &glow::Context, which: &[usize]) {
         unsafe {
             for &i in which {
@@ -2294,7 +2461,7 @@ impl GlState {
                     gl.use_program(Some(p.id));
                     p.m4(gl, "u_vp", &f.light_vp[k]);
                     gl.bind_vertex_array(Some(vao));
-                    gl.draw_elements(glow::TRIANGLES, count, glow::UNSIGNED_INT, 0);
+                    self.draw_terrain(gl, &f.light_vp[k], count);
                 }
                 let p = self.programs.get_mut("sh_object").unwrap();
                 gl.use_program(Some(p.id));
@@ -2454,6 +2621,7 @@ impl GlState {
             gl.disable(glow::CULL_FACE);
             gl.disable(glow::SCISSOR_TEST);
 
+            self.time_stage(gl, 0);
             self.cloud_pass(gl, f);
             let shadows = f.quality != Quality::Low && f.look.shadow > 0.0;
             if shadows {
@@ -2472,6 +2640,7 @@ impl GlState {
             gl.active_texture(glow::TEXTURE0);
 
             // --- the scene ---------------------------------------------------
+            self.time_stage(gl, 1);
             let set_view = |gl: &glow::Context| {
                 gl.viewport(
                     view.left_px,
@@ -2558,7 +2727,7 @@ impl GlState {
                 p.f1(gl, "u_water", f.water);
                 p.f1(gl, "u_snow", f.snow);
                 gl.bind_vertex_array(Some(vao));
-                gl.draw_elements(glow::TRIANGLES, count, glow::UNSIGNED_INT, 0);
+                self.draw_terrain(gl, &f.vp, count);
             }
 
             // Road, pulled slightly towards the camera so it never z-fights the ground.
@@ -2679,6 +2848,7 @@ impl GlState {
             }
 
             // --- finishing ---------------------------------------------------
+            self.time_stage(gl, 2);
             gl.disable(glow::DEPTH_TEST);
             gl.depth_mask(false);
             if let Some(t) = self.targets.take() {
@@ -2690,6 +2860,7 @@ impl GlState {
                 gl.draw_arrays(glow::TRIANGLES, 0, 3);
                 self.targets = Some(t);
             }
+            self.time_end(gl);
             for unit in [1, 2, 3, UNIT_HEIGHT, UNIT_SM0, UNIT_SM1, UNIT_CLOUD] {
                 gl.active_texture(glow::TEXTURE0 + unit);
                 gl.bind_texture(glow::TEXTURE_2D, None);
@@ -2720,8 +2891,14 @@ impl GlState {
             let p = self.programs.get_mut("down").unwrap();
             gl.use_program(Some(p.id));
             p.i1(gl, "u_tex", 0);
+            let levels = f.quality.blur_levels().min(t.down.len()).max(2);
+            p.f1(
+                gl,
+                "u_cheap",
+                if f.quality == Quality::High { 0.0 } else { 1.0 },
+            );
             let (mut src, mut sw, mut sh) = (t.color_tex, t.w, t.h);
-            for (i, d) in t.down.iter().enumerate() {
+            for (i, d) in t.down.iter().take(levels).enumerate() {
                 gl.bind_framebuffer(glow::FRAMEBUFFER, Some(d.fbo));
                 gl.viewport(0, 0, d.w, d.h);
                 gl.bind_texture(glow::TEXTURE_2D, Some(src));
@@ -2736,8 +2913,9 @@ impl GlState {
             p.i1(gl, "u_tex", 0);
             p.i1(gl, "u_base", 1);
             p.f1(gl, "u_mix", 0.62);
-            for i in (0..t.up.len()).rev() {
-                let small = if i + 1 < t.up.len() {
+            let ups = (levels - 1).min(t.up.len());
+            for i in (0..ups).rev() {
+                let small = if i + 1 < ups {
                     &t.up[i + 1]
                 } else {
                     &t.down[i + 1]
@@ -2777,6 +2955,7 @@ impl GlState {
                 gl.use_program(Some(p.id));
                 p.i1(gl, "u_depth", 0);
                 p.f2(gl, "u_sun_uv", sun_uv[0], sun_uv[1]);
+                p.i1(gl, "u_samples", f.quality.ray_samples());
                 p.f1(gl, "u_aspect", t.w as f32 / t.h as f32);
                 gl.bind_texture(glow::TEXTURE_2D, Some(t.depth_tex));
                 gl.draw_arrays(glow::TRIANGLES, 0, 3);
@@ -2900,6 +3079,28 @@ mod tests {
             );
             assert!(v.iter().all(|x| x.is_finite()));
         }
+    }
+
+    #[test]
+    fn terrain_tiles_behind_the_camera_are_skipped() {
+        let tile = |x: f32, z: f32, first: u32| terrain::Tile {
+            first,
+            count: 6,
+            lo: [x - 10.0, -2.0, z - 10.0],
+            hi: [x + 10.0, 2.0, z + 10.0],
+        };
+        // Looking along -z from 2 m up.
+        let view = look_at([0.0, 2.0, 0.0], [0.0, 2.0, -10.0], [0.0, 1.0, 0.0]);
+        let vp = mul(&perspective(1.0, 1.6, 0.5, 3000.0), &view);
+        let tiles = [
+            tile(0.0, -50.0, 0),
+            tile(0.0, 50.0, 6),
+            tile(0.0, -100.0, 12),
+            tile(900.0, -20.0, 18),
+        ];
+        let runs = visible_runs(&vp, &tiles);
+        // Ahead: drawn; behind and far off to the side: skipped.
+        assert_eq!(runs, vec![(0, 6), (48, 6)]);
     }
 
     #[test]

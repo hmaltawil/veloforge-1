@@ -227,6 +227,9 @@ pub struct App {
     tired_dismissed: Option<NaiveDate>,
     /// Started with --demo: skip the welcome.
     demo: bool,
+    /// `--bench`: measuring how fast the 3D view draws.
+    bench: Option<Bench>,
+    graphics: String,
     egui_ctx: egui::Context,
     remote: Option<crate::remote::Remote>,
     remote_url: String,
@@ -347,6 +350,8 @@ impl App {
             last_checkpoint: Instant::now(),
             curve_failed: Default::default(),
             demo: false,
+            bench: None,
+            graphics: String::new(),
             tired_dismissed: None,
             store,
         };
@@ -370,7 +375,8 @@ impl App {
                 )
             };
             // Which graphics chip draws the app (two on many laptops).
-            app.log_line(format!("Graphics: {renderer} (OpenGL {version})"));
+            app.graphics = format!("{renderer} (OpenGL {version})");
+            app.log_line(format!("Graphics: {}", app.graphics));
         }
         app.strava_creds = crate::strava::Credentials::load(&app.paths.strava_file());
         app.strava_edit = app.strava_creds.clone();
@@ -390,7 +396,22 @@ impl App {
         }
         // `--demo`: ride the simulator straight away, no hardware needed.
         let args: Vec<String> = std::env::args().collect();
-        if args.iter().any(|a| a == "--demo") {
+        // `--bench [seconds]`: ride the Valley Loop with the simulator and
+        // measure how fast the 3D view draws, then print it and quit.
+        if let Some(i) = args.iter().position(|a| a == "--bench") {
+            let secs = args
+                .get(i + 1)
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(60.0)
+                .clamp(5.0, 600.0);
+            app.bench = Some(Bench::new(secs));
+            app.store.settings.view_3d = true;
+            if let Some(r) = app.routes.iter().position(|r| r.id == "valley-loop") {
+                app.route_idx = r;
+            }
+            app.gpu.set_timing(true);
+        }
+        if app.bench.is_some() || args.iter().any(|a| a == "--demo") {
             app.demo = true;
             app.dev.send(Cmd::SimEnable(true));
             if args.iter().any(|a| a == "--heart-rate") {
@@ -1164,7 +1185,53 @@ impl App {
     /// How long to wait before drawing the next frame while riding: what is
     /// left of this frame's share of a second under the frame-rate limit, or
     /// nothing when there is no limit (the screen's own rate).
+    /// Record one benchmark frame; at the end print the results and quit.
+    fn bench_frame(
+        &mut self,
+        ctx: &egui::Context,
+        gpu_ms: Option<[f32; 3]>,
+        size: (f32, f32),
+        scale: f32,
+    ) {
+        let Some(b) = &mut self.bench else { return };
+        ctx.request_repaint();
+        let now = Instant::now();
+        let elapsed = now.duration_since(b.start).as_secs_f64();
+        if elapsed < Bench::WARM_UP {
+            b.last = now;
+            return;
+        }
+        b.frames
+            .push(now.duration_since(b.last).as_secs_f32() * 1000.0);
+        b.last = now;
+        if let Some(g) = gpu_ms {
+            b.gpu.push(g);
+        }
+        if elapsed < Bench::WARM_UP + b.secs {
+            return;
+        }
+        let s = &self.store.settings;
+        let report = b.report(
+            env!("CARGO_PKG_VERSION"),
+            &self.routes[self.route_idx].name,
+            s.gfx_quality.label(),
+            scale,
+            size,
+            &self.graphics,
+        );
+        println!("{report}");
+        for line in report.lines() {
+            self.log_line(line.to_string());
+        }
+        let _ = std::fs::write(self.paths.data.join("bench.txt"), &report);
+        self.bench = None;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
     fn frame_wait(&self) -> std::time::Duration {
+        if self.bench.is_some() {
+            return std::time::Duration::ZERO;
+        }
         match self.store.settings.fps_limit {
             0 => std::time::Duration::ZERO,
             fps => std::time::Duration::from_secs_f64(1.0 / fps as f64)
@@ -3179,6 +3246,14 @@ impl App {
             };
             self.gpu
                 .draw(&clip, view, &scene, s.gfx_quality, scale, &plan.glass());
+            if self.bench.is_some() {
+                let gpu_ms = self.gpu.gpu_ms();
+                let size = (
+                    view.width() * ui.ctx().pixels_per_point(),
+                    view.height() * ui.ctx().pixels_per_point(),
+                );
+                self.bench_frame(ui.ctx(), gpu_ms, size, scale);
+            }
         } else {
             self.world.draw(&clip, view, &scene);
         }
@@ -6125,6 +6200,79 @@ impl App {
         if close {
             self.modal = None;
         }
+    }
+}
+
+/// Measurements for `--bench`.
+struct Bench {
+    start: Instant,
+    last: Instant,
+    secs: f64,
+    /// Time between frames, in milliseconds.
+    frames: Vec<f32>,
+    /// GPU milliseconds per frame: shadows, scene, finishing.
+    gpu: Vec<[f32; 3]>,
+}
+
+impl Bench {
+    /// Seconds to let the world build and the rider settle before measuring.
+    const WARM_UP: f64 = 10.0;
+
+    fn new(secs: f64) -> Bench {
+        let now = Instant::now();
+        Bench {
+            start: now,
+            last: now,
+            secs,
+            frames: Vec::new(),
+            gpu: Vec::new(),
+        }
+    }
+
+    fn report(
+        &self,
+        version: &str,
+        route: &str,
+        detail: &str,
+        scale: f32,
+        size: (f32, f32),
+        graphics: &str,
+    ) -> String {
+        let n = self.frames.len().max(1) as f32;
+        let total: f32 = self.frames.iter().sum();
+        let mut sorted = self.frames.clone();
+        sorted.sort_by(|a, b| b.total_cmp(a));
+        let slow = &sorted[..(sorted.len() / 100).max(1).min(sorted.len())];
+        let slow_ms = slow.iter().sum::<f32>() / slow.len().max(1) as f32;
+        let mut out = format!(
+            "VeloForge {version} benchmark: {:.0} s on {route}\n\
+             Detail {detail}, world drawn at {:.0}% of {:.0}x{:.0} pixels\n\
+             Graphics: {graphics}\n\
+             Frames: {} ({:.1} per second), {:.1} ms on average, slowest 1% {:.1} ms\n",
+            self.secs,
+            scale * 100.0,
+            size.0,
+            size.1,
+            self.frames.len(),
+            n / (total / 1000.0).max(1e-3),
+            total / n,
+            slow_ms,
+        );
+        if self.gpu.is_empty() {
+            out += "Graphics card time: not available with this driver\n";
+        } else {
+            let k = self.gpu.len() as f32;
+            let avg = |i: usize| self.gpu.iter().map(|g| g[i]).sum::<f32>() / k;
+            let (sh, sc, fi) = (avg(0), avg(1), avg(2));
+            let all = sh + sc + fi;
+            out += &format!(
+                "Graphics card time per frame: {all:.1} ms (shadows {sh:.1}, scene {sc:.1}, finishing {fi:.1})\n\
+                 Graphics card busy: {:.0}% at 30 fps, {:.0}% at 60 fps\n",
+                all * 30.0 / 10.0,
+                all * 60.0 / 10.0,
+            );
+        }
+        out
     }
 }
 
