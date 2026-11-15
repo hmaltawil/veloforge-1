@@ -84,13 +84,16 @@ fn fresh(m: &Option<Metric>) -> Option<f32> {
 }
 
 /// Store a reading, never letting the simulator override a live real sensor.
-fn set_metric(slot: &mut Option<Metric>, v: f32, src: &str) -> bool {
+/// Store a reading. Real devices win over the simulated trainer, except
+/// while the simulator is switched on (`sim_on`): then it takes over, so
+/// a connected trainer that nobody is pedalling cannot hold the rider still.
+fn set_metric(slot: &mut Option<Metric>, v: f32, src: &str, sim_on: bool) -> bool {
     let sim = src == SIM_ID;
-    if sim
-        && slot
-            .as_ref()
-            .is_some_and(|m| m.src != SIM_ID && m.is_fresh())
-    {
+    let held = |by_sim: bool| {
+        slot.as_ref()
+            .is_some_and(|m| (m.src == SIM_ID) == by_sim && m.is_fresh())
+    };
+    if (sim && !sim_on && held(false)) || (!sim && sim_on && held(true)) {
         return false;
     }
     *slot = Some(Metric {
@@ -1059,6 +1062,7 @@ impl App {
                 Event::Calibration(c) => self.on_calibration(c),
                 Event::Data { id, reading } => {
                     let now = Instant::now();
+                    let sim_on = self.sim_on();
                     let dev = self.per_device.entry(id.clone()).or_default();
                     dev.updates.push_back(now);
                     while dev
@@ -1069,8 +1073,8 @@ impl App {
                         dev.updates.pop_front();
                     }
                     if let Some(p) = reading.power {
-                        set_metric(&mut dev.power, p, &id);
-                        if set_metric(&mut self.metrics.power, p, &id) {
+                        set_metric(&mut dev.power, p, &id, false);
+                        if set_metric(&mut self.metrics.power, p, &id, sim_on) {
                             self.metrics.recent_power.push_back((now, p));
                             while self.metrics.recent_power.len() > 64 {
                                 self.metrics.recent_power.pop_front();
@@ -1078,12 +1082,12 @@ impl App {
                         }
                     }
                     if let Some(v) = reading.speed_kmh {
-                        set_metric(&mut dev.speed, v, &id);
-                        set_metric(&mut self.metrics.speed, v, &id);
+                        set_metric(&mut dev.speed, v, &id, false);
+                        set_metric(&mut self.metrics.speed, v, &id, sim_on);
                     }
                     if let Some(c) = reading.cadence {
-                        set_metric(&mut dev.cadence, c, &id);
-                        set_metric(&mut self.metrics.cadence, c, &id);
+                        set_metric(&mut dev.cadence, c, &id, false);
+                        set_metric(&mut self.metrics.cadence, c, &id, sim_on);
                     }
                     if reading.hr_contact.is_some() {
                         dev.hr_contact = reading.hr_contact;
@@ -1095,10 +1099,10 @@ impl App {
                         self.metrics.cadence_seen = Some(now);
                     }
                     if let Some(rr) = reading.hr_rr {
-                        set_metric(&mut dev.hr_rr, rr, &id);
+                        set_metric(&mut dev.hr_rr, rr, &id, false);
                     }
                     if let Some(h) = reading.hr {
-                        set_metric(&mut dev.hr, h, &id);
+                        set_metric(&mut dev.hr, h, &id, false);
                         // Prefer a dedicated heart rate sensor over HR relayed by a trainer.
                         let dedicated = self
                             .links
@@ -1113,7 +1117,7 @@ impl App {
                                     .is_some_and(|l| l.caps.contains(&Capability::HeartRate))
                         });
                         if dedicated || !current_dedicated {
-                            set_metric(&mut self.metrics.hr, h, &id);
+                            set_metric(&mut self.metrics.hr, h, &id, sim_on);
                         }
                     }
                 }
@@ -1179,8 +1183,10 @@ impl App {
         if let Some(c) = control {
             self.dev.send(Cmd::Control(c));
         }
+        // A ride with the simulator on at any point is practice, even with
+        // a real trainer connected too.
         if self.ride.state == ride::State::Running
-            && self.metrics.power.as_ref().is_some_and(|m| m.src == SIM_ID)
+            && (self.sim_on() || self.metrics.power.as_ref().is_some_and(|m| m.src == SIM_ID))
         {
             self.ride_simulated = true;
         }
@@ -1247,10 +1253,19 @@ impl App {
         }
     }
 
+    /// The trainer being ridden: the simulated one while it is switched on.
     fn trainer_link(&self) -> Option<&LinkInfo> {
+        let usable = |l: &&LinkInfo| l.controllable && l.link == Link::Connected;
         self.links
-            .values()
-            .find(|l| l.controllable && l.link == Link::Connected)
+            .get(SIM_ID)
+            .filter(usable)
+            .or_else(|| self.links.values().find(usable))
+    }
+
+    fn sim_on(&self) -> bool {
+        self.links
+            .get(SIM_ID)
+            .is_some_and(|l| l.link == Link::Connected)
     }
 
     fn finish_ride(&mut self) {
@@ -5639,7 +5654,13 @@ impl App {
                             RichText::new(s.start.format("%A %d %B %Y, %H:%M").to_string()).weak(),
                         );
                         ui.add_space(4.0);
-                        let ifac = if ftp > 0.0 { s.np / ftp } else { 0.0 };
+                        // From the stored training load, so it matches the TSS:
+                        // both use the FTP at the time of the ride.
+                        let ifac = if s.secs > 0.0 {
+                            (s.tss * 36.0 / s.secs).max(0.0).sqrt()
+                        } else {
+                            0.0
+                        };
                         ui.horizontal_wrapped(|ui| {
                             let stat = |ui: &mut egui::Ui, k: &str, v: String| {
                                 egui::Frame::new()
@@ -6071,5 +6092,26 @@ impl App {
         if close {
             self.modal = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_simulator_takes_over_only_while_it_is_on() {
+        let mut slot = None;
+        // A connected trainer reports 0 W: with the simulator off it wins...
+        assert!(set_metric(&mut slot, 0.0, "kickr", false));
+        assert!(!set_metric(&mut slot, 180.0, SIM_ID, false));
+        assert_eq!(slot.as_ref().unwrap().v, 0.0);
+        // ...with the simulator on, the simulator's power is used instead.
+        assert!(set_metric(&mut slot, 180.0, SIM_ID, true));
+        assert!(!set_metric(&mut slot, 0.0, "kickr", true));
+        assert_eq!(slot.as_ref().unwrap().src, SIM_ID);
+        // Switched off again, the real trainer is back at once.
+        assert!(set_metric(&mut slot, 120.0, "kickr", false));
+        assert_eq!(slot.as_ref().unwrap().src, "kickr");
     }
 }
