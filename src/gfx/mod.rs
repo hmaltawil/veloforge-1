@@ -7,6 +7,7 @@
 //! Falls back to the software view in `world.rs` if anything goes wrong
 //! (see [`GpuWorld::error`]).
 
+mod body;
 mod math;
 mod mesh;
 mod shaders;
@@ -368,6 +369,8 @@ struct FrameData {
     anchor: V3,
     road: Vec<f32>,
     rider: Vec<f32>,
+    /// Each rider's bone matrices and jersey colour.
+    skins: Vec<([M4; body::BONES], V3)>,
     posts: Vec<f32>,
     reflectors: Vec<f32>,
     planks: Vec<f32>,
@@ -411,6 +414,8 @@ pub struct GpuWorld {
     water_side: f64,
     /// Each rider's standing and tucking, easing between poses.
     stances: Vec<Stance>,
+    /// The body's bones at rest, inverted.
+    rest_inverse: [M4; body::BONES],
 }
 
 impl Default for GpuWorld {
@@ -428,6 +433,10 @@ impl Default for GpuWorld {
             time: 0.0,
             water_side: 1.0,
             stances: Vec::new(),
+            rest_inverse: {
+                start_sculpting();
+                body::rest_inverse()
+            },
         }
     }
 }
@@ -473,6 +482,21 @@ impl Stance {
         self.stand += (stand_to - self.stand) * k;
         self.tuck += (tuck_to - self.tuck) * k;
     }
+}
+
+/// The rider's sculpted body: made once, on a background thread, as soon as
+/// a 3D view exists (it takes a moment), then handed to the graphics card.
+static SKIN: std::sync::OnceLock<body::Skin> = std::sync::OnceLock::new();
+
+fn start_sculpting() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        let _ = std::thread::Builder::new()
+            .name("sculpt-rider".into())
+            .spawn(|| {
+                let _ = SKIN.set(body::build(0.01));
+            });
+    });
 }
 
 /// Small deterministic hash for scenery that comes and goes along a route.
@@ -668,6 +692,7 @@ impl GpuWorld {
 
         // --- riders --------------------------------------------------------
         let mut rider = Vec::new();
+        let mut skins = Vec::new();
         let mut rider_shadow = Vec::new();
         let mut tags = Vec::new();
         let (mut lamp_pos, mut lamp_dir) = ([0.0; 3], [0.0, 0.0, -1.0]);
@@ -705,22 +730,22 @@ impl GpuWorld {
             );
             let stance = *stance;
             let j = fig.jersey;
-            rider.extend(
-                mesh::rider(&mesh::RiderPose {
-                    pos,
-                    fwd: fwd_r,
-                    up: up_r,
-                    right,
-                    crank: fig.crank,
-                    wheel: ((fig.d / 0.34) % std::f64::consts::TAU) as f32,
-                    jersey: srgb(j.r(), j.g(), j.b()),
-                    stand: stance.stand,
-                    tuck: stance.tuck,
-                    effort: fig.effort,
-                    time: (self.time % 3600.0) as f32,
-                })
-                .v,
-            );
+            let pose = mesh::RiderPose {
+                pos,
+                fwd: fwd_r,
+                up: up_r,
+                right,
+                crank: fig.crank,
+                wheel: ((fig.d / 0.34) % std::f64::consts::TAU) as f32,
+                jersey: srgb(j.r(), j.g(), j.b()),
+                stand: stance.stand,
+                tuck: stance.tuck,
+                effort: fig.effort,
+                time: (self.time % 3600.0) as f32,
+            };
+            let joints = mesh::joints(&pose);
+            rider.extend(mesh::bike(&pose, &joints).v);
+            skins.push((body::skinning(&self.rest_inverse, &joints), pose.jersey));
             rider_shadow.extend_from_slice(&[pos[0], pos[1] + 0.02, pos[2], 0.9]);
             if i == 0 {
                 lamp_pos = add(add(pos, scale(up_r, 1.0)), scale(fwd_r, 0.7));
@@ -978,6 +1003,7 @@ impl GpuWorld {
             anchor: [eye[0], eye[1] - 60.0, eye[2]],
             road,
             rider,
+            skins,
             posts,
             reflectors,
             planks,
@@ -1230,6 +1256,9 @@ struct ShadowMaps {
 #[derive(Default)]
 struct GlState {
     ready: bool,
+    /// The rider's sculpted body, made on the first frame.
+    skin: Option<Buffers>,
+    skin_tried: bool,
     pub error: Option<String>,
     programs: HashMap<&'static str, Program>,
     sky_vao: Option<glow::VertexArray>,
@@ -1473,6 +1502,21 @@ impl GlState {
                 &terrain_attribs,
             )?;
             self.compile(gl, "sh_object", &[OBJECT_VS], &[DEPTH_FS], &object_attribs)?;
+            let skinned_attribs = ["a_pos", "a_nrm", "a_col", "a_mat", "a_bones", "a_weights"];
+            self.compile(
+                gl,
+                "skinned",
+                &[SKINNED_VS],
+                &[NOISE, LIGHT, OBJECT_FS],
+                &skinned_attribs,
+            )?;
+            self.compile(
+                gl,
+                "sh_skinned",
+                &[SKINNED_VS],
+                &[DEPTH_FS],
+                &skinned_attribs,
+            )?;
             // Post-processing.
             self.compile(gl, "down", &[SCREEN_VS], &[DOWN_FS], &[])?;
             self.compile(gl, "up", &[SCREEN_VS], &[UP_FS], &[])?;
@@ -2165,6 +2209,49 @@ impl GlState {
         }
     }
 
+    /// Draw each rider's body with `program` (bound, its other uniforms
+    /// set): the sculpted mesh bent by the rider's bones.
+    unsafe fn draw_skins(&mut self, gl: &glow::Context, f: &FrameData, program: &'static str) {
+        let Some((vao, count)) = self.skin.as_ref().map(|b| (b.vao, b.count)) else {
+            return;
+        };
+        unsafe {
+            let p = self.programs.get_mut(program).unwrap();
+            for (bones, tint) in &f.skins {
+                let flat: Vec<f32> = bones.iter().flatten().copied().collect();
+                gl.uniform_matrix_4_f32_slice(p.loc(gl, "u_bones"), false, &flat);
+                p.v3(gl, "u_tint", *tint);
+                gl.bind_vertex_array(Some(vao));
+                gl.draw_elements(glow::TRIANGLES, count, glow::UNSIGNED_INT, 0);
+            }
+        }
+    }
+
+    /// Sculpt the rider's body and hand it to the graphics card.
+    unsafe fn upload_skin(gl: &glow::Context, skin: &body::Skin) -> Result<Buffers, String> {
+        unsafe {
+            let mut b = Self::buffers(
+                gl,
+                &[(3, 0), (3, 3), (3, 6), (1, 9), (4, 10), (4, 14)],
+                body::STRIDE as i32,
+                &skin.vertices,
+                None,
+            )?;
+            let ebo = gl.create_buffer()?;
+            gl.bind_vertex_array(Some(b.vao));
+            gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ebo));
+            gl.buffer_data_u8_slice(
+                glow::ELEMENT_ARRAY_BUFFER,
+                bytes_u32(&skin.indices),
+                glow::STATIC_DRAW,
+            );
+            gl.bind_vertex_array(None);
+            b.ebo = Some(ebo);
+            b.count = skin.indices.len() as i32;
+            Ok(b)
+        }
+    }
+
     /// Draw instanced objects with the program that is bound.
     unsafe fn draw_instanced(&self, gl: &glow::Context, which: &[usize]) {
         unsafe {
@@ -2216,6 +2303,10 @@ impl GlState {
                 let p = self.programs.get_mut("sh_object").unwrap();
                 p.f1(gl, "u_wind", 0.0);
                 self.draw_instanced(gl, &[OBJ_ROCK, OBJ_HOUSE, OBJ_POST, OBJ_PLANK, OBJ_RIDER]);
+                let p = self.programs.get_mut("sh_skinned").unwrap();
+                gl.use_program(Some(p.id));
+                p.m4(gl, "u_vp", &f.light_vp[k]);
+                self.draw_skins(gl, f, "sh_skinned");
             }
             gl.disable(glow::POLYGON_OFFSET_FILL);
             gl.color_mask(true, true, true, true);
@@ -2287,6 +2378,13 @@ impl GlState {
                     return;
                 }
                 self.ready = true;
+            }
+            if !self.skin_tried {
+                if let Some(skin) = SKIN.get() {
+                    // Without it the bike is still drawn.
+                    self.skin_tried = true;
+                    self.skin = Self::upload_skin(gl, skin).ok();
+                }
             }
             if let Some(t) = &f.terrain {
                 if let Err(e) = self.upload_terrain(gl, t) {
@@ -2427,6 +2525,8 @@ impl GlState {
                     OBJ_RIDER,
                 ],
             );
+            self.common(gl, "skinned", f);
+            self.draw_skins(gl, f, "skinned");
 
             // Distant mountains, far to near.
             if let Some((b, rings)) = self.mountains.as_ref().filter(|_| f.look.mountains) {

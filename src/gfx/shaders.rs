@@ -595,7 +595,24 @@ void main() {
     float vis = sun_vis(v_pos, n);
     vec3 lamp = lamp_light(v_pos, n);
     vec3 lit;
-    if (v_mat > 4.5) {
+    if (v_mat > 5.5 && v_mat < 6.5) {
+        // Skin: light wraps softly round it, warm where it fades into
+        // shadow (light scattered under the skin), with a faint sheen.
+        float ndl = dot(n, u_sun);
+        float wrap = max((ndl + 0.3) / 1.3, 0.0);
+        float edge = max(0.0, 1.0 - abs(ndl + 0.1) * 2.2);
+        vec3 scatter = vec3(0.55, 0.16, 0.07) * edge * vis;
+        lit = v_col * (u_sun_col * (wrap * vis * 1.35 + scatter) + ambient(n)) + v_col * lamp;
+        vec3 h = normalize(view + u_sun);
+        lit += u_sun_col * vis * 0.05 * pow(max(dot(n, h), 0.0), 24.0);
+        float rim = pow(1.0 - max(dot(view, n), 0.0), 3.0);
+        lit += v_col * ambient(n) * rim * 0.6;
+    } else if (v_mat > 6.5) {
+        // Fabric: matt, with a soft sheen as it turns away from you.
+        lit = shade(v_col, n, 1.0, vis) + v_col * lamp;
+        float rim = pow(1.0 - max(dot(view, n), 0.0), 2.5);
+        lit += (u_sun_col * vis * max(dot(n, u_sun), 0.0) * 0.5 + ambient(n)) * rim * (0.08 + v_col * 0.5);
+    } else if (v_mat > 4.5) {
         // Leaves: light wraps round the crown and glows through it.
         float wrap = max((dot(n, u_sun) + 0.45) / 1.45, 0.0);
         lit = v_col * (u_sun_col * wrap * vis * 1.45 + ambient(n));
@@ -621,6 +638,38 @@ void main() {
         }
     }
     frag = out_col(apply_fog(lit, v_pos));
+}
+"#;
+
+/// The rider's body, bent by its bones (`body.rs`): each vertex follows up
+/// to four bones. Negative colours are shares of the jersey colour.
+pub const SKINNED_VS: &str = r#"
+in vec3 a_pos;
+in vec3 a_nrm;
+in vec3 a_col;
+in float a_mat;
+in vec4 a_bones;
+in vec4 a_weights;
+uniform mat4 u_vp;
+uniform mat4 u_bones[17];
+uniform vec3 u_tint;
+out vec3 v_pos;
+out vec3 v_nrm;
+out vec3 v_col;
+out float v_mat;
+out float v_h;
+void main() {
+    mat4 m = u_bones[int(a_bones.x)] * a_weights.x
+           + u_bones[int(a_bones.y)] * a_weights.y
+           + u_bones[int(a_bones.z)] * a_weights.z
+           + u_bones[int(a_bones.w)] * a_weights.w;
+    vec4 p = m * vec4(a_pos, 1.0);
+    v_pos = p.xyz;
+    v_nrm = normalize(mat3(m) * a_nrm);
+    v_col = a_col.r < 0.0 ? -a_col * u_tint : a_col;
+    v_mat = a_mat;
+    v_h = 0.5;
+    gl_Position = u_vp * p;
 }
 "#;
 
