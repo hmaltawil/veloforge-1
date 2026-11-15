@@ -338,8 +338,19 @@ impl Sculpt {
             .map(|&b| {
                 let (a, c) = self.bones[b];
                 let ba = sub(c, a);
-                let t = (dot(sub(p, a), ba) / dot(ba, ba).max(1e-9)).clamp(0.0, 1.0);
-                (b, len(sub(p, add(a, scale(ba, t)))))
+                let along = dot(sub(p, a), ba) / dot(ba, ba).max(1e-9);
+                let t = along.clamp(0.0, 1.0);
+                let d = len(sub(p, add(a, scale(ba, t))));
+                // Skin in front of the shoulder and hip joints (the top of
+                // the shoulder, the side of the hip) belongs to the torso,
+                // not to the limb: it must not swing with the arm or leg.
+                let limb = UPPER_ARM.contains(&b) || THIGH.contains(&b);
+                let behind = if limb {
+                    (-along).max(0.0) * len(ba)
+                } else {
+                    0.0
+                };
+                (b, d + 1.5 * behind)
             })
             .collect();
         near.sort_by(|a, b| a.1.total_cmp(&b.1));
@@ -579,7 +590,7 @@ pub fn sculpt(j: &Joints) -> Sculpt {
     let tp = || -> Painter { Box::new(move |p| torso_paint_fn(&jj, p)) };
     // Hips and lower back, waist, rib cage, shoulder girdle.
     add_part(part(
-        ell(at(0.03, -0.005, 0.0), torso_axes, [0.11, 0.1, 0.16]),
+        ell(at(0.04, -0.008, 0.0), torso_axes, [0.11, 0.088, 0.145]),
         0.05,
         tp(),
         TORSO,
@@ -646,9 +657,9 @@ pub fn sculpt(j: &Joints) -> Sculpt {
     for (k, s) in [1.0f32, -1.0].into_iter().enumerate() {
         add_part(part(
             ell(
-                add(j.hips, j.body.dir(-0.065, -0.015, s * 0.078)),
+                add(j.hips, j.body.dir(-0.045, -0.025, s * 0.068)),
                 [fwd, up, z],
-                [0.085, 0.085, 0.08],
+                [0.064, 0.066, 0.064],
             ),
             0.045,
             solid(Paint::Shorts),
@@ -672,7 +683,7 @@ pub fn sculpt(j: &Joints) -> Sculpt {
             |t: f32, f: f32, sd: f32| add(lerp(hip, knee, t), add(scale(front, f), scale(z, sd)));
         let thigh_paint = || bands(hip, knee, THIGH_BANDS);
         add_part(part(
-            cone(sub(hip, scale(u, 0.04)), knee, 0.082, 0.052),
+            cone(sub(hip, scale(u, 0.035)), knee, 0.076, 0.051),
             0.04,
             thigh_paint(),
             LEG[k],

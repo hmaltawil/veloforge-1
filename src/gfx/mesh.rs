@@ -1058,7 +1058,7 @@ pub fn joints(p: &RiderPose) -> Joints {
 
     // The back arches from the pelvis to the shoulders; the chest breathes,
     // deeper and faster the harder the effort.
-    let sc = pose3([0.2, 1.36], [0.38, 1.38], [0.29, 1.2], stand, tuck);
+    let sc = pose3([0.2, 1.36], [0.33, 1.44], [0.29, 1.2], stand, tuck);
     let shoulders = body.at(sc[0], sc[1], -0.008 * push);
     let pelvis = add(hips, body.dir(-0.02, 0.0, 0.0));
     let back_dir = norm(sub(shoulders, pelvis));
