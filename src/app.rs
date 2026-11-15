@@ -196,6 +196,14 @@ pub struct App {
     icu_busy: bool,
     icu_last_sync: Option<Instant>,
     icu_note: Option<String>,
+    strava: crate::strava::Worker,
+    strava_creds: crate::strava::Credentials,
+    /// The Client ID and Secret being typed in Settings.
+    strava_edit: crate::strava::Credentials,
+    strava_status: Option<Result<String, String>>,
+    strava_busy: bool,
+    /// Rides (by file) on their way to Strava.
+    strava_pending: Vec<String>,
     last_checkpoint: Instant,
     /// Rides whose power curve could not be computed (missing file).
     curve_failed: std::collections::HashSet<String>,
@@ -301,6 +309,12 @@ impl App {
             icu_busy: false,
             icu_last_sync: None,
             icu_note: None,
+            strava: crate::strava::Worker::spawn(cc.egui_ctx.clone()),
+            strava_creds: Default::default(),
+            strava_edit: Default::default(),
+            strava_status: None,
+            strava_busy: false,
+            strava_pending: Vec::new(),
             egui_ctx: cc.egui_ctx.clone(),
             remote: None,
             remote_url: String::new(),
@@ -337,6 +351,8 @@ impl App {
             // Which graphics chip draws the app (two on many laptops).
             app.log_line(format!("Graphics: {renderer} (OpenGL {version})"));
         }
+        app.strava_creds = crate::strava::Credentials::load(&app.paths.strava_file());
+        app.strava_edit = app.strava_creds.clone();
         app.icu_creds = crate::icu::Credentials::load(&app.paths.credentials_file());
         app.icu_edit = app.icu_creds.clone();
         if app.icu_creds.is_set() {
@@ -1047,6 +1063,9 @@ impl App {
         if self.store.settings.icu_upload {
             self.icu_upload(summary.file.clone(), summary.name.clone());
         }
+        if self.store.settings.strava_upload {
+            self.strava_upload(&summary);
+        }
         self.save_now();
         self.modal = Some(Modal::Saved(Box::new(summary)));
         self.reset_ride();
@@ -1082,6 +1101,88 @@ impl App {
                 file,
                 name,
             });
+        }
+    }
+
+    /// Send a ride to Strava, as its FIT file where there is one.
+    fn strava_upload(&mut self, s: &ride::Summary) {
+        if !self.strava_creds.is_connected() {
+            return;
+        }
+        let fit = Path::new(&s.file).with_extension("fit");
+        let file = if fit.exists() {
+            fit.display().to_string()
+        } else {
+            s.file.clone()
+        };
+        self.log_line(format!("Uploading “{}” to Strava…", s.name));
+        self.strava_pending.push(s.file.clone());
+        self.strava.send(crate::strava::Request::Upload {
+            creds: self.strava_creds.clone(),
+            file,
+            name: s.name.clone(),
+            key: s.file.clone(),
+        });
+    }
+
+    fn pump_strava(&mut self) {
+        use crate::strava::Reply;
+        while let Ok(reply) = self.strava.rx.try_recv() {
+            match reply {
+                Reply::Connected(Ok(creds)) => {
+                    self.strava_busy = false;
+                    let who = if creds.athlete.is_empty() {
+                        "Connected".to_string()
+                    } else {
+                        format!("Connected as {}", creds.athlete)
+                    };
+                    self.log_line(format!("Strava: {who}"));
+                    self.strava_status = Some(Ok(who));
+                    if let Err(e) = creds.save(&self.paths.strava_file()) {
+                        self.notify(format!("Could not save the Strava connection: {e}"));
+                    }
+                    self.strava_edit = creds.clone();
+                    self.strava_creds = creds;
+                }
+                Reply::Connected(Err(e)) => {
+                    self.strava_busy = false;
+                    self.log_line(format!("Strava: {e}"));
+                    self.strava_status = Some(Err(e));
+                }
+                Reply::Uploaded { key, result, creds } => {
+                    self.strava_pending.retain(|k| *k != key);
+                    if let Some(c) = creds {
+                        let _ = c.save(&self.paths.strava_file());
+                        self.strava_creds = c;
+                    }
+                    let name = self
+                        .store
+                        .history
+                        .iter()
+                        .find(|h| h.file == key)
+                        .map(|h| h.name.clone())
+                        .unwrap_or_default();
+                    match result {
+                        Ok(id) => {
+                            if let Some(h) = self.store.history.iter_mut().find(|h| h.file == key) {
+                                h.strava_id = Some(id);
+                            }
+                            if let Some(Modal::Saved(s)) = &mut self.modal {
+                                if s.file == key {
+                                    s.strava_id = Some(String::new());
+                                }
+                            }
+                            self.mark_dirty();
+                            self.log_line(format!("Uploaded “{name}” to Strava"));
+                            self.notify("Ride uploaded to Strava");
+                        }
+                        Err(e) => {
+                            self.log_line(format!("Strava upload failed: {e}"));
+                            self.notify(format!("Upload to Strava failed: {e}"));
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1399,6 +1500,9 @@ impl App {
         self.tick_off_plan(workout_id.as_deref(), plan_date, started.date_naive());
         if self.store.settings.icu_upload {
             self.icu_upload(summary.file.clone(), summary.name.clone());
+        }
+        if self.store.settings.strava_upload {
+            self.strava_upload(&summary);
         }
         self.store.history.push(summary);
         self.store.history.sort_by_key(|h| h.start);
@@ -2063,6 +2167,7 @@ impl eframe::App for App {
         self.pump_events();
         self.tick_ride();
         self.pump_icu();
+        self.pump_strava();
         self.pump_update();
         if self.icu_creds.is_set()
             && self.store.settings.icu_sync_plan
@@ -5059,6 +5164,16 @@ impl App {
         let mut open = true;
         let ftp = self.store.settings.ftp;
         let s = &d.summary;
+        // On Strava already, on its way, or not yet (None: not connected).
+        let strava = self.strava_creds.is_connected().then(|| {
+            let done = self
+                .store
+                .history
+                .iter()
+                .any(|h| h.file == s.file && h.strava_id.is_some());
+            (done, self.strava_pending.contains(&s.file))
+        });
+        let mut upload = None;
         egui::Window::new(RichText::new(&s.name).strong())
             .id(egui::Id::unique("ride-details"))
             .open(&mut open)
@@ -5165,10 +5280,26 @@ impl App {
                                     .unwrap_or_default();
                                 crate::platform::open(dir);
                             }
+                            match strava {
+                                Some((true, _)) => {
+                                    ui.colored_label(theme::GOOD, "On Strava");
+                                }
+                                Some((false, true)) => {
+                                    ui.spinner();
+                                    ui.label("Uploading to Strava…");
+                                }
+                                Some((false, false)) if ui.button("Upload to Strava").clicked() => {
+                                    upload = Some(s.clone());
+                                }
+                                _ => {}
+                            }
                             ui.label(RichText::new(&s.file).small().weak());
                         });
                     });
             });
+        if let Some(s) = upload {
+            self.strava_upload(&s);
+        }
         if !open {
             self.details = None;
         }
@@ -5250,6 +5381,7 @@ impl App {
         self.calibration_window(ctx);
         self.details_window(ctx);
         let mut close = false;
+        let mut strava = None;
         match &self.modal {
             Some(Modal::Saved(s)) => {
                 let s = s.as_ref().clone();
@@ -5257,6 +5389,9 @@ impl App {
                     .collapsible(false)
                     .resizable(false)
                     .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+                    // Scroll rather than run off a short screen.
+                    .max_height(ctx.content_rect().height() - 80.0)
+                    .vscroll(true)
                     .show(ctx, |ui| {
                         ui.heading(&s.name);
                         egui::Grid::new("sum").num_columns(2).show(ui, |ui| {
@@ -5277,6 +5412,18 @@ impl App {
                         zone_breakdown(ui, &s);
                         ui.add_space(4.0);
                         ui.label(RichText::new(&s.file).small().weak());
+                        if self.strava_creds.is_connected() {
+                            ui.horizontal(|ui| {
+                                if s.strava_id.is_some() {
+                                    ui.colored_label(theme::GOOD, "Uploaded to Strava");
+                                } else if self.strava_pending.contains(&s.file) {
+                                    ui.spinner();
+                                    ui.label("Uploading to Strava…");
+                                } else if ui.button("Upload to Strava").clicked() {
+                                    strava = Some(s.clone());
+                                }
+                            });
+                        }
                         if let Some(m) = s.max_hr.filter(|m| *m > self.store.settings.max_hr) {
                             ui.separator();
                             ui.label(format!(
@@ -5405,6 +5552,9 @@ impl App {
                     });
             }
             None => {}
+        }
+        if let Some(s) = strava {
+            self.strava_upload(&s);
         }
         if close {
             self.modal = None;

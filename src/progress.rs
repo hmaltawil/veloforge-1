@@ -178,6 +178,7 @@ mod tests {
             power_zones: vec![],
             max_hr: None,
             icu_id: None,
+            strava_id: None,
             route_id: None,
             best,
         }

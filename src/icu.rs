@@ -30,19 +30,46 @@ impl Credentials {
     }
 
     pub fn save(&self, path: &std::path::Path) -> Result<()> {
-        use std::io::Write;
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        // Readable only by the user. On Windows the file lives in the user's
-        // own AppData folder, which other accounts cannot read.
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        let mut f = options.open(path)?;
-        f.write_all(serde_json::to_string_pretty(self)?.as_bytes())?;
-        Ok(())
+        save_private(path, &serde_json::to_string_pretty(self)?)
+    }
+}
+
+/// Write `text` to a file only you can read: on Unix its permissions say
+/// so; on Windows it lives in your own AppData folder, which other
+/// accounts cannot read.
+pub fn save_private(path: &std::path::Path, text: &str) -> Result<()> {
+    use std::io::Write;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut f = options.open(path)?;
+    // The mode above only applies to a new file: tighten an existing one too.
+    #[cfg(unix)]
+    std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    f.write_all(text.as_bytes())?;
+    Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod private_file_tests {
+    #[test]
+    fn saved_secrets_are_readable_only_by_you() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("vf-private-{}", std::process::id()));
+        let path = dir.join("secret.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Even a file that already exists with looser permissions.
+        std::fs::write(&path, "old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        super::save_private(&path, "new").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
 
@@ -80,7 +107,7 @@ pub fn base64(input: &[u8]) -> String {
     out
 }
 
-fn encode_query(s: &str) -> String {
+pub(crate) fn encode_query(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {

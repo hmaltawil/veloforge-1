@@ -18,6 +18,7 @@ mod ride;
 mod route;
 mod sound;
 mod store;
+mod strava;
 mod theme;
 mod update;
 mod workout;

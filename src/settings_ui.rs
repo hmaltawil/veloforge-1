@@ -14,18 +14,20 @@ pub(super) enum SettingsPage {
     Sound,
     Remote,
     Icu,
+    Strava,
     Routes,
     Data,
 }
 
 impl SettingsPage {
-    const ALL: [SettingsPage; 8] = [
+    const ALL: [SettingsPage; 9] = [
         SettingsPage::Profile,
         SettingsPage::Riding,
         SettingsPage::Display,
         SettingsPage::Sound,
         SettingsPage::Remote,
         SettingsPage::Icu,
+        SettingsPage::Strava,
         SettingsPage::Routes,
         SettingsPage::Data,
     ];
@@ -38,6 +40,7 @@ impl SettingsPage {
             SettingsPage::Sound => "Sound",
             SettingsPage::Remote => "Phone remote",
             SettingsPage::Icu => "intervals.icu",
+            SettingsPage::Strava => "Strava",
             SettingsPage::Routes => "Routes",
             SettingsPage::Data => "Data & about",
         }
@@ -55,6 +58,7 @@ impl SettingsPage {
                 "See your numbers on your phone and start, pause, skip steps or change the \
                  intensity without reaching for the keyboard."
             }
+            SettingsPage::Strava => "Upload your rides to Strava by themselves.",
             SettingsPage::Icu => {
                 "Bring the rides you plan on intervals.icu into your calendar, and upload your \
                  rides there automatically."
@@ -166,6 +170,7 @@ impl App {
                     SettingsPage::Sound => self.settings_sound(ui),
                     SettingsPage::Remote => self.settings_remote(ui),
                     SettingsPage::Icu => self.settings_icu(ui),
+                    SettingsPage::Strava => self.settings_strava(ui),
                     SettingsPage::Routes => self.settings_routes(ui),
                     SettingsPage::Data => self.settings_data(ui),
                 }
@@ -694,6 +699,128 @@ impl App {
             self.store.settings.remote_token = crate::remote::new_token();
             self.mark_dirty();
             self.start_remote();
+        }
+    }
+
+    fn settings_strava(&mut self, ui: &mut egui::Ui) {
+        let mut connect = false;
+        let mut disconnect = false;
+        let connected = self.strava_creds.is_connected();
+        card(ui, "Connect", |ui| {
+            if !connected {
+                ui.label(
+                    RichText::new(
+                        "Strava lets each person connect apps through their own free Strava \
+                         API application. Setting it up takes two minutes, once:",
+                    )
+                    .weak()
+                    .size(12.5),
+                );
+                ui.add_space(4.0);
+                for (i, step) in [
+                    "Open strava.com/settings/api (the button below) and sign in.",
+                    "Fill in the form: any name (e.g. VeloForge), category Training, any \
+                     website (e.g. https://github.com/hmaltawil/veloforge-1), and \
+                     Authorization Callback Domain: localhost. Upload any icon.",
+                    "Copy the Client ID and Client Secret it shows into the boxes below.",
+                    "Press Connect, then Authorize on the Strava page that opens.",
+                ]
+                .iter()
+                .enumerate()
+                {
+                    ui.label(RichText::new(format!("{}. {step}", i + 1)).size(12.5));
+                }
+                ui.add_space(4.0);
+                if ui.button("Open strava.com/settings/api").clicked() {
+                    crate::platform::open(crate::strava::API_SETTINGS);
+                }
+                ui.add_space(6.0);
+            }
+            row(ui, "Client ID", "", |ui| {
+                ui.add_enabled(
+                    !connected,
+                    egui::TextEdit::singleline(&mut self.strava_edit.client_id)
+                        .hint_text("e.g. 123456")
+                        .desired_width(240.0),
+                );
+            });
+            row(ui, "Client Secret", "Stored only on this computer.", |ui| {
+                ui.add_enabled(
+                    !connected,
+                    egui::TextEdit::singleline(&mut self.strava_edit.client_secret)
+                        .password(true)
+                        .hint_text("paste the Client Secret")
+                        .desired_width(240.0),
+                );
+            });
+            ui.horizontal(|ui| {
+                if connected {
+                    disconnect = ui.button("Disconnect").clicked();
+                } else {
+                    let can = self.strava_edit.has_app() && !self.strava_busy;
+                    connect = ui.add_enabled(can, egui::Button::new("Connect")).clicked();
+                }
+                if self.strava_busy {
+                    ui.spinner();
+                    ui.label("Waiting for you to press Authorize on Strava…");
+                }
+                match &self.strava_status {
+                    Some(Ok(m)) => {
+                        ui.colored_label(Color32::from_rgb(110, 210, 130), m);
+                    }
+                    Some(Err(e)) => {
+                        ui.colored_label(Color32::from_rgb(240, 130, 90), e);
+                    }
+                    None if connected => {
+                        let who = &self.strava_creds.athlete;
+                        ui.colored_label(
+                            Color32::from_rgb(110, 210, 130),
+                            if who.is_empty() {
+                                "Connected".to_string()
+                            } else {
+                                format!("Connected as {who}")
+                            },
+                        );
+                    }
+                    None => {}
+                }
+            });
+        });
+        if connect {
+            self.strava_busy = true;
+            self.strava_status = None;
+            self.strava
+                .send(crate::strava::Request::Connect(self.strava_edit.clone()));
+        }
+        if disconnect {
+            // Keep the app's ID and secret for reconnecting; forget the tokens.
+            self.strava_creds = crate::strava::Credentials {
+                client_id: self.strava_creds.client_id.clone(),
+                client_secret: self.strava_creds.client_secret.clone(),
+                ..Default::default()
+            };
+            self.strava_edit = self.strava_creds.clone();
+            self.strava_status = None;
+            let _ = self.strava_creds.save(&self.paths.strava_file());
+        }
+        if !self.strava_creds.is_connected() {
+            return;
+        }
+        let s = &mut self.store.settings;
+        let mut changed = false;
+        card(ui, "Uploads", |ui| {
+            changed |= row(
+                ui,
+                "Finished rides",
+                "Sent as FIT files and marked as indoor (trainer) rides.",
+                |ui| {
+                    ui.checkbox(&mut s.strava_upload, "Upload when I press Finish")
+                        .changed()
+                },
+            );
+        });
+        if changed {
+            self.mark_dirty();
         }
     }
 

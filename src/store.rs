@@ -51,6 +51,8 @@ pub struct Settings {
     pub icu_sync_plan: bool,
     /// Upload finished rides to intervals.icu.
     pub icu_upload: bool,
+    /// Upload finished rides to Strava (once connected).
+    pub strava_upload: bool,
     /// Time of day and weather in the 3D world.
     pub time_of_day: crate::world::TimeOfDay,
     pub camera: crate::world::Camera,
@@ -112,6 +114,7 @@ impl Default for Settings {
             onboarded: false,
             icu_sync_plan: true,
             icu_upload: true,
+            strava_upload: true,
             time_of_day: Default::default(),
             camera: Default::default(),
             weather: Default::default(),
@@ -164,6 +167,10 @@ impl Paths {
     /// intervals.icu credentials, kept apart from the rest and private.
     pub fn credentials_file(&self) -> PathBuf {
         self.data.join("credentials.json")
+    }
+
+    pub fn strava_file(&self) -> PathBuf {
+        self.data.join("strava.json")
     }
 }
 

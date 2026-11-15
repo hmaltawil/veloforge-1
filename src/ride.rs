@@ -139,6 +139,9 @@ pub struct Summary {
     /// intervals.icu activity id once uploaded.
     #[serde(default)]
     pub icu_id: Option<String>,
+    /// Strava activity id once uploaded.
+    #[serde(default)]
+    pub strava_id: Option<String>,
     /// Best average power per power-curve duration: (seconds, watts).
     #[serde(default)]
     pub best: Vec<(u32, f32)>,
@@ -308,6 +311,7 @@ pub fn summarize(
             .filter_map(|s| s.hr)
             .fold(None, |m, h| Some(m.map_or(h, |m: f32| m.max(h)))),
         icu_id: None,
+        strava_id: None,
         best: crate::progress::best_curve(samples),
         route_id: None,
     }
