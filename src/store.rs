@@ -27,6 +27,8 @@ pub struct Settings {
     pub view_3d: bool,
     /// Show the trainer's wheel speed rather than virtual speed.
     pub trainer_speed: bool,
+    /// Riding close behind the pacer or a ghost saves effort.
+    pub drafting: bool,
     pub max_hr: f32,
     /// Threshold heart rate (LTHR) in bpm, 0 while unknown.
     pub lthr: f32,
@@ -102,6 +104,7 @@ impl Default for Settings {
             auto_connect: Vec::new(),
             view_3d: true,
             trainer_speed: true,
+            drafting: true,
             max_hr: 185.0,
             lthr: 0.0,
             hr_basis: HrBasis::Max,

@@ -225,6 +225,7 @@ mod tests {
             mass: 83.0,
             cda: 0.32,
             crr: 0.004,
+            drafting: false,
             trainer_speed: true,
         };
         for i in 0..900 {

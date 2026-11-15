@@ -749,6 +749,11 @@ impl App {
         } else {
             Color32::from_rgb(110, 210, 130)
         };
+        let title = if self.ride.draft >= 0.02 {
+            format!("{title} · DRAFT −{:.0}%", self.ride.draft * 100.0)
+        } else {
+            title
+        };
         Some((title, value, unit, col))
     }
 
@@ -1119,6 +1124,7 @@ impl App {
             cda: s.cda,
             crr: s.crr,
             trainer_speed: s.trainer_speed,
+            drafting: s.drafting,
         };
         let route = &self.routes[self.route_idx];
         let before = self.ride.workout_time() as f32;
@@ -3148,9 +3154,28 @@ impl App {
     /// You, and whoever you ride with, for the 3D views.
     fn scene_riders(&self) -> Vec<Figure> {
         let [r, g, b] = self.store.settings.jersey;
+        // Whoever is behind moves into the other's line to draft: from
+        // 15 m back, but never on top of them when level.
+        let (mut mine, mut theirs) = (crate::world::LANE, crate::world::COMPANION_LANE);
+        if let Some(gap) = self
+            .ride
+            .companion_gap()
+            .filter(|_| self.store.settings.drafting)
+        {
+            let smooth = |a: f64, b: f64, x: f64| {
+                let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
+                t * t * (3.0 - 2.0 * t)
+            };
+            let tuck = smooth(15.0, 7.0, gap.abs()) * smooth(1.8, 3.0, gap.abs());
+            if gap > 0.0 {
+                mine += (theirs - mine) * tuck;
+            } else {
+                theirs += (mine - theirs) * tuck;
+            }
+        }
         let mut riders = vec![Figure {
             d: self.ride.route_pos(),
-            lateral: crate::world::LANE,
+            lateral: mine,
             crank: self.ride.crank_angle,
             speed: self.ride.speed,
             effort: self.ride.effort,
@@ -3171,7 +3196,7 @@ impl App {
             };
             riders.push(Figure {
                 d: self.ride.route_pos() + gap,
-                lateral: crate::world::COMPANION_LANE,
+                lateral: theirs,
                 crank: self.ride.companion_crank,
                 speed: self.ride.speed,
                 effort: self.ride.companion_effort,

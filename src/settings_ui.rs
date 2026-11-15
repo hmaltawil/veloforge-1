@@ -382,6 +382,16 @@ impl App {
                 ui.checkbox(&mut s.auto_pause, "Pause the clock when you stop pedalling")
                     .changed()
             });
+            changed |= row(
+                ui,
+                "Drafting",
+                "Close behind the pacer or a ghost you push less air: up to a third less \
+                 at half a metre, fading out by 15 m. Your speed and the trainer follow.",
+                |ui| {
+                    ui.checkbox(&mut s.drafting, "Riding behind someone saves effort")
+                        .changed()
+                },
+            );
         });
         card(ui, "Advanced: virtual speed", |ui| {
             ui.label(

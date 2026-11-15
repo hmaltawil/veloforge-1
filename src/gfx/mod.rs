@@ -575,7 +575,12 @@ impl GpuWorld {
                 p.ele,
             )
         };
-        let ([cx, cy, cz], target) = scene.camera.rig(route, d);
+        let my_lane = scene
+            .riders
+            .first()
+            .map(|r| r.lateral)
+            .unwrap_or(crate::world::LANE);
+        let ([cx, cy, cz], target) = scene.camera.rig(route, d, my_lane);
         let (dx, dy, dz) = (target[0] - cx, target[1] - cy, target[2] - cz);
         let yaw_t = dx.atan2(dz);
         let pitch_t = dy.atan2((dx * dx + dz * dz).sqrt()).clamp(-0.5, 0.5);

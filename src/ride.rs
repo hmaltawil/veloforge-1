@@ -106,6 +106,29 @@ pub struct Physics {
     /// Use the trainer's reported speed when it has one, instead of
     /// computing a virtual speed from power and gradient.
     pub trainer_speed: bool,
+    /// Riding close behind your companion saves effort, as outdoors.
+    pub drafting: bool,
+}
+
+/// The share of air drag saved riding `gap` metres behind another rider:
+/// about a third at half a metre, a quarter at 2 m, a tenth at 5 m,
+/// nothing beyond 15 m. Riding just ahead of someone saves a little too.
+pub fn draft_saving(gap: f64) -> f64 {
+    if gap > 0.2 && gap <= 15.0 {
+        0.35 * (-(gap - 0.5).max(0.0) / 4.0).exp()
+    } else if (-1.2..=-0.2).contains(&gap) {
+        0.03
+    } else {
+        0.0
+    }
+}
+
+/// How much less steep the road feels with `saving` of the air drag gone at
+/// `speed` m/s: the trainer's resistance follows the gradient, so drafting
+/// takes it down by the drag saved, as a gradient.
+pub fn draft_grade(saving: f64, speed: f64, phys: &Physics) -> f64 {
+    let drag = 0.5 * 1.204 * phys.cda as f64 * speed * speed;
+    saving * drag / (phys.mass as f64 * 9.81) * 100.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -348,6 +371,8 @@ pub struct Ride {
     pub pedalling: bool,
     pub companion_effort: f32,
     pub companion_pedalling: bool,
+    /// The share of your air drag saved by drafting just now.
+    pub draft: f64,
     next_sample: f64,
     idle_for: f64,
     last_ele: Option<f64>,
@@ -391,6 +416,7 @@ impl Ride {
             pedalling: false,
             companion_effort: 0.0,
             companion_pedalling: false,
+            draft: 0.0,
             next_sample: 0.0,
             idle_for: 0.0,
             last_ele: None,
@@ -507,8 +533,20 @@ impl Ride {
                 // Lightly smoothed so the world does not jerk between packets.
                 let target = (kmh as f64 / 3.6).clamp(0.0, 30.0);
                 self.speed += (target - self.speed) * (dt * 4.0).min(1.0);
+            }
+            // Drafting: behind your companion you push less air.
+            let gap = self.companion_gap().unwrap_or(f64::INFINITY);
+            self.draft = if phys.drafting {
+                draft_saving(gap)
             } else {
-                self.speed = virtual_speed(self.speed, live.power, road_grade, &phys, dt);
+                0.0
+            };
+            if trainer.is_none() {
+                let mine = Physics {
+                    cda: phys.cda * (1.0 - self.draft) as f32,
+                    ..phys
+                };
+                self.speed = virtual_speed(self.speed, live.power, road_grade, &mine, dt);
             }
             let moving =
                 live.power > 0.0 || live.cadence.is_some_and(|c| c > 0.0) || self.speed > 0.5;
@@ -520,7 +558,17 @@ impl Ride {
                 let companion_speed = match &mut self.companion {
                     Some(Companion::Pacer(p)) => {
                         let g = route.grade(p.distance + START_OFFSET);
-                        p.speed = virtual_speed(p.speed, p.watts, g, &phys, dt);
+                        // The pacer drafts behind you as well.
+                        let saving = if phys.drafting {
+                            draft_saving(-gap)
+                        } else {
+                            0.0
+                        };
+                        let theirs = Physics {
+                            cda: phys.cda * (1.0 - saving) as f32,
+                            ..phys
+                        };
+                        p.speed = virtual_speed(p.speed, p.watts, g, &theirs, dt);
                         p.distance += p.speed * dt;
                         p.speed
                     }
@@ -578,14 +626,21 @@ impl Ride {
             };
         }
 
+        // On the road, drafting makes the trainer easier too.
+        let draft = if running {
+            draft_grade(self.draft, self.speed, &phys)
+        } else {
+            0.0
+        };
+        let road = ((road_grade * difficulty as f64 - draft) as f32).clamp(-10.0, 20.0);
         let desired = match self.mode {
             Mode::Workout if running => match self.target() {
                 Some((p, false)) => Control::Erg((p * ftp).round().clamp(0.0, 2000.0) as u16),
-                _ => Control::Grade((road_grade as f32 * difficulty).clamp(-10.0, 20.0)),
+                _ => Control::Grade(road),
             },
             // Before starting / while paused in a workout keep resistance light.
             Mode::Workout => Control::Grade(0.0),
-            Mode::Route => Control::Grade((road_grade as f32 * difficulty).clamp(-10.0, 20.0)),
+            Mode::Route => Control::Grade(road),
             Mode::Slope => Control::Grade(self.manual_grade),
             Mode::HeartRate if running => {
                 let p = self.hr_control.update(self.clock, dt, live.hr, ftp);
@@ -874,6 +929,7 @@ mod tests {
             cda: 0.32,
             crr: 0.004,
             trainer_speed: true,
+            drafting: true,
         }
     }
 
@@ -1205,6 +1261,72 @@ mod tests {
         let p1 = c.update(60.0, 60.0, None, 200.0);
         assert_eq!(p0, p1);
         assert!(c.missing >= 60.0);
+    }
+
+    #[test]
+    fn drafting_saves_most_close_behind() {
+        assert!((draft_saving(0.5) - 0.35).abs() < 1e-9);
+        assert!(
+            (0.22..0.26).contains(&draft_saving(2.0)),
+            "{}",
+            draft_saving(2.0)
+        );
+        assert!((0.09..0.13).contains(&draft_saving(5.0)));
+        assert_eq!(draft_saving(20.0), 0.0);
+        // Level, or well ahead: nothing; just ahead: a little.
+        assert_eq!(draft_saving(0.0), 0.0);
+        assert_eq!(draft_saving(-5.0), 0.0);
+        assert_eq!(draft_saving(-0.6), 0.03);
+        // A third of the drag at 10 m/s is about 0.7% of gradient.
+        let g = draft_grade(0.3, 10.0, &phys());
+        assert!((0.6..0.8).contains(&g), "{g}");
+    }
+
+    #[test]
+    fn drafting_makes_you_faster_and_the_trainer_easier() {
+        let r = &route::builtin()[1];
+        let virt = Physics {
+            trainer_speed: false,
+            ..phys()
+        };
+        let live = Live {
+            power: 200.0,
+            cadence: Some(90.0),
+            hr: None,
+            speed_kmh: None,
+        };
+        let ride_behind = |drafting: bool| {
+            let mut ride = Ride::new(Mode::Route, None, None);
+            ride.start();
+            ride.speed = 9.0;
+            // A pacer just ahead, at your speed.
+            ride.companion = Some(Companion::Pacer(Pacer {
+                watts: 200.0,
+                distance: 1.0,
+                speed: 9.0,
+            }));
+            let mut grade = 0.0;
+            for _ in 0..20 {
+                if let Some(Control::Grade(g)) = ride.update(
+                    0.05,
+                    live,
+                    r,
+                    Physics { drafting, ..virt },
+                    250.0,
+                    1.0,
+                    false,
+                ) {
+                    grade = g;
+                }
+            }
+            (ride.draft, ride.speed, grade)
+        };
+        let (draft, fast, easy) = ride_behind(true);
+        let (none, slow, hard) = ride_behind(false);
+        assert!(draft > 0.25, "{draft}");
+        assert_eq!(none, 0.0);
+        assert!(fast > slow, "{fast} > {slow}");
+        assert!(easy < hard - 0.3, "{easy} < {hard}");
     }
 
     #[test]

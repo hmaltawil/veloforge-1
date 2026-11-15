@@ -51,8 +51,9 @@ impl Camera {
         Camera::ALL[(i + 1) % Camera::ALL.len()]
     }
     /// The eye and the point it looks at, as [east, up, north] in metres,
-    /// for a rider `d` metres along `route` in your lane.
-    pub fn rig(self, route: &Route, d: f64) -> ([f64; 3], [f64; 3]) {
+    /// for a rider `d` metres along `route`, `lane` metres right of its
+    /// middle.
+    pub fn rig(self, route: &Route, d: f64, lane: f64) -> ([f64; 3], [f64; 3]) {
         let at = |s: f64, lat: f64, up: f64| {
             let p = route.at(s);
             [
@@ -64,21 +65,21 @@ impl Camera {
         let ground = route.at(d).ele;
         // Behind and above the rider, never sunk below them on a crest.
         let behind = |back: f64, height: f64| {
-            let mut eye = at(d - back, LANE, 0.0);
+            let mut eye = at(d - back, lane, 0.0);
             eye[1] = eye[1].max(ground - 0.4 * back / 7.0) + height;
             eye
         };
         match self {
-            Camera::Chase => (behind(7.0, 2.5), at(d + 16.0, LANE, 0.8)),
-            Camera::Close => (behind(3.8, 1.8), at(d + 8.0, LANE, 0.45)),
+            Camera::Chase => (behind(7.0, 2.5), at(d + 16.0, lane, 0.8)),
+            Camera::Close => (behind(3.8, 1.8), at(d + 8.0, lane, 0.45)),
             Camera::Side => {
-                let mut eye = at(d + 0.3, LANE + 3.2, 0.0);
+                let mut eye = at(d + 0.3, lane + 3.2, 0.0);
                 eye[1] = ground + 1.25;
-                let mut target = at(d + 0.3, LANE, 0.0);
+                let mut target = at(d + 0.3, lane, 0.0);
                 target[1] = ground + 0.85;
                 (eye, target)
             }
-            Camera::Overhead => (behind(9.0, 7.5), at(d + 5.0, LANE, 0.0)),
+            Camera::Overhead => (behind(9.0, 7.5), at(d + 5.0, lane, 0.0)),
         }
     }
 }
@@ -524,7 +525,8 @@ impl World {
         let painter = painter.with_clip_rect(rect);
 
         // --- camera -------------------------------------------------------
-        let (cpos, target) = scene.camera.rig(route, d);
+        let lane = scene.riders.first().map(|r| r.lateral).unwrap_or(LANE);
+        let (cpos, target) = scene.camera.rig(route, d, lane);
         let dir = sub(target, cpos);
         let yaw_t = dir[0].atan2(dir[2]);
         let pitch_t = dir[1]
