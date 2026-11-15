@@ -125,6 +125,9 @@ pub struct Summary {
     pub file: String,
     #[serde(default)]
     pub ftp_estimate: Option<f32>,
+    /// Threshold heart rate measured by the 20-minute test.
+    #[serde(default)]
+    pub lthr_estimate: Option<f32>,
     /// Seconds in each heart rate zone (Z1-Z5).
     #[serde(default)]
     pub hr_zones: Vec<f32>,
@@ -256,7 +259,7 @@ pub fn summarize(
     samples: &[Sample],
     meta: SummaryMeta,
     ftp: f32,
-    max_hr: f32,
+    zones: &crate::charts::HrZones,
     file: String,
 ) -> Summary {
     let p: Vec<f32> = samples.iter().map(|s| s.power).collect();
@@ -269,7 +272,7 @@ pub fn summarize(
     };
     let mut hr_zones = vec![0.0; 5];
     for h in samples.iter().filter_map(|s| s.hr).filter(|h| *h > 0.0) {
-        hr_zones[crate::charts::hr_zone(h, max_hr)] += 1.0;
+        hr_zones[zones.zone(h)] += 1.0;
     }
     let mut power_zones = vec![0.0; 6];
     if ftp > 0.0 {
@@ -297,6 +300,7 @@ pub fn summarize(
         avg_cadence: mean(&|s| s.cadence),
         file,
         ftp_estimate: None,
+        lthr_estimate: None,
         hr_zones,
         power_zones,
         max_hr: samples
@@ -631,17 +635,36 @@ impl Ride {
         }
     }
 
-    pub fn summary(&self, ftp: f32, max_hr: f32, file: String) -> Summary {
+    /// Threshold heart rate from the 20-minute test: 95% of the average
+    /// heart rate over the best 20 minutes of power (Joe Friel's method).
+    /// Needs a heart rate for most of those 20 minutes.
+    pub fn lthr_estimate(&self) -> Option<f32> {
+        if self.workout.as_ref()?.id != "ftp-20" {
+            return None;
+        }
+        let (start, _) = workout::best_window(&self.power_series(), 20 * 60)?;
+        let hr: Vec<f32> = self
+            .samples
+            .get(start..start + 20 * 60)?
+            .iter()
+            .filter_map(|s| s.hr)
+            .filter(|h| *h > 0.0)
+            .collect();
+        (hr.len() >= 16 * 60).then(|| (hr.iter().sum::<f32>() / hr.len() as f32 * 0.95).round())
+    }
+
+    pub fn summary(&self, ftp: f32, zones: &crate::charts::HrZones, file: String) -> Summary {
         let meta = SummaryMeta {
             start: self.started.unwrap_or_else(Local::now),
             name: self.title(),
             workout_id: self.workout.as_ref().map(|w| w.id.clone()),
         };
-        let mut s = summarize(&self.samples, meta, ftp, max_hr, file);
+        let mut s = summarize(&self.samples, meta, ftp, zones, file);
         // The live totals are integrated more finely than the 1 Hz samples.
         s.distance_m = self.distance;
         s.ascent_m = self.ascent;
         s.ftp_estimate = self.ftp_estimate();
+        s.lthr_estimate = self.lthr_estimate();
         s
     }
 
@@ -1203,6 +1226,41 @@ mod tests {
             faster.companion.as_ref().map(Companion::restarted),
             Some(Companion::pacer(250.0))
         );
+    }
+
+    #[test]
+    fn the_20_minute_test_measures_threshold_heart_rate() {
+        let test = crate::workout::builtin()
+            .into_iter()
+            .find(|w| w.id == "ftp-20")
+            .unwrap();
+        let mut ride = Ride::new(Mode::Workout, Some(test), None);
+        // 10 minutes easy, 20 minutes hard, 5 minutes easy.
+        let effort = |i: usize| match i {
+            0..600 => (150.0, 125.0),
+            600..1800 => (260.0, 170.0),
+            _ => (120.0, 135.0),
+        };
+        ride.samples = (0..2100)
+            .map(|i| Sample {
+                time: Utc::now(),
+                elapsed: i as f32,
+                power: effort(i).0,
+                cadence: None,
+                hr: Some(effort(i).1),
+                speed: 8.0,
+                distance: i as f64 * 8.0,
+                ele: 0.0,
+            })
+            .collect();
+        // 95% of 170 bpm.
+        assert_eq!(ride.lthr_estimate(), Some(162.0));
+        assert_eq!(ride.ftp_estimate(), Some(247.0));
+        // Without a heart rate strap there is nothing to measure.
+        for s in &mut ride.samples {
+            s.hr = None;
+        }
+        assert_eq!(ride.lthr_estimate(), None);
     }
 
     #[test]

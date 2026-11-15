@@ -756,7 +756,7 @@ impl App {
             "power": power.map(f32::round),
             "power_color": power.map(|p| hex(charts::zone_color(p / ftp))),
             "hr": hr.map(f32::round),
-            "hr_color": hr.map(|h| hex(charts::hr_zone_color(charts::hr_zone(h, s.max_hr)))),
+            "hr_color": hr.map(|h| hex(charts::hr_zone_color(s.hr_zones().zone(h)))),
             "target": target,
             "target_color": target.map(|t| hex(charts::zone_color(t / ftp))),
             "cadence": fresh(&self.metrics.cadence).map(f32::round),
@@ -1031,9 +1031,8 @@ impl App {
             self.notify(format!("Could not write activity: {e}"));
             return;
         }
-        let mut summary =
-            self.ride
-                .summary(ftp, self.store.settings.max_hr, file.display().to_string());
+        let zones = self.store.settings.hr_zones();
+        let mut summary = self.ride.summary(ftp, &zones, file.display().to_string());
         summary.route_id = Some(self.routes[self.route_idx].id.clone());
         self.tick_off_plan(
             summary.workout_id.as_deref(),
@@ -1385,7 +1384,7 @@ impl App {
             &activity.samples,
             meta,
             s.ftp,
-            s.max_hr,
+            &s.hr_zones(),
             file.display().to_string(),
         );
         summary.route_id = info["route_id"].as_str().map(String::from);
@@ -2032,12 +2031,11 @@ fn zone_breakdown(ui: &mut egui::Ui, s: &Summary) {
         &POWER_ZONE_NAMES,
         &power_zone_color,
     );
-    let hr_names: Vec<&str> = charts::HR_ZONES.iter().map(|z| z.0).collect();
     rows(
         ui,
         "Time in heart rate zones",
         &s.hr_zones,
-        &hr_names,
+        &charts::HR_ZONE_NAMES,
         &charts::hr_zone_color,
     );
 }
@@ -2666,15 +2664,15 @@ impl App {
                 }
                 Mode::HeartRate => {
                     ui.label(RichText::new("Target").color(theme::TEXT_DIM));
-                    let max_hr = self.store.settings.max_hr;
+                    let zones = self.store.settings.hr_zones();
                     ui.add(
                         egui::DragValue::new(&mut self.ride.hr_control.target_bpm)
                             .range(80.0..=200.0)
                             .suffix(" bpm"),
                     )
                     .on_hover_text("Up/Down arrow keys change it by 2 bpm");
-                    let z = charts::hr_zone(self.ride.hr_control.target_bpm, max_hr);
-                    ui.label(RichText::new(charts::HR_ZONES[z].0).color(charts::hr_zone_color(z)));
+                    let z = zones.zone(self.ride.hr_control.target_bpm);
+                    ui.label(RichText::new(charts::HR_ZONE_NAMES[z]).color(charts::hr_zone_color(z)));
                 }
                 Mode::Route => {
                     ui.label(RichText::new("Difficulty").color(theme::TEXT_DIM));
@@ -3102,7 +3100,7 @@ impl App {
         }
         let hr = fresh(&self.metrics.hr);
         let hr_col = hr
-            .map(|h| charts::hr_zone_color(charts::hr_zone(h, s.max_hr)))
+            .map(|h| charts::hr_zone_color(s.hr_zones().zone(h)))
             .unwrap_or(Color32::from_rgb(230, 70, 80));
         tile(
             painter,
@@ -3113,14 +3111,16 @@ impl App {
             hr_col,
         );
         if let Some(h) = hr {
-            let z = charts::hr_zone(h, s.max_hr);
+            let z = s.hr_zones().zone(h);
+            let share = match s.hr_basis {
+                crate::store::HrBasis::Threshold if s.lthr > 0.0 => {
+                    format!("{:.0}% threshold", h / s.lthr * 100.0)
+                }
+                _ => format!("{:.0}% max", h / s.max_hr * 100.0),
+            };
             sub(
                 tiles[3],
-                format!(
-                    "{} · {:.0}% max",
-                    charts::HR_ZONES[z].0,
-                    h / s.max_hr * 100.0
-                ),
+                format!("{} · {share}", charts::HR_ZONE_NAMES[z]),
                 hr_col,
             );
         }
@@ -3289,7 +3289,7 @@ impl App {
                     Color32::from_gray(210),
                 );
                 if let Some(h) = hr {
-                    let col = charts::hr_zone_color(charts::hr_zone(h, s.max_hr));
+                    let col = charts::hr_zone_color(s.hr_zones().zone(h));
                     bar((h / c.target_bpm.max(1.0)).min(1.2) / 1.2, col);
                 }
             }
@@ -4516,6 +4516,9 @@ impl App {
                             if let Some(f) = h.ftp_estimate {
                                 name += &format!("  (FTP est. {f:.0} W)");
                             }
+                            if let Some(t) = h.lthr_estimate {
+                                name += &format!("  (threshold HR {t:.0} bpm)");
+                            }
                             if ui
                                 .link(name)
                                 .on_hover_text("Show charts and details")
@@ -5274,6 +5277,42 @@ impl App {
                             ));
                             if ui.button(format!("Set max heart rate to {m:.0}")).clicked() {
                                 self.store.settings.max_hr = m.round();
+                                self.mark_dirty();
+                            }
+                        }
+                        if let Some(t) = s.lthr_estimate {
+                            ui.separator();
+                            let set = &self.store.settings;
+                            let current = if set.lthr > 0.0 {
+                                format!("currently {:.0} bpm", set.lthr)
+                            } else {
+                                "not set yet".to_string()
+                            };
+                            ui.label(
+                                RichText::new(format!(
+                                    "Threshold heart rate: {t:.0} bpm ({current})"
+                                ))
+                                .size(16.0),
+                            );
+                            ui.label(
+                                RichText::new(
+                                    "95% of your average heart rate over the 20 minutes. Heart \
+                                     rate zones based on it fit your fitness better than ones \
+                                     based on your max.",
+                                )
+                                .small()
+                                .weak(),
+                            );
+                            let using = set.hr_basis == crate::store::HrBasis::Threshold
+                                && (set.lthr - t).abs() < 0.5;
+                            if !using
+                                && ui
+                                    .button(format!("Use {t:.0} bpm for my heart rate zones"))
+                                    .clicked()
+                            {
+                                let set = &mut self.store.settings;
+                                set.lthr = t;
+                                set.hr_basis = crate::store::HrBasis::Threshold;
                                 self.mark_dirty();
                             }
                         }

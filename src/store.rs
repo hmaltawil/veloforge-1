@@ -28,6 +28,10 @@ pub struct Settings {
     /// Show the trainer's wheel speed rather than virtual speed.
     pub trainer_speed: bool,
     pub max_hr: f32,
+    /// Threshold heart rate (LTHR) in bpm, 0 while unknown.
+    pub lthr: f32,
+    /// What the heart rate zones are worked out from.
+    pub hr_basis: HrBasis,
     /// Audio cues during workouts.
     pub sounds: bool,
     pub volume: f32,
@@ -60,6 +64,27 @@ pub struct Settings {
     pub check_updates: bool,
 }
 
+/// What heart rate zones are worked out from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum HrBasis {
+    #[default]
+    Max,
+    Threshold,
+}
+
+impl Settings {
+    /// Heart rate zones from max heart rate, or from threshold heart rate
+    /// when chosen and known.
+    pub fn hr_zones(&self) -> crate::charts::HrZones {
+        match self.hr_basis {
+            HrBasis::Threshold if self.lthr > 0.0 => {
+                crate::charts::HrZones::from_threshold(self.lthr, self.max_hr)
+            }
+            _ => crate::charts::HrZones::from_max(self.max_hr),
+        }
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Settings {
@@ -76,6 +101,8 @@ impl Default for Settings {
             view_3d: true,
             trainer_speed: true,
             max_hr: 185.0,
+            lthr: 0.0,
+            hr_basis: HrBasis::Max,
             sounds: true,
             volume: 0.6,
             gpu_3d: true,

@@ -3,6 +3,7 @@
 //! on the right).
 
 use super::*;
+use crate::store::HrBasis;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(super) enum SettingsPage {
@@ -202,6 +203,59 @@ impl App {
                     .changed()
                 },
             );
+            changed |= row(
+                ui,
+                "Threshold heart rate",
+                "The heart rate you can hold for about an hour (LTHR). The 20-minute FTP test \
+                 measures it with a heart rate strap, or enter one you know.",
+                |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut s.lthr)
+                            .range(0.0..=220.0)
+                            .custom_formatter(|v, _| {
+                                if v < 1.0 {
+                                    "not set".into()
+                                } else {
+                                    format!("{v:.0} bpm")
+                                }
+                            })
+                            .custom_parser(|t| {
+                                let t = t.trim().trim_end_matches("bpm").trim();
+                                if t.is_empty() || t.starts_with("not") {
+                                    Some(0.0)
+                                } else {
+                                    t.parse().ok()
+                                }
+                            }),
+                    )
+                    .changed()
+                },
+            );
+            changed |= row(
+                ui,
+                "Heart rate zones from",
+                "Max heart rate: 50 to 100% of it. Threshold heart rate (needs one above): \
+                 Coggan's cycling zones, which follow your fitness more closely.",
+                |ui| {
+                    ui.horizontal(|ui| {
+                        let mut c = ui
+                            .radio_value(&mut s.hr_basis, HrBasis::Max, "Max heart rate")
+                            .changed();
+                        c |= ui
+                            .add_enabled_ui(s.lthr > 0.0, |ui| {
+                                ui.radio_value(
+                                    &mut s.hr_basis,
+                                    HrBasis::Threshold,
+                                    "Threshold heart rate",
+                                )
+                            })
+                            .inner
+                            .changed();
+                        c
+                    })
+                    .inner
+                },
+            );
             mass_changed |= row(ui, "Your weight", "For W/kg and virtual speed.", |ui| {
                 ui.add(
                     egui::DragValue::new(&mut s.rider_kg)
@@ -231,10 +285,16 @@ impl App {
             self.mark_dirty();
         }
 
-        let (ftp, max_hr) = (self.store.settings.ftp, self.store.settings.max_hr);
+        let set = &self.store.settings;
+        let ftp = set.ftp;
+        let hr_zones = set.hr_zones();
+        let basis = match set.hr_basis {
+            HrBasis::Threshold if set.lthr > 0.0 => "threshold heart rate",
+            _ => "max heart rate",
+        };
         card(ui, "Your zones", |ui| {
             ui.label(
-                RichText::new("Worked out from your FTP and max heart rate above.")
+                RichText::new(format!("Worked out from your FTP and {basis} above."))
                     .weak()
                     .size(12.5),
             );
@@ -261,15 +321,13 @@ impl App {
                 cols[1].label(RichText::new("Heart rate").strong());
                 zone_list(
                     &mut cols[1],
-                    charts::HR_ZONES
-                        .iter()
-                        .enumerate()
-                        .map(|(i, (name, lo, hi))| {
-                            (
-                                charts::hr_zone_color(i),
-                                format!("{name}: {:.0}–{:.0} bpm", lo * max_hr, hi * max_hr),
-                            )
-                        }),
+                    charts::HR_ZONE_NAMES.iter().enumerate().map(|(i, name)| {
+                        let (lo, hi) = hr_zones.range(i);
+                        (
+                            charts::hr_zone_color(i),
+                            format!("{name}: {lo:.0}–{hi:.0} bpm"),
+                        )
+                    }),
                 );
             });
         });

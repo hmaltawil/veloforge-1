@@ -450,19 +450,51 @@ pub fn live_chart(
     );
 }
 
-/// Heart rate zones as fractions of max heart rate: (name, low, high).
-pub const HR_ZONES: [(&str, f32, f32); 5] = [
-    ("Z1 Recovery", 0.50, 0.60),
-    ("Z2 Endurance", 0.60, 0.70),
-    ("Z3 Tempo", 0.70, 0.80),
-    ("Z4 Threshold", 0.80, 0.90),
-    ("Z5 Maximum", 0.90, 1.00),
+pub const HR_ZONE_NAMES: [&str; 5] = [
+    "Z1 Recovery",
+    "Z2 Endurance",
+    "Z3 Tempo",
+    "Z4 Threshold",
+    "Z5 Maximum",
 ];
 
-/// Heart rate zone index (0-4); anything below Z2 counts as Z1.
-pub fn hr_zone(hr: f32, max_hr: f32) -> usize {
-    let f = hr / max_hr.max(1.0);
-    HR_ZONES.iter().rposition(|z| f >= z.1).unwrap_or(0)
+/// Heart rate zones in bpm: where each of the five starts, and the top of
+/// the last. Anything below Z2 counts as Z1.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HrZones {
+    pub starts: [f32; 5],
+    pub top: f32,
+}
+
+impl HrZones {
+    /// As shares of max heart rate: from 50, 60, 70, 80 and 90%.
+    pub fn from_max(max_hr: f32) -> HrZones {
+        HrZones {
+            starts: [0.5, 0.6, 0.7, 0.8, 0.9].map(|f| f * max_hr),
+            top: max_hr,
+        }
+    }
+
+    /// As shares of threshold heart rate (Coggan's cycling zones): from
+    /// 69, 84, 95 and 106% for zones 2 to 5.
+    pub fn from_threshold(lthr: f32, max_hr: f32) -> HrZones {
+        let starts = [0.55, 0.69, 0.84, 0.95, 1.06].map(|f| f * lthr);
+        HrZones {
+            starts,
+            top: max_hr.max(starts[4] + 1.0),
+        }
+    }
+
+    /// Zone index (0-4) for a heart rate.
+    pub fn zone(&self, hr: f32) -> usize {
+        self.starts.iter().rposition(|&s| hr >= s).unwrap_or(0)
+    }
+
+    /// The bpm range of zone `z`.
+    pub fn range(&self, z: usize) -> (f32, f32) {
+        let hi = self.starts.get(z + 1).copied().unwrap_or(self.top);
+        (self.starts[z.min(4)], hi)
+    }
 }
 
 pub fn hr_zone_color(z: usize) -> Color32 {
@@ -904,10 +936,20 @@ mod tests {
 
     #[test]
     fn zones() {
-        assert_eq!(hr_zone(80.0, 190.0), 0);
-        assert_eq!(hr_zone(120.0, 190.0), 1); // 63%
-        assert_eq!(hr_zone(160.0, 190.0), 4 - 1); // 84%
-        assert_eq!(hr_zone(185.0, 190.0), 4);
+        let by_max = HrZones::from_max(190.0);
+        assert_eq!(by_max.zone(80.0), 0);
+        assert_eq!(by_max.zone(120.0), 1); // 63%
+        assert_eq!(by_max.zone(160.0), 3); // 84%
+        assert_eq!(by_max.zone(185.0), 4);
+        assert_eq!(by_max.range(4), (171.0, 190.0));
+        // Threshold 165 bpm: Z2 from 114, Z3 from 139, Z4 from 157, Z5 from 175.
+        let by_lthr = HrZones::from_threshold(165.0, 190.0);
+        assert_eq!(by_lthr.zone(110.0), 0);
+        assert_eq!(by_lthr.zone(120.0), 1);
+        assert_eq!(by_lthr.zone(150.0), 2);
+        assert_eq!(by_lthr.zone(165.0), 3);
+        assert_eq!(by_lthr.zone(180.0), 4);
+        assert_eq!(by_lthr.range(4).1, 190.0);
         assert_eq!(power_zone(0.5), 0);
         assert_eq!(power_zone(0.88), 2);
         assert_eq!(power_zone(1.0), 3);

@@ -352,16 +352,23 @@ pub fn normalized_power(samples: &[f32]) -> f32 {
 
 /// Best average power over a window of `secs` samples.
 pub fn best_average(samples: &[f32], secs: usize) -> Option<f32> {
+    best_window(samples, secs).map(|(_, avg)| avg)
+}
+
+/// Where the best `secs`-long average starts, and that average.
+pub fn best_window(samples: &[f32], secs: usize) -> Option<(usize, f32)> {
     if secs == 0 || samples.len() < secs {
         return None;
     }
     let mut sum: f64 = samples[..secs].iter().map(|&v| v as f64).sum();
-    let mut best = sum;
+    let (mut best, mut at) = (sum, 0);
     for i in secs..samples.len() {
         sum += samples[i] as f64 - samples[i - secs] as f64;
-        best = best.max(sum);
+        if sum > best {
+            (best, at) = (sum, i + 1 - secs);
+        }
     }
-    Some((best / secs as f64) as f32)
+    Some((at, (best / secs as f64) as f32))
 }
 
 pub fn fmt_dur(secs: f32) -> String {
@@ -659,7 +666,7 @@ pub fn builtin() -> Vec<Workout> {
             }
             s
         }),
-        w("ftp-20", "20 Minute FTP Test", Test, "Free-ride the 20 minute block as hard as you can sustain. FTP is estimated as 95% of the 20 minute average.", vec![
+        w("ftp-20", "20 Minute FTP Test", Test, "Free-ride the 20 minute block as hard as you can sustain. FTP is estimated as 95% of the 20 minute average. Wear a heart rate strap to measure your threshold heart rate too.", vec![
             warmup(10),
             reps(3, MIN, 1.05, MIN, 0.55),
             steady(5, 0.55),

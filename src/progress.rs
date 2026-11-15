@@ -173,6 +173,7 @@ mod tests {
             avg_cadence: None,
             file: String::new(),
             ftp_estimate: None,
+            lthr_estimate: None,
             hr_zones: vec![],
             power_zones: vec![],
             max_hr: None,

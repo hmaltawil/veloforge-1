@@ -455,7 +455,7 @@ impl App {
             theme::TEXT_DIM,
         );
         if let Some(h) = hr {
-            let z = charts::hr_zone(h, s.max_hr);
+            let z = s.hr_zones().zone(h);
             painter.text(
                 Pos2::new(x1, y),
                 Align2::RIGHT_TOP,
