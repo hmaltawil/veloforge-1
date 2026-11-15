@@ -1,0 +1,18 @@
+# The model lab: the app's rider, bike and tree code compiled to
+# WebAssembly for a viewer page (see README.md here). Not part of the app.
+[package]
+name = "model-lab"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+panic = "abort"
+
+[workspace]
