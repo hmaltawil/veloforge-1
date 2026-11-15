@@ -793,6 +793,13 @@ impl App {
                 self.store.settings.view_3d = !self.store.settings.view_3d;
                 self.mark_dirty();
             }
+            Action::Camera => {
+                let s = &mut self.store.settings;
+                s.camera = s.camera.next();
+                let label = s.camera.label();
+                self.mark_dirty();
+                self.notify(format!("Camera: {label}"));
+            }
             Action::Finish => {
                 if self.ride_active() {
                     self.finish_ride();
@@ -858,11 +865,13 @@ impl App {
     fn pump_remote(&mut self, ctx: &egui::Context) {
         let Some(r) = &self.remote else { return };
         let actions: Vec<_> = r.rx.try_iter().collect();
+        let acted = !actions.is_empty();
         for a in actions {
             self.ride_action(a);
         }
         let Some(r) = &self.remote else { return };
-        if self.remote_pushed.elapsed().as_millis() >= 300 {
+        // After a button press, answer at once so the phone shows the result.
+        if acted || self.remote_pushed.elapsed().as_millis() >= 300 {
             self.remote_pushed = Instant::now();
             r.set_state(self.remote_state());
         }
@@ -975,6 +984,15 @@ impl App {
             "speed_unit": s.units.speed_unit(),
             "distance_unit": s.units.distance_unit(),
             "grade": grade,
+            "grade_color": hex(charts::grade_color(grade as f32)),
+            "draft": (self.ride.draft >= 0.02).then(|| (self.ride.draft * 100.0).round()),
+            "segment": self.segment_lines().into_iter().take(2).map(|l| l.0).collect::<Vec<_>>(),
+            "notice": self
+                .toast
+                .as_ref()
+                .filter(|(_, at)| at.elapsed().as_secs_f32() < 5.0)
+                .map(|(m, _)| m.clone()),
+            "camera": s.camera.label(),
             "time": fmt_dur(self.ride.elapsed as f32),
             "distance": s.units.distance(self.ride.distance),
             "interval": interval,
@@ -2450,15 +2468,9 @@ impl eframe::App for App {
                     i.consume_key(none, egui::Key::C),
                 )
             });
-            if c {
-                let s = &mut self.store.settings;
-                s.camera = s.camera.next();
-                let label = s.camera.label();
-                self.mark_dirty();
-                self.notify(format!("Camera: {label}"));
-            }
             use crate::remote::Action;
             for (pressed, a) in [
+                (c, Action::Camera),
                 (n, Action::Skip),
                 (v, Action::View),
                 (space, Action::Toggle),

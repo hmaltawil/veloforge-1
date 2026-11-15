@@ -15,7 +15,7 @@ A free, local indoor-cycling app for Linux, Windows and macOS: smart trainer con
 - **Ride with someone**: a pacer at a power you choose, or a ghost of your own best ride on the same route. Tuck in close behind and you **draft**: up to a third less air to push, so you go faster and the trainer gets easier.
 - **3D world** rendered on your graphics card: farmland, lakes, snowy mountains, an island coast road and a hairpin climb, by day, at sunset or at night, in sun, cloud, fog or rain. Trees cast shadows across the road, grass and wild flowers bend in the wind, clouds drift and shade the hills, and the low sun glitters on the water. Your rider is sculpted as one body with a real bike fit: they pedal with natural ankle movement, breathe harder as the effort rises, stand up on steep climbs and tuck on fast descents. Watch from behind, close up, alongside or from above (press **C**). Every climb is a timed **segment**: VeloForge finds them on each route (imported ones too), shows your time and your best as you ride, cheers a new personal record, and keeps a table of your records. Import any `.gpx` file to ride a real route. A **dashboard** view shows the numbers instead (press **V**).
 - **Metric or imperial**: km/h, km, metres and kg, or mph, miles, feet and pounds, everywhere in the app.
-- **Phone remote**: your phone shows the live numbers and starts, pauses, skips steps or changes the intensity, over your home Wi-Fi.
+- **Phone remote**: your phone shows the live numbers, the interval, the climb and drafting, and starts, pauses, skips steps, changes the intensity, the view or the camera, over your home Wi-Fi.
 - **intervals.icu**: the rides you plan there appear in your calendar, and finished rides upload by themselves.
 - **Strava**: finished rides upload by themselves, as indoor rides (connect once in **Settings → Strava**, through your own free Strava API application; VeloForge shows you how).
 - **Progress**: fitness, fatigue and form, weekly hours, your power curve, FTP history and monthly totals.
@@ -137,7 +137,7 @@ Shortcuts: **Space** start/pause, **↑/↓** intensity / slope / difficulty / t
 
 ### Phone remote
 
-Turn it on in **Settings → Phone remote** and scan the QR code with your phone's camera (the phone must be on the same Wi-Fi). The page shows power, heart rate, the current interval and big buttons to start, pause, skip a step and change the intensity. The link contains an access code, so other devices on your network can't control your ride; **New code** makes a new link.
+Turn it on in **Settings → Phone remote** and scan the QR code with your phone's camera (the phone must be on the same Wi-Fi). The page shows power, heart rate, target or speed, cadence, gradient and distance, the current interval, the climb you're on (with your best time) and how much you save drafting, and has big buttons to start, pause, skip a step, change the intensity, switch between the 3D view and the dashboard, change the camera and finish the ride. Messages from the app, such as "Ride saved", appear on the phone too. The link contains an access code, so other devices on your network can't control your ride; **New code** makes a new link.
 
 If the phone can't connect, allow the port in the firewall:
 

@@ -1,6 +1,7 @@
 //! Phone remote: a small web server on the local network. A phone on the
 //! same Wi-Fi opens the page (from a QR code in Settings), sees the live
-//! numbers and can start, pause, skip steps and change the intensity.
+//! numbers, the interval, segment and drafting, and can start, pause, skip
+//! steps, change the intensity, switch the view and the camera, and finish.
 //!
 //! Every request must carry the access code from the QR code, so other
 //! devices on the network can't control the ride. Nothing else is exposed.
@@ -26,6 +27,8 @@ pub enum Action {
     Skip,
     /// 3D view <-> dashboard.
     View,
+    /// Next camera view (like C).
+    Camera,
     /// Finish and save the ride.
     Finish,
 }
@@ -38,6 +41,7 @@ impl Action {
             "down" => Action::Down,
             "skip" => Action::Skip,
             "view" => Action::View,
+            "camera" => Action::Camera,
             "finish" => Action::Finish,
             _ => return None,
         })
@@ -301,9 +305,18 @@ button:disabled { opacity:.35; }
 #finish { color:#ffb9a0; }
 #lost { display:none; background:#5a2a1c; color:#fff; padding:10px 12px; border-radius:12px; margin-bottom:10px; font-size:14px; }
 #companion { color:var(--weak); font-size:14px; margin-top:8px; text-align:center; }
+#companion b { color:#7fd492; font-weight:600; }
+.segment { background:var(--card); border-radius:14px; padding:10px 14px; margin-top:10px; display:none; border-left:4px solid var(--accent); }
+.segment .a { font-size:17px; font-weight:600; }
+.segment .b { color:var(--weak); font-size:14px; margin-top:2px; }
+.row3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }
+.row3 button { font-size:16px; padding:14px 6px; }
+.row3 small { display:block; font-size:12px; color:var(--weak); font-weight:500; margin-top:2px; }
+#notice { position:fixed; left:14px; right:14px; top:calc(10px + env(safe-area-inset-top)); max-width:532px; margin:0 auto; background:#2b2f3b; border:1px solid var(--line); color:var(--text); padding:10px 14px; border-radius:12px; font-size:15px; display:none; box-shadow:0 6px 24px #0008; }
 </style></head>
 <body>
 <header><div class="brand"><span class="dot"></span>VeloForge</div><span id="state" class="chip">…</span></header>
+<div id="notice"></div>
 <div id="lost">Can't reach VeloForge — is it still running, and is this phone on the same Wi-Fi?</div>
 <p id="title"></p>
 <div class="grid">
@@ -311,7 +324,7 @@ button:disabled { opacity:.35; }
   <div class="tile big" id="t-hr" style="border-left-color:#e6505f"><div class="k">Heart rate</div><div class="v"><span id="hr">—</span><small>bpm</small></div></div>
   <div class="tile" id="t-target"><div class="k" id="target-k">Target</div><div class="v"><span id="target">—</span><small id="target-u">W</small></div></div>
   <div class="tile" style="border-left-color:#5aaae6"><div class="k" id="third-k">Cadence</div><div class="v"><span id="third">—</span><small id="third-u">rpm</small></div></div>
-  <div class="tile"><div class="k">Time</div><div class="v" id="time">0:00</div></div>
+  <div class="tile" id="t-grade"><div class="k">Gradient</div><div class="v"><span id="grade">—</span><small>%</small></div></div>
   <div class="tile"><div class="k">Distance</div><div class="v"><span id="dist">0.00</span><small id="dist-u">km</small></div></div>
 </div>
 <div class="interval" id="interval">
@@ -320,6 +333,7 @@ button:disabled { opacity:.35; }
   <div class="sub" id="i-next"></div>
   <div class="bar"><div id="i-bar"></div></div>
 </div>
+<div class="segment" id="segment"><div class="a" id="seg-a"></div><div class="b" id="seg-b"></div></div>
 <div id="companion"></div>
 <div class="controls">
   <button id="toggle" onclick="act('toggle')">Start</button>
@@ -328,9 +342,10 @@ button:disabled { opacity:.35; }
     <div class="mid"><div class="k" id="adj-k">Intensity</div><div class="v" id="adj-v">100%</div></div>
     <button onclick="act('up')" aria-label="Harder">+</button>
   </div>
-  <div class="row">
-    <button id="skip" onclick="act('skip')">Skip step</button>
-    <button id="view" onclick="act('view')">Dashboard</button>
+  <div class="row3">
+    <button id="skip" onclick="act('skip')">Skip<small>step</small></button>
+    <button id="view" onclick="act('view')">Dashboard<small>view</small></button>
+    <button id="camera" onclick="act('camera')">Camera<small id="cam">Chase</small></button>
   </div>
   <button id="finish" onclick="if (confirm('Finish and save this ride?')) act('finish')">Finish ride</button>
 </div>
@@ -341,11 +356,13 @@ let failures = 0;
 function fmt(v, d) { return v === null || v === undefined ? '—' : Number(v).toFixed(d || 0); }
 async function act(a) {
   try { await fetch('/api/do?a=' + a + '&k=' + encodeURIComponent(key), { method: 'POST' }); } catch (e) {}
-  setTimeout(poll, 120);
+  setTimeout(poll, 150);
+  setTimeout(poll, 500);
 }
+const esc = (t) => String(t).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 function render(s) {
   const chip = $('state');
-  chip.textContent = s.state === 'running' ? 'Riding' : s.state === 'paused' ? 'Paused' : 'Ready';
+  chip.textContent = s.state === 'running' ? 'Riding · ' + s.time : s.state === 'paused' ? 'Paused · ' + s.time : 'Ready';
   chip.className = 'chip' + (s.state === 'running' ? ' run' : s.state === 'paused' ? ' pause' : '');
   $('title').textContent = s.title || '';
   $('power').textContent = fmt(s.power);
@@ -364,9 +381,10 @@ function render(s) {
     $('third-k').textContent = cadenceTarget ? 'Cadence · target ' + fmt(s.cadence_target) : 'Cadence';
     $('third').textContent = fmt(s.cadence); $('third-u').textContent = 'rpm';
   } else {
-    $('third-k').textContent = 'Grade'; $('third').textContent = (s.grade >= 0 ? '+' : '') + fmt(s.grade, 1); $('third-u').textContent = '%';
+    $('third-k').textContent = 'Cadence'; $('third').textContent = '—'; $('third-u').textContent = 'rpm';
   }
-  $('time').textContent = s.time || '0:00';
+  $('grade').textContent = (s.grade >= 0 ? '+' : '') + fmt(s.grade, 1);
+  $('t-grade').style.borderLeftColor = s.grade_color || '#2a2d38';
   $('dist').textContent = fmt(s.distance, 2);
   $('dist-u').textContent = s.distance_unit || 'km';
   const iv = s.interval;
@@ -376,7 +394,12 @@ function render(s) {
     $('i-next').textContent = iv.next || ''; $('i-bar').style.width = Math.round((iv.progress || 0) * 100) + '%';
     $('i-bar').style.background = iv.color || '#de702c';
   }
-  $('companion').textContent = s.companion || '';
+  $('companion').innerHTML = s.companion ? esc(s.companion) + (s.draft ? ' · <b>drafting −' + s.draft + '%</b>' : '') : '';
+  const seg = s.segment || [];
+  $('segment').style.display = seg.length ? 'block' : 'none';
+  $('seg-a').textContent = seg[0] || ''; $('seg-b').textContent = seg[1] || '';
+  $('notice').style.display = s.notice ? 'block' : 'none';
+  $('notice').textContent = s.notice || '';
   const t = $('toggle');
   t.textContent = s.state === 'running' ? 'Pause' : s.state === 'paused' ? 'Resume' : 'Start';
   t.className = s.state === 'running' ? 'pause' : '';
@@ -384,7 +407,9 @@ function render(s) {
   $('adj-k').textContent = s.adjust_label || '';
   $('adj-v').textContent = s.adjust_value || '';
   $('skip').disabled = !s.can_skip;
-  $('view').textContent = s.view_3d ? 'Dashboard' : '3D view';
+  $('view').firstChild.textContent = s.view_3d ? 'Dashboard' : '3D view';
+  $('camera').disabled = !s.view_3d;
+  $('cam').textContent = s.camera || '';
   $('finish').disabled = s.state === 'ready';
 }
 async function poll() {
