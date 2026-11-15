@@ -1279,20 +1279,32 @@ pub fn rider(p: &RiderPose) -> Mesh {
             SHIN,
             add(body.fwd, scale(body.right, side * 0.1)),
         );
+        // The thigh starts inside the hips, and a rounded glute covers the
+        // join, so no gap opens at the back as the knee comes up.
+        let thigh = norm(sub(knee, hip));
         m.loft(
             &limb(
-                hip,
+                sub(hip, scale(thigh, 0.07)),
                 knee,
                 body.right,
                 &[
-                    (0.0, 0.085, 0.088, shorts),
-                    (0.35, 0.08, 0.086, shorts),
-                    (0.72, 0.064, 0.07, skin),
-                    (0.76, 0.061, 0.066, skin),
+                    (0.0, 0.08, 0.084, shorts),
+                    (0.15, 0.086, 0.09, shorts),
+                    (0.42, 0.08, 0.086, shorts),
+                    (0.75, 0.064, 0.07, skin),
+                    (0.79, 0.061, 0.066, skin),
                     (1.0, 0.052, 0.055, skin),
                 ],
             ),
             10,
+        );
+        m.ellipsoid_in(
+            add(hips, body.dir(-0.03, -0.03, side * 0.075)),
+            body.axes(),
+            [0.088, 0.08, 0.085],
+            5,
+            9,
+            shorts,
         );
         // The calf bulges behind the shin.
         let shin = norm(sub(ankle, knee));

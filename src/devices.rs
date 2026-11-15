@@ -256,6 +256,12 @@ struct Sim {
     spindown: Option<(ftms::SpinDownStatus, f32, f32)>,
 }
 
+/// The simulated rider's heart rate for a power: it rises with the effort
+/// but levels off towards a maximum of about 190 bpm, as a real one does.
+fn sim_heart_rate(power: f32) -> f32 {
+    60.0 + 130.0 * (1.0 - (-power.max(0.0) / 260.0).exp())
+}
+
 impl Sim {
     fn noise(&mut self) -> f32 {
         // xorshift64*, mapped to [-1, 1]
@@ -288,7 +294,7 @@ impl Sim {
         } else {
             (88.0 + self.noise() * 2.0 + (self.t * 0.05).sin() * 3.0).max(0.0)
         };
-        let hr_target = 62.0 + power * 0.42;
+        let hr_target = sim_heart_rate(power);
         self.hr += (hr_target - self.hr) * (dt * 0.04).min(1.0);
         Reading {
             power: Some(power),
@@ -1307,4 +1313,16 @@ async fn setup(
         controllable: controller.is_some(),
     });
     Ok(controller)
+}
+
+#[cfg(test)]
+mod sim_tests {
+    #[test]
+    fn simulated_heart_rate_stays_human() {
+        let hr = super::sim_heart_rate;
+        assert!((95.0..110.0).contains(&hr(100.0)), "{}", hr(100.0));
+        assert!((140.0..160.0).contains(&hr(300.0)), "{}", hr(300.0));
+        assert!(hr(1500.0) <= 190.0 && hr(1500.0) > 185.0, "{}", hr(1500.0));
+        assert!(hr(200.0) < hr(250.0), "harder means a higher heart rate");
+    }
 }

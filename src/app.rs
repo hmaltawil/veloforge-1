@@ -2477,8 +2477,22 @@ impl eframe::App for App {
                 egui::Area::new(egui::Id::unique("toast"))
                     .anchor(Align2::CENTER_BOTTOM, [0.0, -24.0])
                     .show(&ctx, |ui| {
-                        egui::Frame::popup(ui.style())
-                            .show(ui, |ui| ui.label(RichText::new(msg).size(15.0)));
+                        egui::Frame::popup(ui.style()).show(ui, |ui| {
+                            // As wide as the message (wrapping only past 560
+                            // points), not one word to a line.
+                            let text = RichText::new(msg).size(15.0);
+                            let width = egui::WidgetText::from(text.clone())
+                                .into_galley(
+                                    ui,
+                                    Some(egui::TextWrapMode::Extend),
+                                    f32::INFINITY,
+                                    egui::FontSelection::Default,
+                                )
+                                .size()
+                                .x;
+                            ui.set_width(width.min(560.0));
+                            ui.add(egui::Label::new(text).wrap());
+                        });
                     });
                 ctx.request_repaint_after(std::time::Duration::from_millis(250));
             } else {
