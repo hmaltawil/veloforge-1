@@ -170,8 +170,32 @@ for (let x = -150; x < 150; x += 6) {
   d.rotation.x = -Math.PI / 2; d.position.set(x, 0.002, -1.4); d.receiveShadow = true; scene.add(d);
 }
 
+// The app draws both sides of every triangle, so its models do not keep
+// to one winding. Here each triangle is turned to face along its normals,
+// so both sides can be drawn and lit correctly.
+function faces(a, b, c, P) {
+  const ax = P[a * 10], ay = P[a * 10 + 1], az = P[a * 10 + 2];
+  const ux = P[b * 10] - ax, uy = P[b * 10 + 1] - ay, uz = P[b * 10 + 2] - az;
+  const vx = P[c * 10] - ax, vy = P[c * 10 + 1] - ay, vz = P[c * 10 + 2] - az;
+  const nx = P[a * 10 + 3] + P[b * 10 + 3] + P[c * 10 + 3];
+  const ny = P[a * 10 + 4] + P[b * 10 + 4] + P[c * 10 + 4];
+  const nz = P[a * 10 + 5] + P[b * 10 + 5] + P[c * 10 + 5];
+  return (uy * vz - uz * vy) * nx + (uz * vx - ux * vz) * ny + (ux * vy - uy * vx) * nz >= 0;
+}
+function fixIndices(idx, P) {
+  for (let t = 0; t < idx.length; t += 3) {
+    if (!faces(idx[t], idx[t + 1], idx[t + 2], P)) { const k = idx[t + 1]; idx[t + 1] = idx[t + 2]; idx[t + 2] = k; }
+  }
+}
+function fixTriangles(P) {
+  for (let i = 0; i < P.length / 10; i += 3) {
+    if (!faces(i, i + 1, i + 2, P)) {
+      for (let f = 0; f < 10; f++) { const k = P[(i + 1) * 10 + f]; P[(i + 1) * 10 + f] = P[(i + 2) * 10 + f]; P[(i + 2) * 10 + f] = k; }
+    }
+  }
+}
 function material(glow = 0) {
-  const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.62, metalness: 0.0 });
+  const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.62, metalness: 0.0, side: THREE.DoubleSide });
   // Leaves let light through: the app lights them from both sides. A share
   // of their own colour stands in for that here.
   if (glow > 0) {
@@ -217,6 +241,7 @@ async function boot() {
   posePose();
   bodyBuf = new Float32Array(nVert * 10);
   bodyBuf.set(f32(wasm.body_ptr(), nVert * 10));
+  fixIndices(idx, bodyBuf);
   const g = interleaved(bodyBuf);
   g.setIndex(new THREE.BufferAttribute(idx, 1));
   bodyMesh = new THREE.Mesh(g, bodyMat);
@@ -242,6 +267,7 @@ function makeBike() {
   const n = wasm.bike_len();
   bikeBuf = new Float32Array(n);
   bikeBuf.set(f32(wasm.bike_ptr(), n));
+  fixTriangles(bikeBuf);
   if (bikeMesh) { rig.remove(bikeMesh); bikeMesh.geometry.dispose(); }
   bikeMesh = new THREE.Mesh(interleaved(bikeBuf), bikeMat);
   bikeMesh.castShadow = true; bikeMesh.receiveShadow = true;
@@ -255,7 +281,7 @@ function updateMeshes() {
   bodyMesh.geometry.attributes.position.data.needsUpdate = true;
   bodyMesh.geometry.computeBoundingSphere();
   if (wasm.bike_len() !== bikeBuf.length) makeBike();
-  else { bikeBuf.set(f32(wasm.bike_ptr(), bikeBuf.length)); bikeMesh.geometry.attributes.position.data.needsUpdate = true; }
+  else { bikeBuf.set(f32(wasm.bike_ptr(), bikeBuf.length)); fixTriangles(bikeBuf); bikeMesh.geometry.attributes.position.data.needsUpdate = true; }
   if ($("bones").checked) drawJoints();
 }
 function drawJoints() {
@@ -343,6 +369,9 @@ const HEIGHTS = { 0: 11, 1: 9, 2: 10, 3: 1.4, 4: 1.2, 6: 11, 7: 9 };
 function showModel(k) {
   const n = wasm.model(k);
   const arr = new Float32Array(n); arr.set(f32(wasm.model_ptr(), n));
+  fixTriangles(arr);
+  // Negative colours are tinted per tree by the app's shader: show the base colour.
+  for (let i = 0; i < n; i += 10) for (let c = 6; c < 9; c++) arr[i + c] = Math.abs(arr[i + c]);
   if (modelMesh) { scene.remove(modelMesh); modelMesh.geometry.dispose(); }
   const g = interleaved(arr);
   g.computeBoundingBox();
