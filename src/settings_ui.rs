@@ -396,14 +396,36 @@ impl App {
                 ui,
                 "Detail",
                 "High: sharp shadows, thick grass, smooth edges. Medium halves all three. \
-                 Low drops shadows and grass and draws the world at a lower resolution \
-                 (the numbers stay sharp), for older graphics cards.",
+                 Low drops shadows and grass, for older graphics cards (and, with Resolution \
+                 on Automatic, draws the world at a lower resolution).",
                 |ui| {
                     ui.add_enabled_ui(s.gpu_3d, |ui| {
                         ui.horizontal(|ui| {
                             let mut c = false;
                             for q in crate::gfx::Quality::ALL {
                                 c |= ui.radio_value(&mut s.gfx_quality, q, q.label()).changed();
+                            }
+                            c
+                        })
+                        .inner
+                    })
+                    .inner
+                },
+            );
+            changed |= row(
+                ui,
+                "Resolution",
+                "How sharply the 3D world is drawn. Lower is much lighter work for the \
+                 graphics card; the numbers and panels stay sharp. Automatic: full on High and \
+                 Medium detail, two thirds on Low.",
+                |ui| {
+                    ui.add_enabled_ui(s.gpu_3d, |ui| {
+                        ui.horizontal(|ui| {
+                            let mut c = false;
+                            for (pct, label) in
+                                [(0, "Automatic"), (100, "100%"), (75, "75%"), (50, "50%")]
+                            {
+                                c |= ui.radio_value(&mut s.resolution, pct, label).changed();
                             }
                             c
                         })

@@ -2778,13 +2778,13 @@ impl App {
         let gpu = self.store.settings.gpu_3d && self.gpu_capable && self.gpu.error().is_none();
         let clip = painter.with_clip_rect(view);
         if gpu {
-            self.gpu.draw(
-                &clip,
-                view,
-                &scene,
-                self.store.settings.gfx_quality,
-                &plan.glass(),
-            );
+            let s = &self.store.settings;
+            let scale = match s.resolution {
+                0 => s.gfx_quality.render_scale(),
+                pct => pct as f32 / 100.0,
+            };
+            self.gpu
+                .draw(&clip, view, &scene, s.gfx_quality, scale, &plan.glass());
         } else {
             self.world.draw(&clip, view, &scene);
         }

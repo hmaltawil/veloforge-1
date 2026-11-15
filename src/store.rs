@@ -35,6 +35,9 @@ pub struct Settings {
     pub gpu_3d: bool,
     /// How much detail the GPU view draws.
     pub gfx_quality: crate::gfx::Quality,
+    /// How sharply the 3D world is drawn, in percent of the view; 0 picks
+    /// by `gfx_quality`.
+    pub resolution: u8,
     /// Most frames per second on the ride screen; 0 = as often as the
     /// screen refreshes.
     pub fps_limit: u32,
@@ -77,6 +80,7 @@ impl Default for Settings {
             volume: 0.6,
             gpu_3d: true,
             gfx_quality: Default::default(),
+            resolution: 0,
             fps_limit: 60,
             onboarded: false,
             icu_sync_plan: true,

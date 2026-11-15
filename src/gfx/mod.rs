@@ -60,7 +60,7 @@ impl Quality {
     }
     /// The share of the view's width and height the world is drawn at. The
     /// work grows with the number of pixels, so 2/3 is under half of it.
-    fn render_scale(self) -> f32 {
+    pub fn render_scale(self) -> f32 {
         match self {
             Quality::High | Quality::Medium => 1.0,
             Quality::Low => 2.0 / 3.0,
@@ -375,6 +375,8 @@ struct FrameData {
     /// Camera velocity, for rain streaks.
     cam_vel: V3,
     quality: Quality,
+    /// Share of the view's width and height the world is drawn at.
+    render_scale: f32,
     /// HUD panels relative to the view's top left corner, in points.
     glass: Vec<([f32; 4], f32)>,
     sea: bool,
@@ -478,6 +480,7 @@ impl GpuWorld {
         rect: Rect,
         scene: &Scene,
         quality: Quality,
+        render_scale: f32,
         glass: &[Glass],
     ) {
         let (route, dt) = (scene.route, scene.dt);
@@ -941,6 +944,7 @@ impl GpuWorld {
             rider_shadow,
             cam_vel,
             quality,
+            render_scale: render_scale.clamp(0.25, 1.0),
             glass: glass
                 .iter()
                 .map(|(r, radius)| {
@@ -2276,7 +2280,7 @@ impl GlState {
                 self.error = Some(e);
                 return;
             }
-            let scale = f.quality.render_scale();
+            let scale = f.render_scale;
             let (rw, rh) = (
                 ((w as f32 * scale).round() as i32).max(1),
                 ((h as f32 * scale).round() as i32).max(1),
