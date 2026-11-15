@@ -46,6 +46,7 @@ pub struct Settings {
     pub icu_upload: bool,
     /// Time of day and weather in the 3D world.
     pub time_of_day: crate::world::TimeOfDay,
+    pub camera: crate::world::Camera,
     pub weather: crate::world::Weather,
     /// Serve the phone remote on the local network.
     pub remote_enabled: bool,
@@ -81,6 +82,7 @@ impl Default for Settings {
             icu_sync_plan: true,
             icu_upload: true,
             time_of_day: Default::default(),
+            camera: Default::default(),
             weather: Default::default(),
             remote_enabled: false,
             remote_port: crate::remote::DEFAULT_PORT,

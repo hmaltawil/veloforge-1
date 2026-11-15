@@ -2117,7 +2117,7 @@ impl eframe::App for App {
         // Keyboard shortcuts while riding.
         if self.tab == Tab::Ride && !ctx.egui_wants_keyboard_input() {
             // Consume the keys so a focused button is not activated as well.
-            let (space, up, down, v, n) = ctx.input_mut(|i| {
+            let (space, up, down, v, n, c) = ctx.input_mut(|i| {
                 let none = egui::Modifiers::NONE;
                 (
                     i.consume_key(none, egui::Key::Space),
@@ -2125,8 +2125,16 @@ impl eframe::App for App {
                     i.consume_key(none, egui::Key::ArrowDown),
                     i.consume_key(none, egui::Key::V),
                     i.consume_key(none, egui::Key::N),
+                    i.consume_key(none, egui::Key::C),
                 )
             });
+            if c {
+                let s = &mut self.store.settings;
+                s.camera = s.camera.next();
+                let label = s.camera.label();
+                self.mark_dirty();
+                self.notify(format!("Camera: {label}"));
+            }
             use crate::remote::Action;
             for (pressed, a) in [
                 (n, Action::Skip),
@@ -2709,7 +2717,8 @@ impl App {
                     "Space: start / pause / resume\n\
                      Up / Down: workout intensity, slope, or trainer difficulty\n\
                      N: skip to the next workout step\n\
-                     V: switch between 3D view and dashboard",
+                     V: switch between 3D view and dashboard\n\
+                     C: change the camera in the 3D view",
                 );
         });
         ui.add_space(2.0);
@@ -2762,6 +2771,7 @@ impl App {
                 time: self.store.settings.time_of_day,
                 weather: self.store.settings.weather,
             },
+            camera: self.store.settings.camera,
             dt,
         };
         let plan = self.hud_plan(view);
@@ -2874,9 +2884,14 @@ impl App {
             for w in Weather::ALL {
                 changed |= ui.radio_value(&mut s.weather, w, w.label()).changed();
             }
+            ui.separator();
+            ui.label(RichText::new("Camera (C switches)").weak());
+            for c in crate::world::Camera::ALL {
+                changed |= ui.radio_value(&mut s.camera, c, c.label()).changed();
+            }
         })
         .response
-        .on_hover_text("Time of day and weather");
+        .on_hover_text("Time of day, weather and camera");
         if changed {
             self.mark_dirty();
         }

@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use terrain::{TerrainData, Worker, INSTANCE_STRIDE, KINDS, TERRAIN_STRIDE};
 
-use crate::world::{Scene, Sky, TimeOfDay, Weather, LANE};
+use crate::world::{Scene, Sky, TimeOfDay, Weather};
 
 /// How much the 3D view asks of the graphics card.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -505,10 +505,8 @@ impl GpuWorld {
                 p.ele,
             )
         };
-        let (cx, cz, _) = lane(d - 7.0, LANE);
-        let cy = route.at(d - 7.0).ele.max(route.at(d).ele - 1.0) + 2.5;
-        let (tx, tz, te) = lane(d + 16.0, LANE);
-        let (dx, dy, dz) = (tx - cx, te + 0.8 - cy, tz - cz);
+        let ([cx, cy, cz], target) = scene.camera.rig(route, d);
+        let (dx, dy, dz) = (target[0] - cx, target[1] - cy, target[2] - cz);
         let yaw_t = dx.atan2(dz);
         let pitch_t = dy.atan2((dx * dx + dz * dz).sqrt()).clamp(-0.5, 0.5);
         if !self.initialised || wrap_angle(yaw_t - self.yaw).abs() > 1.2 {

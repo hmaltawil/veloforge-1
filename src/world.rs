@@ -25,6 +25,64 @@ impl TimeOfDay {
     }
 }
 
+/// Where the 3D view watches you from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Camera {
+    #[default]
+    Chase,
+    Close,
+    Side,
+    Overhead,
+}
+
+impl Camera {
+    pub const ALL: [Camera; 4] = [Camera::Chase, Camera::Close, Camera::Side, Camera::Overhead];
+    pub fn label(self) -> &'static str {
+        match self {
+            Camera::Chase => "Chase",
+            Camera::Close => "Close behind",
+            Camera::Side => "Alongside",
+            Camera::Overhead => "Overhead",
+        }
+    }
+    /// The next one, for the C key.
+    pub fn next(self) -> Camera {
+        let i = Camera::ALL.iter().position(|&c| c == self).unwrap_or(0);
+        Camera::ALL[(i + 1) % Camera::ALL.len()]
+    }
+    /// The eye and the point it looks at, as [east, up, north] in metres,
+    /// for a rider `d` metres along `route` in your lane.
+    pub fn rig(self, route: &Route, d: f64) -> ([f64; 3], [f64; 3]) {
+        let at = |s: f64, lat: f64, up: f64| {
+            let p = route.at(s);
+            [
+                p.x + lat * p.heading.cos(),
+                p.ele + up,
+                p.z - lat * p.heading.sin(),
+            ]
+        };
+        let ground = route.at(d).ele;
+        // Behind and above the rider, never sunk below them on a crest.
+        let behind = |back: f64, height: f64| {
+            let mut eye = at(d - back, LANE, 0.0);
+            eye[1] = eye[1].max(ground - 0.4 * back / 7.0) + height;
+            eye
+        };
+        match self {
+            Camera::Chase => (behind(7.0, 2.5), at(d + 16.0, LANE, 0.8)),
+            Camera::Close => (behind(3.8, 1.8), at(d + 8.0, LANE, 0.45)),
+            Camera::Side => {
+                let mut eye = at(d + 0.3, LANE + 3.2, 0.0);
+                eye[1] = ground + 1.25;
+                let mut target = at(d + 0.3, LANE, 0.0);
+                target[1] = ground + 0.85;
+                (eye, target)
+            }
+            Camera::Overhead => (behind(9.0, 7.5), at(d + 5.0, LANE, 0.0)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Weather {
     #[default]
@@ -428,6 +486,7 @@ pub struct Scene<'a> {
     pub route: &'a Route,
     pub riders: Vec<Figure>,
     pub sky: Sky,
+    pub camera: Camera,
     pub dt: f64,
 }
 
@@ -465,19 +524,7 @@ impl World {
         let painter = painter.with_clip_rect(rect);
 
         // --- camera -------------------------------------------------------
-        let cam_d = d - 7.0;
-        let lane_pt = |s: f64, lat: f64| {
-            let p = route.at(s);
-            [
-                p.x + lat * p.heading.cos(),
-                p.ele,
-                p.z - lat * p.heading.sin(),
-            ]
-        };
-        let mut cpos = lane_pt(cam_d, LANE);
-        cpos[1] = route.at(cam_d).ele.max(route.at(d).ele - 1.0) + 2.5;
-        let mut target = lane_pt(d + 16.0, LANE);
-        target[1] += 0.8;
+        let (cpos, target) = scene.camera.rig(route, d);
         let dir = sub(target, cpos);
         let yaw_t = dir[0].atan2(dir[2]);
         let pitch_t = dir[1]
@@ -657,7 +704,8 @@ impl World {
 
         // --- terrain, road and objects, far to near ----------------------
         let mut slices = Vec::new();
-        let mut sd = (cam_d / 5.0).floor() * 5.0;
+        // From behind the farthest-back camera.
+        let mut sd = ((d - 13.0) / 5.0).floor() * 5.0;
         while sd < d + FAR {
             slices.push(sd);
             sd += if sd < d + 150.0 { 5.0 } else { 10.0 };
