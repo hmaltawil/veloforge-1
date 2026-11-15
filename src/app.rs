@@ -4039,6 +4039,16 @@ impl App {
                     self.editing = true;
                     self.mark_dirty();
                 }
+                if ui
+                    .button("Export .zwo")
+                    .on_hover_text(
+                        "Save it as a Zwift workout file, for Zwift, TrainerRoad, MyWhoosh, \
+                         intervals.icu and others (into your Downloads folder)",
+                    )
+                    .clicked()
+                {
+                    self.export_zwo(&w);
+                }
             });
             ui.separator();
             // The workout must still be there (and in the same place).
@@ -4063,6 +4073,29 @@ impl App {
                 }
             }
         });
+    }
+
+    /// Save `w` as a .zwo file in the Downloads folder (or the data folder),
+    /// and show where.
+    fn export_zwo(&mut self, w: &Workout) {
+        let dir = directories::UserDirs::new()
+            .and_then(|u| u.download_dir().map(|d| d.to_path_buf()))
+            .unwrap_or_else(|| self.paths.data.clone());
+        let slug: String = w
+            .name
+            .chars()
+            .map(|c| if c.is_alphanumeric() { c } else { '_' })
+            .collect();
+        let path = dir.join(format!("{}.zwo", slug.trim_matches('_')));
+        match std::fs::create_dir_all(&dir)
+            .and_then(|_| std::fs::write(&path, crate::workout::to_zwo(w)))
+        {
+            Ok(()) => {
+                self.log_line(format!("Exported {} to {}", w.name, path.display()));
+                self.notify(format!("Saved {}", path.display()));
+            }
+            Err(e) => self.notify(format!("Could not save the .zwo file: {e}")),
+        }
     }
 
     /// A custom workout's name and description, and the builder for its

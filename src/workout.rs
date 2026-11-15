@@ -384,6 +384,77 @@ pub fn fmt_dur(secs: f32) -> String {
     }
 }
 
+/// The workout as a Zwift workout file (.zwo), which Zwift, TrainerRoad,
+/// intervals.icu, MyWhoosh and most other apps import.
+pub fn to_zwo(w: &Workout) -> String {
+    fn esc(s: &str) -> String {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    }
+    let cad = |c: Option<u32>| c.map(|c| format!(" Cadence=\"{c}\"")).unwrap_or_default();
+    let mut x = String::from("<workout_file>\n");
+    x += "  <author>VeloForge</author>\n";
+    x += &format!("  <name>{}</name>\n", esc(&w.name));
+    x += &format!("  <description>{}</description>\n", esc(&w.description));
+    x += "  <sportType>bike</sportType>\n  <workout>\n";
+    let last = w.steps.len().saturating_sub(1);
+    for (i, step) in w.steps.iter().enumerate() {
+        let line = match *step {
+            Step::Steady {
+                secs,
+                power,
+                cadence,
+            } => format!(
+                "<SteadyState Duration=\"{secs}\" Power=\"{power:.3}\"{}/>",
+                cad(cadence)
+            ),
+            // A rise at the start is a warm-up, a fall at the end a
+            // cool-down; any other ramp goes from PowerLow to PowerHigh.
+            Step::Ramp {
+                secs,
+                from,
+                to,
+                cadence,
+            } => {
+                let tag = if i == 0 && to > from {
+                    "Warmup"
+                } else if i == last && to < from {
+                    "Cooldown"
+                } else {
+                    "Ramp"
+                };
+                format!(
+                    "<{tag} Duration=\"{secs}\" PowerLow=\"{from:.3}\" PowerHigh=\"{to:.3}\"{}/>",
+                    cad(cadence)
+                )
+            }
+            Step::Intervals {
+                repeat,
+                on_secs,
+                on_power,
+                off_secs,
+                off_power,
+                on_cadence,
+                off_cadence,
+            } => format!(
+                "<IntervalsT Repeat=\"{repeat}\" OnDuration=\"{on_secs}\" OffDuration=\"{off_secs}\" OnPower=\"{on_power:.3}\" OffPower=\"{off_power:.3}\"{}{}/>",
+                cad(on_cadence),
+                off_cadence
+                    .map(|c| format!(" CadenceResting=\"{c}\""))
+                    .unwrap_or_default()
+            ),
+            Step::FreeRide { secs, cadence } => {
+                format!("<FreeRide Duration=\"{secs}\" FlatRoad=\"0\"{}/>", cad(cadence))
+            }
+        };
+        x += &format!("    {line}\n");
+    }
+    x += "  </workout>\n</workout_file>\n";
+    x
+}
+
 /// Parse a Zwift workout file (.zwo), as exported by intervals.icu,
 /// TrainerRoad, WhatsOnZwift and others.
 pub fn parse_zwo(xml: &str, id: &str) -> Result<Workout> {
@@ -767,6 +838,22 @@ mod tests {
         let s = [100.0, 100.0, 300.0, 300.0, 100.0];
         assert_eq!(best_average(&s, 2), Some(300.0));
         assert_eq!(best_average(&s, 6), None);
+    }
+
+    #[test]
+    fn zwo_export_reads_back_the_same() {
+        // Every built-in workout survives a trip out and back in.
+        for w in builtin() {
+            let back = parse_zwo(&to_zwo(&w), "back").unwrap();
+            assert_eq!(back.name, w.name);
+            assert_eq!(back.steps.len(), w.steps.len(), "{}", w.name);
+            // The same to the thousandth of FTP the file holds.
+            assert_eq!(to_zwo(&back), to_zwo(&w), "{}", w.name);
+        }
+        // Names that look like XML stay intact.
+        let mut w = builtin().remove(0);
+        w.name = "Tom & Jerry <3 \"hills\"".into();
+        assert_eq!(parse_zwo(&to_zwo(&w), "x").unwrap().name, w.name);
     }
 
     #[test]
