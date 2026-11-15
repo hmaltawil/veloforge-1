@@ -1031,7 +1031,7 @@ pub fn joints(p: &RiderPose) -> Joints {
         let f = bike.dir(toe_down.cos(), -toe_down.sin(), 0.0);
         let n = bike.dir(toe_down.sin(), toe_down.cos(), 0.0);
         ball[k] = add(spindle, scale(n, 0.012));
-        ankle[k] = add(ball[k], add(scale(f, -0.13), scale(n, 0.075)));
+        ankle[k] = add(ball[k], add(scale(f, -0.135), scale(n, 0.066)));
         foot_fwd[k] = f;
         foot_up[k] = n;
     }
