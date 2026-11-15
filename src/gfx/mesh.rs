@@ -993,6 +993,10 @@ fn ik(a: V3, c: V3, l1: f32, l2: f32, hint: V3) -> V3 {
     add(add(a, scale(dir, x)), scale(bend, h))
 }
 
+/// The front hub, forward of the bottom bracket's ground point (the rear
+/// hub is 0.5 m behind it).
+const FRONT_HUB: f32 = 0.57;
+
 /// Bone lengths, in metres.
 const THIGH: f32 = 0.41;
 const SHIN: f32 = 0.40;
@@ -1054,7 +1058,7 @@ pub fn rider(p: &RiderPose) -> Mesh {
     let jersey_dark = scale(jersey, 0.5);
 
     // Wheels: tyre, rim, hub and spokes that turn with the road.
-    for x in [-0.5f32, 0.5] {
+    for x in [-0.5f32, FRONT_HUB] {
         let hub = at(x, 0.34, 0.0);
         m.mat = MAT_MATT;
         m.torus(hub, bike.right, 0.326, 0.016, 28, 6, rubber);
@@ -1086,17 +1090,28 @@ pub fn rider(p: &RiderPose) -> Mesh {
     m.mat = MAT_GLOSS;
     let bb = at(-0.02, 0.28, 0.0);
     let seat_top = at(-0.17, 0.82, 0.0);
-    let head_top = at(0.4, 0.8, 0.0);
-    let head_bot = at(0.44, 0.64, 0.0);
+    // The head tube lies along the steering axis (73 degrees), which
+    // passes a fork offset behind the front hub; the fork crown and the
+    // tubes stay clear of the tyre.
+    let steer = |y: f32| at(FRONT_HUB - 0.047 - (y - 0.34) * 0.306, y, 0.0);
+    let head_top = steer(0.86);
+    let head_bot = steer(0.7);
     let tube = |m: &mut Mesh, a: V3, b: V3, r: f32| m.tube(a, b, r, r, 7, frame);
     tube(&mut m, bb, seat_top, 0.018);
-    tube(&mut m, at(-0.155, 0.775, 0.0), head_top, 0.017);
-    tube(&mut m, bb, head_bot, 0.024);
+    tube(&mut m, at(-0.155, 0.775, 0.0), steer(0.83), 0.017);
+    tube(&mut m, bb, steer(0.74), 0.024);
     tube(&mut m, head_bot, head_top, 0.022);
     for z in [-0.045f32, 0.045] {
         tube(&mut m, bb, at(-0.5, 0.34, z), 0.012);
         tube(&mut m, at(-0.16, 0.76, 0.0), at(-0.5, 0.34, z), 0.009);
-        tube(&mut m, head_bot, at(0.5, 0.34, z), 0.013);
+        m.tube(
+            add(head_bot, scale(bike.right, z * 0.6)),
+            at(FRONT_HUB, 0.34, z),
+            0.014,
+            0.009,
+            7,
+            frame,
+        );
     }
     // Seat post and saddle.
     m.tube(
@@ -1118,8 +1133,10 @@ pub fn rider(p: &RiderPose) -> Mesh {
     );
     // Stem and drop handlebar with hoods.
     m.mat = MAT_GLOSS;
+    let spacer = add(head_top, scale(bike.up, 0.015));
+    m.tube(head_top, spacer, 0.018, 0.018, 7, [0.02, 0.02, 0.022]);
     m.tube(
-        head_top,
+        spacer,
         at(0.5, 0.86, 0.0),
         0.014,
         0.014,
@@ -1331,16 +1348,17 @@ pub fn rider(p: &RiderPose) -> Mesh {
             d: 0.07,
             col: shorts,
         },
-        ring(0.0, 0.165, 0.115, shorts),
-        ring(0.12, 0.155, 0.108, jersey_dark),
-        ring(0.3, 0.145, 0.105, jersey),
-        ring(0.5, 0.16 * chest, 0.118 * chest, jersey),
-        ring(0.7, 0.175 * chest, 0.12 * chest, white),
-        ring(0.78, 0.178 * chest, 0.116 * chest, jersey),
-        ring(0.9, 0.17, 0.1, jersey),
-        ring(1.0, 0.14, 0.075, jersey),
+        // Narrow at the waist, broad across the back and shoulders.
+        ring(0.0, 0.16, 0.112, shorts),
+        ring(0.12, 0.148, 0.104, jersey_dark),
+        ring(0.3, 0.14, 0.1, jersey),
+        ring(0.5, 0.165 * chest, 0.115 * chest, jersey),
+        ring(0.68, 0.19 * chest, 0.118 * chest, white),
+        ring(0.76, 0.2 * chest, 0.114 * chest, jersey),
+        ring(0.9, 0.205, 0.095, jersey),
+        ring(1.0, 0.195, 0.07, jersey),
         Ring {
-            c: add(shoulders, scale(back_dir, 0.035)),
+            c: add(shoulders, scale(back_dir, 0.05)),
             side: body.right,
             w: 0.065,
             d: 0.055,
@@ -1351,8 +1369,8 @@ pub fn rider(p: &RiderPose) -> Mesh {
 
     // Arms, from the shoulders to the hands on the brake hoods.
     for side in [1.0f32, -1.0] {
-        let sh = add(shoulders, body.dir(0.0, -0.02, side * 0.17));
-        m.ellipsoid_in(sh, body.axes(), [0.054, 0.056, 0.05], 4, 8, jersey);
+        let sh = add(shoulders, body.dir(0.0, -0.025, side * 0.2));
+        m.ellipsoid_in(sh, body.axes(), [0.06, 0.062, 0.055], 5, 8, jersey);
         let grip = at(0.59, 0.89, side * 0.2);
         let wrist = add(grip, bike.dir(-0.045, 0.035, 0.0));
         let elbow = ik(
@@ -1445,13 +1463,14 @@ pub fn rider(p: &RiderPose) -> Mesh {
     let lens = [0.015, 0.015, 0.02];
     // (forward, up, right of the head's centre), radii, colour.
     let parts: [((f32, f32, f32), V3, V3); 7] = [
-        ((-0.012, 0.045, 0.0), [0.145, 0.088, 0.108], white),
-        ((-0.1, 0.03, 0.0), [0.075, 0.05, 0.078], white),
-        ((0.0, 0.125, -0.042), [0.095, 0.018, 0.012], dark),
-        ((0.0, 0.127, 0.0), [0.095, 0.018, 0.012], dark),
-        ((0.0, 0.125, 0.042), [0.095, 0.018, 0.012], dark),
-        ((0.0, 0.104, 0.0), [0.115, 0.045, 0.035], jersey),
-        ((0.08, 0.002, 0.0), [0.024, 0.026, 0.08], lens),
+        // A snug shell a couple of centimetres over the head.
+        ((-0.01, 0.05, 0.0), [0.128, 0.078, 0.094], white),
+        ((-0.09, 0.03, 0.0), [0.06, 0.045, 0.07], white),
+        ((0.0, 0.118, -0.038), [0.085, 0.014, 0.01], dark),
+        ((0.0, 0.121, 0.0), [0.085, 0.014, 0.01], dark),
+        ((0.0, 0.118, 0.038), [0.085, 0.014, 0.01], dark),
+        ((0.0, 0.1, 0.0), [0.1, 0.032, 0.028], jersey),
+        ((0.085, 0.002, 0.0), [0.022, 0.024, 0.078], lens),
     ];
     m.mat = MAT_GLOSS;
     for ((f, u, r), radii, col) in parts {
