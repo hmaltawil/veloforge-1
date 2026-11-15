@@ -13,6 +13,7 @@ use crate::route::{self, Route};
 use crate::sound::{Cue, Sound};
 use crate::store::{Paths, Store};
 use crate::theme::{self, ACCENT, CARD};
+use crate::units::Units;
 use crate::workout::{self, fmt_dur, Category, Step, Workout};
 use crate::world::{Figure, Scene, Sky, TimeOfDay, Weather, World};
 use chrono::{Datelike, Duration, Local, NaiveDate};
@@ -636,7 +637,11 @@ impl App {
             let left = (s.length - done_m).max(0.0);
             return vec![
                 (
-                    format!("{}  ·  {} to go", s.name, fmt_km(left)),
+                    format!(
+                        "{}  ·  {} to go",
+                        s.name,
+                        self.store.settings.units.fmt_short(left)
+                    ),
                     15.0,
                     theme::ACCENT,
                     true,
@@ -660,13 +665,21 @@ impl App {
             .map(|(s, ahead)| {
                 vec![
                     (
-                        format!("{} in {}", s.name, fmt_km(ahead)),
+                        format!(
+                            "{} in {}",
+                            s.name,
+                            self.store.settings.units.fmt_short(ahead)
+                        ),
                         13.0,
                         theme::TEXT,
                         true,
                     ),
                     (
-                        format!("{}  ·  {}", s.describe(), best(&s.key)),
+                        format!(
+                            "{}  ·  {}",
+                            s.describe(self.store.settings.units),
+                            best(&s.key)
+                        ),
                         12.5,
                         theme::TEXT_DIM,
                         false,
@@ -724,7 +737,7 @@ impl App {
         let gap = self.ride.companion_gap()?;
         let (title, value, unit) = match self.ride.companion.as_ref()? {
             ride::Companion::Pacer(p) => {
-                let (v, u) = gap_text(gap);
+                let (v, u) = gap_text(gap, self.store.settings.units);
                 (format!("PACER · {:.0} W", p.watts), v, u)
             }
             ride::Companion::Ghost(g) => match self.ride.ghost_time_gap() {
@@ -735,11 +748,11 @@ impl App {
                 ),
                 _ if self.ride.elapsed > g.duration() => (
                     "GHOST · finished".to_string(),
-                    gap_text(gap).0,
-                    gap_text(gap).1,
+                    gap_text(gap, self.store.settings.units).0,
+                    gap_text(gap, self.store.settings.units).1,
                 ),
                 _ => {
-                    let (v, u) = gap_text(gap);
+                    let (v, u) = gap_text(gap, self.store.settings.units);
                     ("GHOST".to_string(), v, u)
                 }
             },
@@ -945,7 +958,11 @@ impl App {
                 ride::State::Running => "running",
                 ride::State::Paused => "paused",
             },
-            "title": format!("{} · {}", self.ride.title(), self.routes[self.route_idx].name),
+            "title": format!(
+                "{} · {}",
+                self.ride.title(),
+                self.store.settings.units.route_name(&self.routes[self.route_idx].name)
+            ),
             "power": power.map(f32::round),
             "power_color": power.map(|p| hex(charts::zone_color(p / ftp))),
             "hr": hr.map(f32::round),
@@ -954,10 +971,12 @@ impl App {
             "target_color": target.map(|t| hex(charts::zone_color(t / ftp))),
             "cadence": fresh(&self.metrics.cadence).map(f32::round),
             "cadence_target": self.ride.target_cadence().map(f32::round),
-            "speed": self.ride.speed * 3.6,
+            "speed": s.units.speed(self.ride.speed * 3.6),
+            "speed_unit": s.units.speed_unit(),
+            "distance_unit": s.units.distance_unit(),
             "grade": grade,
             "time": fmt_dur(self.ride.elapsed as f32),
-            "distance": self.ride.distance / 1000.0,
+            "distance": s.units.distance(self.ride.distance),
             "interval": interval,
             "companion": companion,
             "can_start": self.can_start(),
@@ -2128,11 +2147,17 @@ fn qr_code(ui: &mut egui::Ui, text: &str, px: f32) {
     }
 }
 
-/// A gap in metres as ("35", "m ahead").
-fn gap_text(gap: f64) -> (String, String) {
+/// A gap in metres as ("35", "m ahead"), or ("115", "ft ahead").
+fn gap_text(gap: f64, units: Units) -> (String, String) {
     let side = if gap >= 0.0 { "ahead" } else { "behind" };
-    if gap.abs() >= 1000.0 {
-        (format!("{:.2}", gap.abs() / 1000.0), format!("km {side}"))
+    let feet = units.height(gap.abs());
+    if units.imperial() && feet < 1000.0 {
+        (format!("{feet:.0}"), format!("ft {side}"))
+    } else if units.imperial() || gap.abs() >= 1000.0 {
+        (
+            format!("{:.2}", units.distance(gap.abs())),
+            format!("{} {side}", units.distance_unit()),
+        )
     } else {
         (format!("{:.0}", gap.abs()), format!("m {side}"))
     }
@@ -2176,15 +2201,6 @@ fn date_picker(ui: &mut egui::Ui, date: &mut NaiveDate) -> bool {
 
 /// A line of the banner over the 3D view: text, size, colour, emphasised.
 pub(crate) type BannerLine = (String, f32, Color32, bool);
-
-/// "320 m" or "1.2 km".
-fn fmt_km(m: f64) -> String {
-    if m < 950.0 {
-        format!("{:.0} m", (m / 10.0).round() * 10.0)
-    } else {
-        format!("{:.1} km", m / 1000.0)
-    }
-}
 
 pub(crate) fn secs_edit(ui: &mut egui::Ui, secs: &mut u32) -> bool {
     ui.add(
@@ -2898,12 +2914,13 @@ impl App {
                     }
                 }
                 let mut ri = self.route_idx;
+                let units = self.store.settings.units;
                 egui::ComboBox::from_id_salt("ride-route")
                     .width(160.0)
-                    .selected_text(&self.routes[ri].name)
+                    .selected_text(units.route_name(&self.routes[ri].name))
                     .show_ui(ui, |ui| {
                         for (i, r) in self.routes.iter().enumerate() {
-                            ui.selectable_value(&mut ri, i, &r.name);
+                            ui.selectable_value(&mut ri, i, units.route_name(&r.name));
                         }
                     });
                 if ri != self.route_idx {
@@ -3147,6 +3164,7 @@ impl App {
                 &self.routes[self.route_idx],
                 Some(self.ride.route_pos()),
                 bg,
+                self.store.settings.units,
             );
         }
     }
@@ -3301,7 +3319,7 @@ impl App {
             ui.label(RichText::new("Race a ghost of an earlier ride on this route").weak());
             if ghosts.is_empty() {
                 ui.label(
-                    RichText::new("Ride this route once (1 km or more) to unlock")
+                    RichText::new("Ride this route once (at least a kilometre) to unlock")
                         .weak()
                         .italics(),
                 );
@@ -3310,8 +3328,11 @@ impl App {
                 let selected = matches!(&self.ride.companion,
                     Some(ride::Companion::Ghost(g)) if &g.label == label);
                 let text = format!(
-                    "{label}  ·  {:.1} km/h  ·  {}",
-                    h.distance_m / h.secs.max(1.0) as f64 * 3.6,
+                    "{label}  ·  {}  ·  {}",
+                    self.store
+                        .settings
+                        .units
+                        .fmt_speed(h.distance_m / h.secs.max(1.0) as f64 * 3.6),
                     fmt_dur(h.secs)
                 );
                 if ui.selectable_label(selected, text).clicked() {
@@ -3457,8 +3478,11 @@ impl App {
                 painter,
                 tiles[2],
                 self.speed_label(),
-                &format!("{:.1}", self.ride.speed * 3.6),
-                "km/h",
+                &format!(
+                    "{:.1}",
+                    self.store.settings.units.speed(self.ride.speed * 3.6)
+                ),
+                self.store.settings.units.speed_unit(),
                 Color32::from_rgb(90, 170, 230),
             );
         }
@@ -3690,7 +3714,7 @@ impl App {
                 painter.text(
                     mid - Vec2::new(0.0, h2 * 0.22),
                     Align2::CENTER_CENTER,
-                    route.name.clone(),
+                    self.store.settings.units.route_name(&route.name),
                     small.clone(),
                     Color32::from_gray(160),
                 );
@@ -3704,7 +3728,11 @@ impl App {
                 painter.text(
                     right,
                     Align2::RIGHT_CENTER,
-                    format!("{:.2} / {:.1} km", along / 1000.0, route.length / 1000.0),
+                    format!(
+                        "{:.2} / {}",
+                        self.store.settings.units.distance(along),
+                        self.store.settings.units.fmt_distance(route.length, 1)
+                    ),
                     small.clone(),
                     Color32::from_gray(210),
                 );
@@ -3763,8 +3791,11 @@ impl App {
             } else {
                 "DISTANCE"
             },
-            &format!("{:.2}", self.ride.distance / 1000.0),
-            "km",
+            &format!(
+                "{:.2}",
+                self.store.settings.units.distance(self.ride.distance)
+            ),
+            self.store.settings.units.distance_unit(),
             grey,
         );
         if let Some((title, value, unit, col)) = self.companion_status() {
@@ -3776,8 +3807,11 @@ impl App {
                 painter,
                 tiles[2],
                 self.speed_label(),
-                &format!("{:.1}", self.ride.speed * 3.6),
-                "km/h",
+                &format!(
+                    "{:.1}",
+                    self.store.settings.units.speed(self.ride.speed * 3.6)
+                ),
+                self.store.settings.units.speed_unit(),
                 grey,
             );
         } else {
@@ -4431,7 +4465,11 @@ impl App {
                         painter.with_clip_rect(pill).text(
                             pill.left_center() + Vec2::new(4.0, 0.0),
                             Align2::LEFT_CENTER,
-                            format!("Ridden: {} · {:.0} km", h.name, h.distance_m / 1000.0),
+                            format!(
+                                "Ridden: {} · {}",
+                                h.name,
+                                self.store.settings.units.fmt_distance(h.distance_m, 0)
+                            ),
                             FontId::proportional(11.0),
                             Color32::WHITE,
                         );
@@ -4544,10 +4582,10 @@ impl App {
                         .filter(|h| h.start.date_naive() == self.sel_day)
                     {
                         ui.label(format!(
-                            "Ridden: {} · {} · {:.1} km · {:.0} W avg · {:.0} TSS",
+                            "Ridden: {} · {} · {} · {:.0} W avg · {:.0} TSS",
                             h.name,
                             fmt_dur(h.secs),
-                            h.distance_m / 1000.0,
+                            self.store.settings.units.fmt_distance(h.distance_m, 1),
                             h.avg_power,
                             h.tss
                         ));
@@ -4665,8 +4703,10 @@ impl App {
                             );
                             ui.label(
                                 RichText::new(format!(
-                                    "{:.0} km · {:.0} TSS · {:.0} kJ",
-                                    t.km, t.tss, t.kj
+                                    "{} · {:.0} TSS · {:.0} kJ",
+                                    self.store.settings.units.fmt_distance(t.km * 1000.0, 0),
+                                    t.tss,
+                                    t.kj
                                 ))
                                 .weak(),
                             );
@@ -4841,7 +4881,7 @@ impl App {
                     ui.label(m.format("%B %Y").to_string());
                     ui.label(t.rides.to_string());
                     ui.label(fmt_hours(t.secs));
-                    ui.label(format!("{:.0} km", t.km));
+                    ui.label(self.store.settings.units.fmt_distance(t.km * 1000.0, 0));
                     ui.label(format!("{:.0}", t.tss));
                     ui.label(format!("{:.0} kJ", t.kj));
                     ui.end_row();
@@ -4920,7 +4960,7 @@ impl App {
             if efforts.is_empty() {
                 continue;
             }
-            ui.label(RichText::new(&route.name).strong());
+            ui.label(RichText::new(self.store.settings.units.route_name(&route.name)).strong());
             egui::Grid::new(("records", route.id.as_str()))
                 .striped(true)
                 .num_columns(6)
@@ -4938,7 +4978,7 @@ impl App {
                         };
                         let count = efforts.iter().filter(|e| e.key == seg.key).count();
                         ui.label(&seg.name);
-                        ui.label(RichText::new(seg.describe()).weak());
+                        ui.label(RichText::new(seg.describe(self.store.settings.units)).weak());
                         ui.label(RichText::new(fmt_time(best.secs)).strong());
                         ui.label(format!("{:.0} W", best.avg_power));
                         ui.label(best.date.format("%d %b %Y").to_string());
@@ -5034,7 +5074,7 @@ impl App {
                                 open = Some(i);
                             }
                             ui.label(fmt_dur(h.secs));
-                            ui.label(format!("{:.1} km", h.distance_m / 1000.0));
+                            ui.label(self.store.settings.units.fmt_distance(h.distance_m, 1));
                             ui.label(format!("{:.0}", h.avg_power));
                             ui.label(format!("{:.0}", h.np));
                             ui.label(format!("{:.0}", h.tss));
@@ -5306,7 +5346,7 @@ impl App {
             reading(live.map(|d| &d.cadence), "rpm"),
             reading(live.map(|d| &d.hr), "bpm"),
             live.and_then(|d| fresh(&d.speed))
-                .map(|v| format!("{v:.1} km/h")),
+                .map(|v| self.store.settings.units.fmt_speed(v as f64)),
         ]
         .into_iter()
         .flatten()
@@ -5445,6 +5485,7 @@ impl App {
         let legacy = self
             .trainer_link()
             .is_some_and(|l| l.caps.contains(&Capability::LegacyWahoo));
+        let units = self.store.settings.units;
         let mut action: Option<&str> = None;
         egui::Window::new("Trainer calibration").collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
             ui.set_width(420.0);
@@ -5452,7 +5493,8 @@ impl App {
                 ui.label(RichText::new(text).size(26.0).strong().color(color));
             };
             let speed_line = |ui: &mut egui::Ui| {
-                ui.label(RichText::new(speed.map(|v| format!("{v:.1} km/h")).unwrap_or("— km/h".into())).size(40.0).strong());
+                let text = speed.map(|v| units.fmt_speed(v as f64)).unwrap_or(format!("— {}", units.speed_unit()));
+                ui.label(RichText::new(text).size(40.0).strong());
             };
             match &stage {
                 CalStage::Intro => {
@@ -5492,7 +5534,7 @@ impl App {
                     }
                 }
                 CalStage::SpeedUp => {
-                    let goal = targets.map(|(_, hi)| format!("Pedal up to {hi:.0} km/h")).unwrap_or("Speed up until told to stop".into());
+                    let goal = targets.map(|(_, hi)| format!("Pedal up to {:.0} {}", units.speed(hi as f64), units.speed_unit())).unwrap_or("Speed up until told to stop".into());
                     big(ui, goal, Color32::from_rgb(240, 200, 90));
                     speed_line(ui);
                     if let (Some((_, hi)), Some(v)) = (targets, speed) {
@@ -5600,8 +5642,16 @@ impl App {
                                     });
                             };
                             stat(ui, "Time", fmt_dur(s.secs));
-                            stat(ui, "Distance", format!("{:.2} km", s.distance_m / 1000.0));
-                            stat(ui, "Climbing", format!("{:.0} m", s.ascent_m));
+                            stat(
+                                ui,
+                                "Distance",
+                                self.store.settings.units.fmt_distance(s.distance_m, 2),
+                            );
+                            stat(
+                                ui,
+                                "Climbing",
+                                self.store.settings.units.fmt_height(s.ascent_m),
+                            );
                             stat(ui, "Avg power", format!("{:.0} W", s.avg_power));
                             stat(ui, "Normalized", format!("{:.0} W", s.np));
                             stat(ui, "Intensity", format!("{ifac:.2}"));
@@ -5721,13 +5771,19 @@ impl App {
                     ui.end_row();
                     ui.label("");
                     ui.label(
-                        RichText::new("The power you can hold for about an hour. Not sure? Start with 2.5 × your weight, then ride the Ramp Test.")
+                        RichText::new("The power you can hold for about an hour. Not sure? Start with 2.5 W per kg of your weight, then ride the Ramp Test.")
                             .small()
                             .weak(),
                     );
                     ui.end_row();
+                    ui.label("Units");
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut s.units, Units::Metric, "Metric");
+                        ui.radio_value(&mut s.units, Units::Imperial, "Imperial");
+                    });
+                    ui.end_row();
                     ui.label("Your weight");
-                    ui.add(egui::DragValue::new(&mut s.rider_kg).range(30.0..=200.0).speed(0.1).suffix(" kg"));
+                    settings_ui::weight_value(ui, &mut s.rider_kg, 30.0..=200.0, s.units);
                     ui.end_row();
                     ui.label("Max heart rate");
                     ui.add(egui::DragValue::new(&mut s.max_hr).range(120.0..=230.0).suffix(" bpm"));
@@ -5795,8 +5851,14 @@ impl App {
                                 egui::Grid::new("sum").num_columns(2).show(ui, |ui| {
                                     for (k, v) in [
                                         ("Time", fmt_dur(s.secs)),
-                                        ("Distance", format!("{:.2} km", s.distance_m / 1000.0)),
-                                        ("Climbing", format!("{:.0} m", s.ascent_m)),
+                                        (
+                                            "Distance",
+                                            self.store.settings.units.fmt_distance(s.distance_m, 2),
+                                        ),
+                                        (
+                                            "Climbing",
+                                            self.store.settings.units.fmt_height(s.ascent_m),
+                                        ),
                                         ("Average power", format!("{:.0} W", s.avg_power)),
                                         ("Normalized power", format!("{:.0} W", s.np)),
                                         ("Training stress", format!("{:.0} TSS", s.tss)),

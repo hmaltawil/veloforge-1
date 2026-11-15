@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::store::HrBasis;
+use crate::units::Units;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(super) enum SettingsPage {
@@ -93,6 +94,31 @@ fn card<R>(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui) -> R)
 
 /// One setting: its name (and a short explanation) on the left, the control
 /// on the right.
+/// A weight kept in kg, edited in the chosen units.
+pub(super) fn weight_value(
+    ui: &mut egui::Ui,
+    kg: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    units: Units,
+) -> bool {
+    let mut w = units.weight(*kg as f64);
+    let lo = units.weight(*range.start() as f64);
+    let hi = units.weight(*range.end() as f64);
+    let changed = ui
+        .add(
+            egui::DragValue::new(&mut w)
+                .range(lo..=hi)
+                .speed(0.1)
+                .fixed_decimals(1)
+                .suffix(format!(" {}", units.weight_unit())),
+        )
+        .changed();
+    if changed {
+        *kg = units.weight_to_kg(w) as f32;
+    }
+    changed
+}
+
 fn row<R>(ui: &mut egui::Ui, label: &str, hint: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     ui.horizontal_top(|ui| {
         ui.allocate_ui_with_layout(
@@ -261,23 +287,12 @@ impl App {
                     .inner
                 },
             );
+            let units = s.units;
             mass_changed |= row(ui, "Your weight", "For W/kg and virtual speed.", |ui| {
-                ui.add(
-                    egui::DragValue::new(&mut s.rider_kg)
-                        .range(30.0..=200.0)
-                        .speed(0.1)
-                        .suffix(" kg"),
-                )
-                .changed()
+                weight_value(ui, &mut s.rider_kg, 30.0..=200.0, units)
             });
             mass_changed |= row(ui, "Bike weight", "", |ui| {
-                ui.add(
-                    egui::DragValue::new(&mut s.bike_kg)
-                        .range(3.0..=30.0)
-                        .speed(0.1)
-                        .suffix(" kg"),
-                )
-                .changed()
+                weight_value(ui, &mut s.bike_kg, 3.0..=30.0, units)
             });
             changed |= row(ui, "Jersey colour", "Your rider in the 3D world.", |ui| {
                 ui.color_edit_button_srgb(&mut s.jersey).changed()
@@ -356,6 +371,20 @@ impl App {
             );
         });
         card(ui, "Speed and clock", |ui| {
+            changed |= row(
+                ui,
+                "Units",
+                "How speed, distance, climbing and weight are shown.",
+                |ui| {
+                    let a = ui
+                        .radio_value(&mut s.units, Units::Metric, "Metric (km/h, km, m, kg)")
+                        .changed();
+                    let b = ui
+                        .radio_value(&mut s.units, Units::Imperial, "Imperial (mph, mi, ft, lb)")
+                        .changed();
+                    a || b
+                },
+            );
             changed |= row(
                 ui,
                 "Speed",

@@ -21,6 +21,7 @@ mod sound;
 mod store;
 mod strava;
 mod theme;
+mod units;
 mod update;
 mod workout;
 mod world;

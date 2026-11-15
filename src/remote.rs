@@ -312,7 +312,7 @@ button:disabled { opacity:.35; }
   <div class="tile" id="t-target"><div class="k" id="target-k">Target</div><div class="v"><span id="target">—</span><small id="target-u">W</small></div></div>
   <div class="tile" style="border-left-color:#5aaae6"><div class="k" id="third-k">Cadence</div><div class="v"><span id="third">—</span><small id="third-u">rpm</small></div></div>
   <div class="tile"><div class="k">Time</div><div class="v" id="time">0:00</div></div>
-  <div class="tile"><div class="k">Distance</div><div class="v"><span id="dist">0.00</span><small>km</small></div></div>
+  <div class="tile"><div class="k">Distance</div><div class="v"><span id="dist">0.00</span><small id="dist-u">km</small></div></div>
 </div>
 <div class="interval" id="interval">
   <div class="sub" id="i-label"></div>
@@ -356,7 +356,7 @@ function render(s) {
     $('target-k').textContent = 'Target'; $('target').textContent = fmt(s.target); $('target-u').textContent = 'W';
     $('t-target').style.borderLeftColor = s.target_color || '#2a2d38';
   } else {
-    $('target-k').textContent = 'Speed'; $('target').textContent = fmt(s.speed, 1); $('target-u').textContent = 'km/h';
+    $('target-k').textContent = 'Speed'; $('target').textContent = fmt(s.speed, 1); $('target-u').textContent = s.speed_unit || 'km/h';
     $('t-target').style.borderLeftColor = '#2a2d38';
   }
   const cadenceTarget = s.cadence_target !== null && s.cadence_target !== undefined;
@@ -368,6 +368,7 @@ function render(s) {
   }
   $('time').textContent = s.time || '0:00';
   $('dist').textContent = fmt(s.distance, 2);
+  $('dist-u').textContent = s.distance_unit || 'km';
   const iv = s.interval;
   $('interval').style.display = iv ? 'block' : 'none';
   if (iv) {

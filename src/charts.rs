@@ -188,6 +188,7 @@ pub fn elevation_profile(
     route: &Route,
     d: Option<f64>,
     bg: Option<Color32>,
+    units: crate::units::Units,
 ) {
     if let Some(bg) = bg {
         painter.rect_filled(rect, 10.0, bg);
@@ -239,21 +240,21 @@ pub fn elevation_profile(
     painter.text(
         rect.left_top() + eframe::egui::vec2(12.0, 6.0),
         Align2::LEFT_TOP,
-        &route.name,
+        units.route_name(&route.name),
         crate::theme::medium(11.5),
         Color32::from_white_alpha(225),
     );
     let stats = match here {
         Some(h) => format!(
-            "{:.1} of {:.1} km  ·  {:.0} m climbing per lap",
-            h / 1000.0,
-            route.length / 1000.0,
-            route.ascent
+            "{:.1} of {}  ·  {} climbing per lap",
+            units.distance(h),
+            units.fmt_distance(route.length, 1),
+            units.fmt_height(route.ascent)
         ),
         None => format!(
-            "{:.1} km  ·  {:.0} m climbing per lap",
-            route.length / 1000.0,
-            route.ascent
+            "{}  ·  {} climbing per lap",
+            units.fmt_distance(route.length, 1),
+            units.fmt_height(route.ascent)
         ),
     };
     painter.text(

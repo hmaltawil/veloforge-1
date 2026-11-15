@@ -487,6 +487,7 @@ impl App {
 
     /// Right panel: speed, distance, time, gradient, climbing, companion.
     fn hud_ride(&self, painter: &egui::Painter, r: Rect) {
+        let units = self.store.settings.units;
         let (x0, x1) = (r.left() + PAD, r.right() - PAD);
         let mut y = r.top() + 12.0;
         let route = &self.routes[self.route_idx];
@@ -523,8 +524,8 @@ impl App {
         theme::value(
             painter,
             Pos2::new(x0 - 2.0, y + 4.0),
-            &format!("{:.1}", self.ride.speed * 3.6),
-            "km/h",
+            &format!("{:.1}", units.speed(self.ride.speed * 3.6)),
+            units.speed_unit(),
             46.0,
             Color32::WHITE,
         );
@@ -552,8 +553,8 @@ impl App {
             0,
             y,
             "DISTANCE",
-            format!("{:.2}", self.ride.distance / 1000.0),
-            "km",
+            format!("{:.2}", units.distance(self.ride.distance)),
+            units.distance_unit(),
             Color32::WHITE,
         );
         cell(
@@ -572,8 +573,8 @@ impl App {
             1,
             y,
             "CLIMBED",
-            format!("{:.0}", self.ride.ascent),
-            "m",
+            format!("{:.0}", units.height(self.ride.ascent)),
+            units.height_unit(),
             Color32::WHITE,
         );
         y += 52.0;

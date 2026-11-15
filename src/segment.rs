@@ -30,11 +30,12 @@ pub struct Segment {
 }
 
 impl Segment {
-    /// "1.2 km at 5.4%" or "12.0 km".
-    pub fn describe(&self) -> String {
+    /// "1.2 km at 5.4%" or "12.0 km" (in miles when imperial).
+    pub fn describe(&self, units: crate::units::Units) -> String {
+        let len = units.fmt_distance(self.length, 1);
         match self.kind {
-            Kind::Climb => format!("{:.1} km at {:.1}%", self.length / 1000.0, self.grade),
-            Kind::Lap => format!("{:.1} km", self.length / 1000.0),
+            Kind::Climb => format!("{len} at {:.1}%", self.grade),
+            Kind::Lap => len,
         }
     }
 }

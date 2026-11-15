@@ -29,6 +29,8 @@ pub struct Settings {
     pub trainer_speed: bool,
     /// Riding close behind the pacer or a ghost saves effort.
     pub drafting: bool,
+    /// Metric or imperial units on screen.
+    pub units: crate::units::Units,
     pub max_hr: f32,
     /// Threshold heart rate (LTHR) in bpm, 0 while unknown.
     pub lthr: f32,
@@ -105,6 +107,7 @@ impl Default for Settings {
             view_3d: true,
             trainer_speed: true,
             drafting: true,
+            units: Default::default(),
             max_hr: 185.0,
             lthr: 0.0,
             hr_basis: HrBasis::Max,
