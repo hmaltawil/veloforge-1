@@ -939,8 +939,8 @@ const FRONT_HUB: f32 = 0.57;
 /// Bone lengths, in metres.
 const THIGH: f32 = 0.41;
 const SHIN: f32 = 0.40;
-const UPPER_ARM: f32 = 0.27;
-const FOREARM: f32 = 0.26;
+const UPPER_ARM: f32 = 0.29;
+const FOREARM: f32 = 0.255;
 
 /// Mix of three poses: seated, standing (`stand`) and tucked (`tuck`).
 fn pose3(
@@ -1017,8 +1017,9 @@ pub fn joints(p: &RiderPose) -> Joints {
     // Out of the saddle, riders rock the bike away from the pedal they push.
     let bike = body.rolled(-0.13 * stand * p.crank.sin());
 
-    // Feet on the pedals. Ankling: the heel drops over the top of the
-    // stroke and the toes point down round the bottom.
+    // Feet on the pedals. Ankling as measured on riders: the heel is
+    // lowest through the downstroke (about 105 degrees) and the toes point
+    // furthest down on the upstroke (about 285 degrees).
     let mut ball = [[0.0; 3]; 2];
     let mut ankle = [[0.0; 3]; 2];
     let mut foot_fwd = [[0.0; 3]; 2];
@@ -1026,7 +1027,7 @@ pub fn joints(p: &RiderPose) -> Joints {
     for (k, side) in [1.0f32, -1.0].into_iter().enumerate() {
         let th = p.crank + if side > 0.0 { 0.0 } else { PI };
         let spindle = bike.at(-0.02 + 0.17 * th.sin(), 0.28 + 0.17 * th.cos(), side * 0.1);
-        let toe_down = (0.32 - 0.22 * (th - 0.6).cos()) * (1.0 - 0.3 * stand);
+        let toe_down = (0.3 - 0.25 * (th - 1.83).cos()) * (1.0 - 0.3 * stand);
         let f = bike.dir(toe_down.cos(), -toe_down.sin(), 0.0);
         let n = bike.dir(toe_down.sin(), toe_down.cos(), 0.0);
         ball[k] = add(spindle, scale(n, 0.012));
@@ -1039,7 +1040,7 @@ pub fn joints(p: &RiderPose) -> Joints {
     // swaying towards the pedal being pushed; the straightening leg's hip
     // dips a little.
     let push = p.crank.sin();
-    let hc = pose3([-0.13, 1.03], [-0.02, 1.06], [-0.16, 1.02], stand, tuck);
+    let hc = pose3([-0.19, 1.02], [-0.02, 1.06], [-0.19, 1.01], stand, tuck);
     let hips = body.at(hc[0], hc[1], (0.006 + 0.03 * stand) * push);
     let dip = 0.01 * p.crank.cos();
     let mut hip = [[0.0; 3]; 2];
@@ -1057,7 +1058,7 @@ pub fn joints(p: &RiderPose) -> Joints {
 
     // The back arches from the pelvis to the shoulders; the chest breathes,
     // deeper and faster the harder the effort.
-    let sc = pose3([0.26, 1.33], [0.38, 1.38], [0.3, 1.21], stand, tuck);
+    let sc = pose3([0.2, 1.36], [0.38, 1.38], [0.29, 1.2], stand, tuck);
     let shoulders = body.at(sc[0], sc[1], -0.008 * push);
     let pelvis = add(hips, body.dir(-0.02, 0.0, 0.0));
     let back_dir = norm(sub(shoulders, pelvis));
@@ -1072,7 +1073,7 @@ pub fn joints(p: &RiderPose) -> Joints {
     let mut wrist = [[0.0; 3]; 2];
     let mut grip = [[0.0; 3]; 2];
     for (k, side) in [1.0f32, -1.0].into_iter().enumerate() {
-        shoulder[k] = add(shoulders, body.dir(0.0, -0.025, side * 0.19));
+        shoulder[k] = add(shoulders, body.dir(0.01, -0.028, side * 0.168));
         grip[k] = bike.at(0.59, 0.89, side * 0.2);
         wrist[k] = add(grip[k], bike.dir(-0.045, 0.035, 0.0));
         elbow[k] = ik(
@@ -1080,7 +1081,7 @@ pub fn joints(p: &RiderPose) -> Joints {
             wrist[k],
             UPPER_ARM,
             FOREARM,
-            body.dir(-0.35 + 0.2 * tuck, -0.5, side * 0.55),
+            body.dir(-0.4 + 0.25 * tuck, -0.6, side * 0.25),
         );
     }
 

@@ -597,7 +597,7 @@ pub fn sculpt(j: &Joints) -> Sculpt {
         TORSO,
     ));
     add_part(part(
-        ell(at(0.88, 0.01, 0.0), torso_axes, [0.1, 0.085, 0.18]),
+        ell(at(0.88, 0.01, 0.0), torso_axes, [0.1, 0.085, 0.165]),
         0.05,
         tp(),
         TORSO,
@@ -623,10 +623,13 @@ pub fn sculpt(j: &Joints) -> Sculpt {
         ));
         add_part(part(
             cone(
-                at(0.94, 0.03, s * 0.12),
-                add(j.neck_base, scale(z, s * 0.03)),
-                0.045,
-                0.04,
+                at(0.93, 0.035, s * 0.125),
+                add(
+                    add(j.neck_base, scale(along, 0.035)),
+                    add(scale(back, 0.012), scale(z, s * 0.032)),
+                ),
+                0.042,
+                0.036,
             ),
             0.05,
             tp(),
@@ -722,9 +725,38 @@ pub fn sculpt(j: &Joints) -> Sculpt {
             ));
         }
         add_part(part(
-            ell(ankle, sax, [0.03, 0.033, 0.036]),
+            ell(ankle, sax, [0.03, 0.03, 0.034]),
             0.02,
             solid(Paint::Sock),
+            LOWER_LEG[k],
+        ));
+        // The ankle bones: the inner one higher and further forward.
+        for (side, up_by, fwd_by) in [(1.0f32, 0.0f32, -0.004f32), (-1.0, 0.01, 0.006)] {
+            add_part(part(
+                ell(
+                    add(
+                        ankle,
+                        add(
+                            scale(z, side * s * 0.028),
+                            add(scale(v, -up_by), scale(sfront, fwd_by)),
+                        ),
+                    ),
+                    sax,
+                    [0.016, 0.014, 0.01],
+                ),
+                0.012,
+                solid(Paint::Sock),
+                LOWER_LEG[k],
+            ));
+        }
+        let heel = add(
+            j.ball[k],
+            add(scale(j.foot_fwd[k], -0.175), scale(j.foot_up[k], 0.06)),
+        );
+        add_part(part(
+            cone(son(0.66, -0.026, 0.0), heel, 0.017, 0.012),
+            0.015,
+            bands(knee, ankle, SHIN_BANDS),
             LOWER_LEG[k],
         ));
     }
@@ -742,39 +774,71 @@ pub fn sculpt(j: &Joints) -> Sculpt {
         let front = norm(cross(z, u));
         let ax = [u, front, z];
         let upper_paint = || bands(sh, el, UPPER_BANDS);
-        // Deltoid capping the shoulder.
+        // Deltoid capping the shoulder, tapering to its insertion halfway
+        // down the upper arm.
         add_part(part(
             ell(
-                add(sh, add(scale(z, s * 0.012), scale(up, 0.008))),
+                add(
+                    sh,
+                    add(scale(u, 0.022), add(scale(z, s * 0.006), scale(up, 0.004))),
+                ),
                 axes_along(u, scale(z, s)),
-                [0.07, 0.056, 0.05],
+                [0.068, 0.047, 0.043],
             ),
             0.04,
             upper_paint(),
             ARM[k],
         ));
         add_part(part(
-            cone(sh, el, 0.046, 0.034),
+            cone(sh, el, 0.044, 0.034),
             0.035,
             upper_paint(),
             ARM[k],
         ));
+        // Biceps in front, triceps behind.
         add_part(part(
-            ell(lerp(sh, el, 0.5), ax, [0.09, 0.038, 0.04]),
+            ell(
+                add(lerp(sh, el, 0.55), scale(front, 0.008)),
+                ax,
+                [0.085, 0.034, 0.036],
+            ),
             0.03,
             upper_paint(),
+            ARM[k],
+        ));
+        add_part(part(
+            ell(
+                add(lerp(sh, el, 0.45), scale(front, -0.012)),
+                ax,
+                [0.09, 0.03, 0.036],
+            ),
+            0.03,
+            upper_paint(),
+            ARM[k],
+        ));
+        // The point of the elbow, on the outside of the bend.
+        let mid = lerp(sh, wr, 0.5);
+        let out = sub(el, mid);
+        let out = norm(sub(
+            out,
+            scale(norm(sub(wr, sh)), dot(out, norm(sub(wr, sh)))),
+        ));
+        add_part(part(
+            ell(add(el, scale(out, 0.018)), ax, [0.024, 0.02, 0.021]),
+            0.025,
+            solid(Paint::Skin),
             ARM[k],
         ));
         let v = norm(sub(wr, el));
         let fax = axes_along(v, z);
         add_part(part(
-            cone(el, wr, 0.036, 0.025),
+            cone(el, wr, 0.034, 0.023),
             0.03,
             solid(Paint::Skin),
             ARM[k],
         ));
         add_part(part(
-            ell(lerp(el, wr, 0.28), fax, [0.08, 0.036, 0.033]),
+            ell(lerp(el, wr, 0.27), fax, [0.085, 0.038, 0.034]),
             0.03,
             solid(Paint::Skin),
             ARM[k],
@@ -785,9 +849,9 @@ pub fn sculpt(j: &Joints) -> Sculpt {
     add_part(part(
         cone(
             sub(j.neck_base, scale(along, 0.02)),
-            sub(j.head, scale(hu, 0.055)),
-            0.056,
-            0.05,
+            sub(j.head, add(scale(hu, 0.055), scale(hf, 0.032))),
+            0.055,
+            0.047,
         ),
         0.04,
         solid(Paint::Skin),
@@ -869,44 +933,73 @@ pub fn sculpt(j: &Joints) -> Sculpt {
             add(b, add(scale(f, x), add(scale(n, y), scale(bike.right, w))))
         };
         let shoe = |shape: Shape, k2: f32, p: Paint| rigid(shape, k2, solid(p), FOOT[k]);
-        shoes.parts.push(shoe(
+        // White uppers with dark details.
+        let upper = |shape: Shape, k2: f32| {
+            let paint: Painter = Box::new(move |p| {
+                let q = sub(p, b);
+                let (x, y) = (dot(q, f), dot(q, n));
+                // The rim of the ankle opening, and a strap across the
+                // forefoot.
+                if (x < -0.105 && y > 0.083 + (x + 0.105) * -0.25)
+                    || ((-0.012..0.006).contains(&(x + 0.02 * y)) && y > 0.034)
+                {
+                    Paint::Dial
+                } else {
+                    Paint::Shoe
+                }
+            });
+            rigid(shape, k2, paint, FOOT[k])
+        };
+        // Low, narrow toe; the forefoot over the cleat; the instep rising
+        // to the ankle; the heel cup.
+        shoes.parts.push(upper(
+            ell(on(0.072, 0.021, 0.0), ax, [0.05, 0.021, 0.036]),
+            0.03,
+        ));
+        shoes.parts.push(upper(
+            ell(on(0.0, 0.03, 0.0), ax, [0.07, 0.029, 0.042]),
+            0.03,
+        ));
+        shoes.parts.push(upper(
             Shape::Box {
-                c: on(-0.045, 0.036, 0.0),
+                c: on(-0.06, 0.035, 0.0),
                 axes: ax,
-                half: [0.11, 0.022, 0.026],
-                round: 0.018,
+                half: [0.075, 0.016, 0.02],
+                round: 0.017,
             },
             0.03,
-            Paint::Shoe,
         ));
-        shoes.parts.push(shoe(
-            ell(on(0.055, 0.026, 0.0), ax, [0.055, 0.028, 0.043]),
+        shoes.parts.push(upper(
+            ell(on(-0.08, 0.052, 0.0), ax, [0.062, 0.04, 0.037]),
             0.03,
-            Paint::Shoe,
         ));
-        shoes.parts.push(shoe(
-            ell(on(-0.145, 0.05, 0.0), ax, [0.042, 0.05, 0.037]),
-            0.03,
-            Paint::Shoe,
-        ));
-        shoes.parts.push(shoe(
-            ell(on(-0.095, 0.075, 0.0), ax, [0.055, 0.032, 0.038]),
-            0.03,
-            Paint::Shoe,
+        shoes.parts.push(upper(
+            ell(on(-0.148, 0.05, 0.0), ax, [0.044, 0.048, 0.035]),
+            0.025,
         ));
         shoes.parts.push(shoe(
             Shape::Box {
                 c: on(-0.04, 0.003, 0.0),
                 axes: ax,
-                half: [0.125, 0.004, 0.041],
+                half: [0.125, 0.004, 0.038],
                 round: 0.005,
             },
             0.004,
             Paint::Sole,
         ));
-        // The dial on the outside of the instep.
+        // The dial on the instep and the heel tab.
         shoes.parts.push(shoe(
-            ell(on(-0.06, 0.07, s * 0.03), ax, [0.012, 0.012, 0.009]),
+            ell(on(-0.07, 0.088, s * 0.014), ax, [0.014, 0.01, 0.014]),
+            0.004,
+            Paint::Dial,
+        ));
+        shoes.parts.push(shoe(
+            Shape::Box {
+                c: on(-0.19, 0.062, 0.0),
+                axes: ax,
+                half: [0.004, 0.026, 0.01],
+                round: 0.003,
+            },
             0.004,
             Paint::Dial,
         ));
