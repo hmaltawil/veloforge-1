@@ -3,6 +3,7 @@
 
 mod activity;
 mod app;
+mod builder;
 mod charts;
 mod devices;
 mod gfx;

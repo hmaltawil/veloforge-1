@@ -165,6 +165,7 @@ pub struct App {
 
     selected_workout: Option<String>,
     editing: bool,
+    builder: crate::builder::Builder,
     workout_filter: String,
     schedule_date: NaiveDate,
 
@@ -264,6 +265,7 @@ impl App {
             last_frame: Instant::now(),
             selected_workout: None,
             editing: false,
+            builder: Default::default(),
             workout_filter: String::new(),
             schedule_date: today,
             plan_cfg: PlanConfig {
@@ -1510,10 +1512,8 @@ fn install_fallback_font(ctx: &egui::Context) {
 enum Icon {
     Left,
     Right,
-    Up,
     Play,
     Pause,
-    Close,
     Check,
 }
 
@@ -1543,13 +1543,6 @@ fn paint_icon(painter: &egui::Painter, r: Rect, icon: Icon, c: Color32) {
                 Pos2::new(x0 + 2.0, y1 - 1.0),
             ]));
         }
-        Icon::Up => {
-            painter.add(tri(vec![
-                Pos2::new(x0 + 1.0, y1 - 2.0),
-                Pos2::new(cx, y0 + 2.0),
-                Pos2::new(x1 - 1.0, y1 - 2.0),
-            ]));
-        }
         Icon::Pause => {
             painter.rect_filled(
                 Rect::from_min_max(Pos2::new(x0 + 2.0, y0 + 1.0), Pos2::new(cx - 1.5, y1 - 1.0)),
@@ -1560,17 +1553,6 @@ fn paint_icon(painter: &egui::Painter, r: Rect, icon: Icon, c: Color32) {
                 Rect::from_min_max(Pos2::new(cx + 1.5, y0 + 1.0), Pos2::new(x1 - 2.0, y1 - 1.0)),
                 1.0,
                 c,
-            );
-        }
-        Icon::Close => {
-            let s = Stroke::new(w, c);
-            painter.line_segment(
-                [Pos2::new(x0 + 2.0, y0 + 2.0), Pos2::new(x1 - 2.0, y1 - 2.0)],
-                s,
-            );
-            painter.line_segment(
-                [Pos2::new(x1 - 2.0, y0 + 2.0), Pos2::new(x0 + 2.0, y1 - 2.0)],
-                s,
             );
         }
         Icon::Check => {
@@ -1880,7 +1862,7 @@ fn date_picker(ui: &mut egui::Ui, date: &mut NaiveDate) -> bool {
     changed
 }
 
-fn secs_edit(ui: &mut egui::Ui, secs: &mut u32) -> bool {
+pub(crate) fn secs_edit(ui: &mut egui::Ui, secs: &mut u32) -> bool {
     ui.add(
         egui::DragValue::new(secs)
             .range(5..=4 * 3600)
@@ -1905,7 +1887,7 @@ fn secs_edit(ui: &mut egui::Ui, secs: &mut u32) -> bool {
     .changed()
 }
 
-fn pct_edit(ui: &mut egui::Ui, frac: &mut f32) -> bool {
+pub(crate) fn pct_edit(ui: &mut egui::Ui, frac: &mut f32) -> bool {
     let mut pct = *frac * 100.0;
     let changed = ui
         .add(
@@ -1923,7 +1905,7 @@ fn pct_edit(ui: &mut egui::Ui, frac: &mut f32) -> bool {
 }
 
 /// A step's cadence target in rpm; 0 ("any rpm") means none.
-fn cadence_edit(ui: &mut egui::Ui, cadence: &mut Option<u32>) -> bool {
+pub(crate) fn cadence_edit(ui: &mut egui::Ui, cadence: &mut Option<u32>) -> bool {
     let mut rpm = cadence.unwrap_or(0);
     let changed = ui
         .add(
@@ -3646,19 +3628,22 @@ impl App {
                 ui.label(RichText::new(&w.description).weak());
             }
             ui.add_space(6.0);
-            let (r, _) =
-                ui.allocate_exact_size(Vec2::new(ui.available_width(), 150.0), Sense::hover());
-            charts::workout_profile(
-                ui.painter(),
-                r,
-                &w.segments(),
-                ftp,
-                1.0,
-                None,
-                &[],
-                Some(CARD),
-            );
-            ui.add_space(6.0);
+            // While building, the builder's own chart takes its place.
+            if !(custom.is_some() && self.editing) {
+                let (r, _) =
+                    ui.allocate_exact_size(Vec2::new(ui.available_width(), 150.0), Sense::hover());
+                charts::workout_profile(
+                    ui.painter(),
+                    r,
+                    &w.segments(),
+                    ftp,
+                    1.0,
+                    None,
+                    &[],
+                    Some(CARD),
+                );
+                ui.add_space(6.0);
+            }
             ui.horizontal(|ui| {
                 let rideable = w.duration() > 0.0;
                 if ui
@@ -3717,7 +3702,7 @@ impl App {
             ui.separator();
             match (custom, self.editing) {
                 (Some(ci), true) => {
-                    if self.workout_editor(ui, ci) {
+                    if self.workout_editor(ui, ci, &id, ftp) {
                         self.mark_dirty();
                     }
                 }
@@ -3732,7 +3717,9 @@ impl App {
         });
     }
 
-    fn workout_editor(&mut self, ui: &mut egui::Ui, ci: usize) -> bool {
+    /// A custom workout's name and description, and the builder for its
+    /// steps.
+    fn workout_editor(&mut self, ui: &mut egui::Ui, ci: usize, id: &str, ftp: f32) -> bool {
         let mut changed = false;
         let w = &mut self.store.custom_workouts[ci];
         egui::Grid::new("wk-meta").num_columns(2).show(ui, |ui| {
@@ -3744,131 +3731,12 @@ impl App {
             ui.end_row();
         });
         ui.add_space(6.0);
-        let mut remove = None;
-        let mut swap = None;
         egui::ScrollArea::vertical()
-            .max_height(ui.available_height() - 40.0)
+            .id_salt("builder-scroll")
+            .auto_shrink([false, false])
             .show(ui, |ui| {
-                for (i, step) in w.steps.iter_mut().enumerate() {
-                    ui.horizontal(|ui| {
-                        ui.label(format!("{:>2}.", i + 1));
-                        match step {
-                            Step::Steady {
-                                secs,
-                                power,
-                                cadence,
-                            } => {
-                                ui.label("Steady");
-                                changed |= secs_edit(ui, secs);
-                                ui.label("at");
-                                changed |= pct_edit(ui, power);
-                                changed |= cadence_edit(ui, cadence);
-                            }
-                            Step::Ramp {
-                                secs,
-                                from,
-                                to,
-                                cadence,
-                            } => {
-                                ui.label("Ramp");
-                                changed |= secs_edit(ui, secs);
-                                ui.label("from");
-                                changed |= pct_edit(ui, from);
-                                ui.label("to");
-                                changed |= pct_edit(ui, to);
-                                changed |= cadence_edit(ui, cadence);
-                            }
-                            Step::Intervals {
-                                repeat,
-                                on_secs,
-                                on_power,
-                                off_secs,
-                                off_power,
-                                on_cadence,
-                                off_cadence,
-                            } => {
-                                ui.label("Intervals");
-                                changed |= ui
-                                    .add(egui::DragValue::new(repeat).range(1..=50).suffix("×"))
-                                    .changed();
-                                changed |= secs_edit(ui, on_secs);
-                                ui.label("@");
-                                changed |= pct_edit(ui, on_power);
-                                changed |= cadence_edit(ui, on_cadence);
-                                ui.label("then");
-                                changed |= secs_edit(ui, off_secs);
-                                ui.label("@");
-                                changed |= pct_edit(ui, off_power);
-                                changed |= cadence_edit(ui, off_cadence);
-                            }
-                            Step::FreeRide { secs, cadence } => {
-                                ui.label("Free ride");
-                                changed |= secs_edit(ui, secs);
-                                changed |= cadence_edit(ui, cadence);
-                            }
-                        }
-                        if icon_button(ui, Icon::Up, "", None)
-                            .on_hover_text("Move up")
-                            .clicked()
-                            && i > 0
-                        {
-                            swap = Some(i);
-                        }
-                        if icon_button(ui, Icon::Close, "", None)
-                            .on_hover_text("Remove step")
-                            .clicked()
-                        {
-                            remove = Some(i);
-                        }
-                    });
-                }
+                changed |= self.builder.show(ui, id, &mut w.steps, ftp);
             });
-        if let Some(i) = remove {
-            w.steps.remove(i);
-            changed = true;
-        }
-        if let Some(i) = swap {
-            w.steps.swap(i, i - 1);
-            changed = true;
-        }
-        ui.horizontal(|ui| {
-            ui.label("Add:");
-            let add: Option<Step> = if ui.button("Steady").clicked() {
-                Some(Step::Steady {
-                    secs: 300,
-                    power: 0.75,
-                    cadence: None,
-                })
-            } else if ui.button("Ramp").clicked() {
-                Some(Step::Ramp {
-                    secs: 300,
-                    from: 0.5,
-                    to: 0.75,
-                    cadence: None,
-                })
-            } else if ui.button("Intervals").clicked() {
-                Some(Step::Intervals {
-                    repeat: 4,
-                    on_secs: 120,
-                    on_power: 1.05,
-                    off_secs: 120,
-                    off_power: 0.5,
-                    on_cadence: None,
-                    off_cadence: None,
-                })
-            } else if ui.button("Free ride").clicked() {
-                Some(Step::FreeRide {
-                    secs: 600,
-                    cadence: None,
-                })
-            } else {
-                None
-            };
-            if let Some(s) = add {
-                w.steps.push(s);
-                changed = true;
-            }
-        });
         changed
     }
 
