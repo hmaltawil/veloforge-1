@@ -2,9 +2,9 @@
 
 [![CI](https://github.com/hmaltawil/veloforge-1/actions/workflows/ci.yml/badge.svg)](https://github.com/hmaltawil/veloforge-1/actions/workflows/ci.yml)
 
-A free, local indoor-cycling app for Linux, with Windows and macOS versions in testing: smart trainer control, structured workouts, training plans and a 3D world to ride in. Everything runs on your computer, with no account and no subscription.
+A free, local indoor-cycling app for Linux, Windows and macOS: smart trainer control, structured workouts, training plans and a 3D world to ride in. Everything runs on your computer, with no account and no subscription. (The Windows and macOS versions are new and still in testing.)
 
-![Workout on the Col Loop](docs/ride-workout.png)
+![A sweet spot workout on the Col Loop climb](docs/ride-workout.png)
 
 ## What it does
 
@@ -13,7 +13,8 @@ A free, local indoor-cycling app for Linux, with Windows and macOS versions in t
 - **Training plans and a calendar**. VeloForge generates a periodized plan (FTP builder, aerobic base or maintenance) on the days you ride: three build weeks, then a recovery week. Missed a key workout? It offers to move it to your next free day. Tired? It suggests an easier ride instead.
 - **Heart-rate rides**: pick a target heart rate and VeloForge sets the trainer's power to hold it.
 - **Ride with someone**: a pacer at a power you choose, or a ghost of your own best ride on the same route. Tuck in close behind and you **draft**: up to a third less air to push, so you go faster and the trainer gets easier.
-- **3D world** rendered on your graphics card: farmland, lakes, snowy mountains, an island coast road and a hairpin climb, by day, at sunset or at night, in sun, cloud, fog or rain. Trees cast shadows across the road, grass and wild flowers bend in the wind, clouds drift and shade the hills, and the low sun glitters on the water. Your rider pedals, breathes, stands up on steep climbs and tucks on fast descents. Watch from behind, close up, alongside or from above (press **C**). Every climb is a timed **segment**: VeloForge finds them on each route (imported ones too), shows your time and your best as you ride, cheers a new personal record, and keeps a table of your records. Import any `.gpx` file to ride a real route. A **dashboard** view shows the numbers instead (press **V**).
+- **3D world** rendered on your graphics card: farmland, lakes, snowy mountains, an island coast road and a hairpin climb, by day, at sunset or at night, in sun, cloud, fog or rain. Trees cast shadows across the road, grass and wild flowers bend in the wind, clouds drift and shade the hills, and the low sun glitters on the water. Your rider is sculpted as one body with a real bike fit: they pedal with natural ankle movement, breathe harder as the effort rises, stand up on steep climbs and tuck on fast descents. Watch from behind, close up, alongside or from above (press **C**). Every climb is a timed **segment**: VeloForge finds them on each route (imported ones too), shows your time and your best as you ride, cheers a new personal record, and keeps a table of your records. Import any `.gpx` file to ride a real route. A **dashboard** view shows the numbers instead (press **V**).
+- **Metric or imperial**: km/h, km, metres and kg, or mph, miles, feet and pounds, everywhere in the app.
 - **Phone remote**: your phone shows the live numbers and starts, pauses, skips steps or changes the intensity, over your home Wi-Fi.
 - **intervals.icu**: the rides you plan there appear in your calendar, and finished rides upload by themselves.
 - **Strava**: finished rides upload by themselves, as indoor rides (connect once in **Settings → Strava**, through your own free Strava API application; VeloForge shows you how).
@@ -24,10 +25,11 @@ A free, local indoor-cycling app for Linux, with Windows and macOS versions in t
 
 | | |
 |---|---|
-| ![Riding with a pacer](docs/ride-pacer.png) | ![Night ride](docs/ride-night.png) |
-| ![Island Coast](docs/ride-coast.png) | ![Dashboard](docs/dashboard.png) |
-| ![Progress](docs/progress.png) | ![Calendar](docs/calendar.png) |
-| ![Ride details](docs/ride-details.png) | ![Lakeside](docs/ride-lake.png) |
+| ![Drafting behind a pacer](docs/ride-pacer.png)<br>Drafting behind a pacer | ![A threshold workout at night](docs/ride-night.png)<br>A threshold workout at night |
+| ![The Island Coast at sunset](docs/ride-coast.png)<br>The Island Coast at sunset | ![Racing a ghost on Lakeside Flats](docs/ride-lake.png)<br>Racing your ghost on a cloudy day |
+| ![Side view on a 13% climb](docs/ride-side.png)<br>Side view on a 13% climb | ![The dashboard in imperial units](docs/dashboard.png)<br>The dashboard, in imperial units |
+| ![The workout builder](docs/builder.png)<br>The workout builder | ![Ride details](docs/ride-details.png)<br>Ride details: a 20-minute FTP test |
+| ![Progress](docs/progress.png)<br>Fitness, weekly hours and power curve | ![Calendar](docs/calendar.png)<br>A training plan in the calendar |
 
 ## Install
 
@@ -121,6 +123,8 @@ Shortcuts: **Space** start/pause, **↑/↓** intensity / slope / difficulty / t
 
 **On screen while you ride**: your power with its zone, target, cadence and heart rate on the left; speed, distance, time, gradient and climbing on the right; a map of the route and its profile, coloured by gradient, along the bottom. Once you start, the choice of workout and route makes way for the controls you need on the bike.
 
+**Units**: metric or imperial, chosen on the welcome screen or in **Settings → Riding**. Everything is stored in metric, so you can switch at any time.
+
 **Speed** comes from your trainer's wheel speed when it reports one, or is calculated from your power, weight and the gradient. Choose which in **Settings → Riding**.
 
 ### Workouts and plans
@@ -182,26 +186,40 @@ VeloForge is written in Rust with [egui](https://github.com/emilk/egui) for the 
 |---|---|
 | `src/protocol.rs` | Bluetooth GATT parsers and encoders: FTMS, cycling power, heart rate, CSC, Wahoo legacy |
 | `src/devices.rs` | Bluetooth manager thread: scanning, connecting, reconnecting, trainer commands, simulator |
-| `src/ride.rs` | Ride engine: virtual speed, ERG/gradient decisions, heart-rate control, pacer and ghost, recording, TCX export, summaries |
-| `src/workout.rs` | Workout model, built-in library, `.zwo` import, training load, interval cues |
+| `src/ride.rs` | Ride engine: virtual speed, drafting, ERG/gradient decisions, heart-rate control, pacer and ghost, recording, TCX export, summaries |
+| `src/fit.rs` | FIT files for saved rides |
+| `src/workout.rs` | Workout model, built-in library, `.zwo` import and export, training load, interval cues |
+| `src/builder.rs` | The visual workout builder |
 | `src/plan.rs` | Plan generator, calendar helpers, missed workouts and easier options |
 | `src/progress.rs` | Fitness, fatigue and form, power curves, weekly and monthly totals |
 | `src/icu.rs` | intervals.icu client: planned workouts down, rides up |
+| `src/strava.rs` | Strava connection and uploads |
 | `src/remote.rs` | Phone remote: a small web server on the local network |
 | `src/update.rs` | The check for a newer version |
 | `src/route.rs` | Built-in routes (including the hairpin climb) and GPX import |
+| `src/segment.rs` | Climbs found on each route, timing and personal records |
 | `src/activity.rs` | Reading saved rides back (ride details, crash recovery) |
 | `src/gfx/` | OpenGL 3D world: terrain generation, meshes, shaders, renderer (shadow maps, HDR, post-processing) |
+| `src/gfx/body.rs` | The rider: a sculpted body bent by a skeleton |
 | `src/hud.rs` | The glass panels over the 3D view |
 | `src/theme.rs` | Colours, typefaces (Inter, in `assets/fonts/`) and widget styling |
 | `src/world.rs` | Simple software 3D view (fallback), time of day and weather |
 | `src/sound.rs` | Audio cues |
 | `src/charts.rs` | Charts and zone colours |
+| `src/units.rs` | Metric and imperial units |
 | `src/platform.rs` | The few differences between Linux, Windows and macOS |
 | `build.rs` | Gives the Windows `.exe` its icon, name and version |
 | `packaging/linux/` | Builds and tests the Linux `.deb` and `.tar.gz` downloads |
 | `packaging/macos/` | Builds and tests the macOS `.app` in a `.dmg` |
-| `src/app.rs` | The user interface |
+| `src/app.rs`, `src/settings_ui.rs` | The user interface |
+| `src/demo_data.rs` | A made-up season of riding, for the screenshots in `docs/` |
+
+**Screenshots**: the pictures in `docs/` show a made-up rider's season, generated with the app's own ride engine. To make it again:
+
+```bash
+VELOFORGE_DEMO_OUT=/tmp/demo cargo test make_demo_data -- --ignored
+VELOFORGE_DATA=/tmp/demo cargo run --release -- --demo --workout
+```
 
 The interface is set in [Inter](https://rsms.me/inter/), used under the SIL Open Font License (`assets/fonts/LICENSE.txt`).
 

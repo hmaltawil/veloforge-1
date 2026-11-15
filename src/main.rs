@@ -5,6 +5,8 @@ mod activity;
 mod app;
 mod builder;
 mod charts;
+#[cfg(test)]
+mod demo_data;
 mod devices;
 mod fit;
 mod gfx;
