@@ -13,16 +13,25 @@
 # match the version in Cargo.toml. A tag with a dash (v1.2.0-beta) becomes a
 # pre-release.
 #
+# The Windows and Linux files are published as soon as they pass; the Mac
+# .dmg is added on its own once it is built, so a long wait for a Mac
+# machine never holds the rest back.
+#
 # "Run workflow" (Actions > Release) on a branch builds and tests everything
 # without publishing; the files are kept with that run for a few days. Run
-# on a tag, it builds, tests and publishes to that tag's release, for a
-# release made with a tag that already existed.
+# on a tag, or with a tag filled in, it builds that tag, tests and publishes
+# to its release, for a release made with a tag that already existed.
 name: Release
 
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and publish (for example v1.2.0); empty builds the branch without publishing"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -30,14 +39,20 @@ permissions:
 # Never publish to the same release from two runs at once (for example a
 # tag push and a manual run on that tag).
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref }}
   cancel-in-progress: false
+
+env:
+  # The tag being released, or empty when only building a branch.
+  TAG: ${{ inputs.tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
 
 jobs:
   windows:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
 
       - name: Install Rust and the Windows cross-compiler
         run: |
@@ -79,6 +94,8 @@ jobs:
             ca-certificates curl git build-essential pkg-config libdbus-1-dev dpkg-dev
 
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
 
       - name: Install Rust (the version in rust-toolchain.toml) and cargo-deb
         run: |
@@ -107,6 +124,8 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
 
       - name: Install Rust and both Mac targets
         run: |
@@ -140,6 +159,8 @@ jobs:
     container: ${{ matrix.image }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
       - uses: actions/download-artifact@v8
         with:
           name: linux
@@ -148,11 +169,13 @@ jobs:
         run: bash packaging/linux/smoke-test.sh ${{ matrix.package }} dist
 
   publish:
-    needs: [windows, test-linux, macos]
-    if: github.ref_type == 'tag'
+    needs: [windows, test-linux]
+    if: github.ref_type == 'tag' || inputs.tag
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
       - uses: actions/download-artifact@v8
         with:
           path: dist
@@ -162,7 +185,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="$GITHUB_REF_NAME"
+          tag="$TAG"
           version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
           if [ "$tag" != "v$version" ]; then
             echo "::error::The tag $tag does not match the version in Cargo.toml ($version). Change one of them and publish again."
@@ -189,3 +212,29 @@ jobs:
               --title "VeloForge $version" \
               --notes-file packaging/release-notes.md
           fi
+
+  # The Mac .dmg, added to the release published above, with its checksum.
+  publish-macos:
+    needs: [macos, publish]
+    if: github.ref_type == 'tag' || inputs.tag
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: macos
+          path: dist
+
+      - name: Add the .dmg to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cd dist
+          gh release download "$TAG" --pattern SHA256SUMS
+          for f in *.dmg; do
+            grep -v " $f\$" SHA256SUMS > sums || true
+            sha256sum "$f" >> sums
+            mv sums SHA256SUMS
+          done
+          cat SHA256SUMS
+          gh release upload "$TAG" ./*.dmg SHA256SUMS --clobber
