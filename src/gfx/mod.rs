@@ -574,6 +574,28 @@ impl GpuWorld {
         self.gl.lock().ok().and_then(|g| g.gpu_ms)
     }
 
+    /// Milliseconds the GPU last spent outside the 3D view: drawing the rest
+    /// of the screen, and showing the frame (None if it cannot be measured).
+    pub fn other_ms(&self) -> Option<[f32; 2]> {
+        self.gl.lock().ok().and_then(|g| g.other_ms)
+    }
+
+    /// Mark on the GPU where egui starts drawing the frame (`end` false:
+    /// paint into the bottom layer, first) or is done (`end`: the top
+    /// layer, last), to time the work around the 3D view (for `--bench`).
+    pub fn mark_frame(&self, painter: &egui::Painter, end: bool) {
+        let state = self.gl.clone();
+        let cb = egui_glow::CallbackFn::new(move |_info, p| {
+            if let Ok(mut st) = state.lock() {
+                st.mark(p.gl(), if end { MARK_END } else { MARK_BEGIN });
+            }
+        });
+        painter.add(egui::PaintCallback {
+            rect: Rect::from_min_size(painter.clip_rect().min, egui::vec2(1.0, 1.0)),
+            callback: Arc::new(cb),
+        });
+    }
+
     /// Whether the view blurs what lies behind the HUD's glass panels (it
     /// cannot where off-screen rendering is unavailable).
     pub fn frosts_glass(&self) -> bool {
@@ -1372,7 +1394,28 @@ struct GlState {
     gpu_ms: Option<[f32; STAGES]>,
     /// Milliseconds the last frame's drawing commands took to issue.
     paint_ms: f32,
+    /// GPU timestamps around egui's drawing and the 3D view (for `--bench`).
+    marks: Option<Marks>,
+    marks_failed: bool,
+    /// Milliseconds the GPU last spent outside the 3D view: drawing the
+    /// rest of the screen (egui), and showing the frame.
+    other_ms: Option<[f32; 2]>,
 }
+
+/// GPU timestamps for a few frames in flight: when egui starts drawing a
+/// frame, when the 3D view starts and ends, and when egui is done.
+struct Marks {
+    q: Vec<[glow::Query; 4]>,
+    /// Which of each frame's timestamps were recorded.
+    issued: Vec<[bool; 4]>,
+    frame: usize,
+    /// When the last frame read back was done, to time its showing.
+    last_end: Option<u64>,
+}
+const MARK_BEGIN: usize = 0;
+const MARK_3D: usize = 1;
+const MARK_3D_DONE: usize = 2;
+const MARK_END: usize = 3;
 
 /// Stages of a frame timed on the GPU: shadows, trees and objects, ground
 /// and road (with the mountains), grass, the rest of the scene (shadow
@@ -2679,8 +2722,70 @@ impl GlState {
 
     fn paint(&mut self, gl: &glow::Context, info: &egui::PaintCallbackInfo, f: &FrameData) {
         let t0 = std::time::Instant::now();
+        self.mark(gl, MARK_3D);
         self.paint_frame(gl, info, f);
+        self.mark(gl, MARK_3D_DONE);
         self.paint_ms = t0.elapsed().as_secs_f32() * 1000.0;
+    }
+
+    /// Record GPU timestamp `k` of this frame (see `Marks`). At the start
+    /// of a frame, read back the oldest frame in flight if it is done.
+    fn mark(&mut self, gl: &glow::Context, k: usize) {
+        if !self.timing || self.marks_failed {
+            return;
+        }
+        unsafe {
+            if self.marks.is_none() {
+                let mut q = Vec::new();
+                for _ in 0..4 {
+                    let mut set = Vec::new();
+                    for _ in 0..4 {
+                        match gl.create_query() {
+                            Ok(x) => set.push(x),
+                            Err(_) => {
+                                self.marks_failed = true;
+                                return;
+                            }
+                        }
+                    }
+                    q.push(std::array::from_fn(|i| set[i]));
+                }
+                self.marks = Some(Marks {
+                    issued: vec![[false; 4]; q.len()],
+                    q,
+                    frame: 0,
+                    last_end: None,
+                });
+            }
+            let m = self.marks.as_mut().unwrap();
+            if k == MARK_BEGIN {
+                m.frame = (m.frame + 1) % m.q.len();
+                let slot = m.frame;
+                let set = m.q[slot];
+                let complete = m.issued[slot].iter().all(|&i| i);
+                if complete
+                    && gl.get_query_parameter_u32(set[MARK_END], glow::QUERY_RESULT_AVAILABLE) != 0
+                {
+                    let t = set.map(|q| gl.get_query_parameter_u64(q, glow::QUERY_RESULT));
+                    let ms = |a: u64, b: u64| b.saturating_sub(a) as f32 / 1.0e6;
+                    let egui = ms(t[MARK_BEGIN], t[MARK_3D]) + ms(t[MARK_3D_DONE], t[MARK_END]);
+                    // Showing the frame read back before this one: from when
+                    // it was done to when this one began.
+                    if let Some(prev) = m.last_end {
+                        self.other_ms = Some([egui, ms(prev, t[MARK_BEGIN])]);
+                    }
+                    m.last_end = Some(t[MARK_END]);
+                } else {
+                    m.last_end = None;
+                }
+                m.issued[slot] = [false; 4];
+            } else if !m.issued[m.frame][MARK_BEGIN] {
+                // This frame's start was not marked: leave it out.
+                return;
+            }
+            gl.query_counter(m.q[m.frame][k], glow::TIMESTAMP);
+            m.issued[m.frame][k] = true;
+        }
     }
 
     fn paint_frame(&mut self, gl: &glow::Context, info: &egui::PaintCallbackInfo, f: &FrameData) {

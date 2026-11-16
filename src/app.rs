@@ -1217,6 +1217,9 @@ impl App {
         if let Some(g) = gpu_ms {
             b.gpu.push(g);
         }
+        if let Some(o) = self.gpu.other_ms() {
+            b.other.push(o);
+        }
         if elapsed < Bench::WARM_UP + b.secs {
             return;
         }
@@ -2572,7 +2575,18 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        // When benchmarking, mark on the graphics card where this frame's
+        // drawing starts and ends, around the 3D view.
+        let ctx = ui.ctx().clone();
+        if self.bench.is_some() {
+            self.gpu
+                .mark_frame(&ctx.layer_painter(egui::LayerId::background()), false);
+        }
         self.ui_frame(ui, frame);
+        if self.bench.is_some() {
+            let top = egui::LayerId::new(egui::Order::Debug, egui::Id::unique("bench-end"));
+            self.gpu.mark_frame(&ctx.layer_painter(top), true);
+        }
         self.frame_marks.1 = Some(Instant::now());
     }
 
@@ -6255,6 +6269,9 @@ struct Bench {
     /// preparing the 3D frame), issuing the 3D drawing commands, and the
     /// rest of drawing and presenting the screen.
     cpu: Vec<[f32; 4]>,
+    /// GPU milliseconds outside the 3D view: the rest of the screen, and
+    /// showing the frame.
+    other: Vec<[f32; 2]>,
     measuring: bool,
 }
 
@@ -6271,6 +6288,7 @@ impl Bench {
             frames: Vec::new(),
             gpu: Vec::new(),
             cpu: Vec::new(),
+            other: Vec::new(),
             measuring: false,
         }
     }
@@ -6331,6 +6349,15 @@ impl Bench {
                 st[4],
                 all * 30.0 / 10.0,
                 all * 60.0 / 10.0,
+            );
+        }
+        if !self.other.is_empty() {
+            let k = self.other.len() as f32;
+            let avg = |i: usize| self.other.iter().map(|o| o[i]).sum::<f32>() / k;
+            out += &format!(
+                "Graphics card outside the 3D view: the rest of the screen {:.1} ms, showing the frame {:.1} ms\n",
+                avg(0),
+                avg(1),
             );
         }
         if !self.cpu.is_empty() {
