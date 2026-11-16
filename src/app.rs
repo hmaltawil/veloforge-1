@@ -3232,7 +3232,11 @@ impl App {
         let avail = ui.available_rect_before_wrap().intersect(ui.clip_rect());
         ui.allocate_rect(avail, Sense::hover());
         let painter = ui.painter_at(avail);
-        let dt = ui.ctx().input(|i| i.stable_dt as f64).min(0.1);
+        // The time since the last frame, as it really passed: egui's
+        // stable_dt is only a guess (a 60th of a second) whenever the app
+        // waits for its frame-rate limit, which slowed the 3D world (wind,
+        // posture, camera) to half speed at 30 fps.
+        let dt = ui.ctx().input(|i| i.unstable_dt as f64).clamp(0.0, 0.1);
         // Without a trainer, a notice on the view leads to Devices.
         let view_3d = self.store.settings.view_3d;
         let chart_h = 104.0;
