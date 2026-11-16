@@ -776,9 +776,12 @@ void main() {
     float size = (0.55 + 0.9 * rnd);
     // No grass on the road, in water, on rock or snow, or far away.
     size *= smoothstep(u_patch * 0.5, u_patch * 0.34, length(rel));
-    // Further off, fewer but slightly bigger tufts look the same.
+    // Further off, fewer but slightly bigger tufts look the same. A tuft
+    // being thinned out shrinks away over a few metres of travel, never
+    // vanishing from one frame to the next.
     float far = smoothstep(14.0, 28.0, length(xz - u_cam.xz));
-    size *= (fract(rnd * 7.31) < 1.0 - 0.55 * far ? 1.0 + 0.3 * far : 0.0);
+    float pick = fract(rnd * 7.31);
+    size *= smoothstep(pick - 0.075, pick + 0.075, 1.0 - 0.55 * far) * (1.0 + 0.3 * far);
     size *= smoothstep(4.1, 6.5, g.y) * (0.45 + 0.55 * smoothstep(5.0, 14.0, g.y));
     size *= smoothstep(u_water + 0.5, u_water + 1.6, g.x);
     size *= 1.0 - smoothstep(0.45, 0.7, steep);
