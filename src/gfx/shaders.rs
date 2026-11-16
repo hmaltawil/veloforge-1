@@ -759,14 +759,20 @@ vec4 ground(vec2 xz) {
 }
 
 void main() {
-    // The patch follows the camera; tufts wrap round as it moves.
+    // The patch follows the camera; tufts wrap round as it moves. Each
+    // time a tuft comes round (at the far edge, where tufts fade in) it
+    // grows somewhere slightly different, with its own size, angle and
+    // shade, so the meadow does not repeat every patch length.
+    vec2 lap = floor((i_seed.xy - u_centre) / u_patch);
+    float again = hash12(lap * 1.618 + i_seed.xy * 0.37);
     vec2 rel = mod(i_seed.xy - u_centre, u_patch) - u_patch * 0.5;
+    rel += (vec2(again, fract(again * 7.31)) - 0.5) * 1.6;
     vec2 xz = u_centre + rel;
     vec4 g = ground(xz);
     vec4 gx = ground(xz + vec2(2.0, 0.0));
     vec4 gz = ground(xz + vec2(0.0, 2.0));
     float steep = length(vec2(gx.x - g.x, gz.x - g.x)) * 0.5;
-    float rnd = i_seed.w;
+    float rnd = fract(i_seed.w + again);
     float size = (0.55 + 0.9 * rnd);
     // No grass on the road, in water, on rock or snow, or far away.
     size *= smoothstep(u_patch * 0.5, u_patch * 0.34, length(rel));
@@ -779,8 +785,8 @@ void main() {
     size *= 1.0 - 0.6 * smoothstep(0.2, 0.7, g.z);
     // Beside the road the ground rises to meet the tarmac.
     float y = g.x + 0.27 * (1.0 - smoothstep(4.6, 5.8, g.y)) - 0.03;
-    float c = cos(i_seed.z);
-    float s = sin(i_seed.z);
+    float c = cos(i_seed.z + again * 6.2832);
+    float s = sin(i_seed.z + again * 6.2832);
     vec2 w = vec2(xz.x + u_origin.x, -xz.y + u_origin.y);
     float n1 = fbm(w * 0.012);
     // Only a few tips show through the snow.
