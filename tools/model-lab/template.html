@@ -649,14 +649,13 @@ void main() {
 // without its shadows, fog and tone mapping.
 function objectFS(src) {
   const leaves = src.FOLIAGE
-    ? "c = foliage(v_col, n, view, v_leaf, length(u_cam - v_pos), 1.0, amb(n), vec3(0.0));"
+    ? "c = foliage(v_col, n, view, 1.0, amb(n), vec3(0.0));"
     : `float wrap = max((dot(n, u_sun) + 0.45) / 1.45, 0.0);
         c = v_col * (u_sun_col * wrap * 1.45 + amb(n));
         float back = pow(max(dot(view, -u_sun), 0.0), 3.0);
         c += v_col * vec3(1.2, 1.35, 0.5) * u_sun_col * back * 0.7;`;
   return PREC + src.NOISE + "uniform vec3 u_sun;\nuniform vec3 u_sun_col;\n" + (src.FOLIAGE || "") + LAB_LIGHT + `
 in vec3 v_pos; in vec3 v_nrm; in vec3 v_col; in float v_mat; in float v_h;
-${src.FOLIAGE ? "in vec3 v_leaf;" : ""}
 out vec4 frag;
 vec3 amb(vec3 n) { return mix(vec3(0.1, 0.11, 0.08), vec3(0.3, 0.36, 0.46), n.y * 0.5 + 0.5); }
 void main() {

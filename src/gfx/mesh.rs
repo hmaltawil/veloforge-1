@@ -407,7 +407,7 @@ impl Mesh {
             let n = norm([a.cos() * 0.8, 0.6, a.sin() * 0.8]);
             // Paler, yellower new growth at the tips.
             let c = if tip {
-                hued(col, 0.5 * q(4), 1.2 + 0.15 * q(4))
+                hued(col, 0.2 * q(4), 1.15 + 0.06 * q(4))
             } else {
                 scale(col, 0.8)
             };
@@ -515,7 +515,7 @@ impl Mesh {
                 ],
             );
             let rr = size.0 + (size.1 - size.0) * q(4);
-            let col = hued(leaf, q(5) * 2.0 - 1.0, 0.85 + 0.3 * q(6));
+            let col = hued(leaf, 0.35 * (q(5) * 2.0 - 1.0), 0.94 + 0.12 * q(6));
             self.clump_lit(
                 c,
                 [rr * (0.9 + 0.2 * q(7)), rr * 0.78, rr * (0.9 + 0.2 * q(8))],
@@ -550,7 +550,7 @@ pub fn pine() -> Mesh {
         } else {
             y0 + 0.17 - 0.05 * t
         };
-        let col = hued(PINE_GREEN, q(3) - 0.5, 0.75 + 0.5 * t);
+        let col = hued(PINE_GREEN, 0.3 * (q(3) - 0.5), 0.75 + 0.5 * t);
         m.whorl(y0, y1, r, 15, tinted(col), 40 + k as u32, q(4) * 6.3);
     }
     m
