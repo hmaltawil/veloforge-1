@@ -1362,6 +1362,8 @@ struct GlState {
     rider_blob: Option<Buffers>,
     /// Grass tuft variants, each with its own share of the instances.
     grass: Vec<Buffers>,
+    /// The sparse ring of grass around the dense patch.
+    grass_ring: Vec<Buffers>,
     grass_for: Option<Quality>,
     rain: Option<Buffers>,
     /// Terrain heights for placing grass: height, road distance, forest.
@@ -1506,6 +1508,11 @@ const SMALL_CULL: f32 = 600.0;
 const KEEP_AROUND: f32 = 150.0;
 /// Side of the square of grass that follows the camera, in metres.
 const GRASS_PATCH: f32 = 60.0;
+/// The sparse ring of grass beyond the dense patch: the size of the patch
+/// it is spread over (centred with the dense one), and its tufts as a
+/// share of the dense patch's.
+const GRASS_RING: f32 = 104.0;
+const GRASS_RING_SHARE: f32 = 0.55;
 
 /// Where the grass patch's world grid sits relative to the terrain
 /// window's origin: the origin in the grass shader's (x, -z) frame, as
@@ -1663,7 +1670,7 @@ impl GlState {
             self.compile(
                 gl,
                 "grass",
-                &[NOISE, WIND, GRASS_VS],
+                &[NOISE, WIND, GROUND_MAP, GRASS_VS],
                 &[NOISE, LIGHT, GRASS_FS],
                 &["a_pos", "a_col", "i_seed"],
             )?;
@@ -1795,7 +1802,7 @@ impl GlState {
             return Ok(());
         }
         unsafe {
-            for b in self.grass.drain(..) {
+            for b in self.grass.drain(..).chain(self.grass_ring.drain(..)) {
                 gl.delete_vertex_array(b.vao);
                 gl.delete_buffer(b.vbo);
                 if let Some(i) = b.ibo {
@@ -1833,6 +1840,36 @@ impl GlState {
                 }
                 Self::set_instances(gl, &mut b, &seeds, 4);
                 self.grass.push(b);
+            }
+            // The ring: fewer tufts of fewer blades, spread over a patch
+            // twice the size, drawn only beyond the dense patch.
+            let ring = (total as f32 * GRASS_RING_SHARE) as usize;
+            for (verts, share) in [
+                (mesh::grass_tuft(4, 0, false, 5), 0.65),
+                (mesh::grass_tuft(5, 0, true, 6), 0.35),
+            ] {
+                let n = (ring as f32 * share) as usize;
+                if n == 0 {
+                    continue;
+                }
+                let mut b = Self::buffers(
+                    gl,
+                    &[(3, 0), (3, 3)],
+                    mesh::GRASS_STRIDE as i32,
+                    &verts,
+                    Some(&[(4, 0)]),
+                )?;
+                let mut seeds = Vec::with_capacity(n * 4);
+                for _ in 0..n {
+                    seeds.extend_from_slice(&[
+                        next() * GRASS_RING,
+                        next() * GRASS_RING,
+                        next() * std::f32::consts::TAU,
+                        next(),
+                    ]);
+                }
+                Self::set_instances(gl, &mut b, &seeds, 4);
+                self.grass_ring.push(b);
             }
             gl.bind_vertex_array(None);
         }
@@ -2968,7 +3005,6 @@ impl GlState {
                     f.cam[0] + flat[0] * ahead,
                     f.cam[2] + flat[2] * ahead,
                 );
-                p.f1(gl, "u_patch", GRASS_PATCH);
                 p.i1(gl, "u_height", UNIT_HEIGHT as i32);
                 p.v3(gl, "u_hmap", self.height_map);
                 p.f1(gl, "u_water", f.water);
@@ -2977,12 +3013,20 @@ impl GlState {
                 // Pin the meadow to the world: the window's origin, in the
                 // shader's (x, -z) frame, split into whole patches and the
                 // rest, so it stays exact in single precision.
-                let (shift, lap) = grass_anchor(f.origin, GRASS_PATCH as f64);
-                p.f2(gl, "u_shift", shift.0, shift.1);
-                p.f2(gl, "u_lap", lap.0, lap.1);
-                for b in &self.grass {
-                    gl.bind_vertex_array(Some(b.vao));
-                    gl.draw_arrays_instanced(glow::TRIANGLES, 0, b.count, b.instances);
+                p.f1(gl, "u_inner", GRASS_PATCH);
+                for (patch, outer, set) in [
+                    (GRASS_PATCH, 0.0, &self.grass),
+                    (GRASS_RING, 1.0, &self.grass_ring),
+                ] {
+                    let (shift, lap) = grass_anchor(f.origin, patch as f64);
+                    p.f1(gl, "u_patch", patch);
+                    p.f1(gl, "u_outer", outer);
+                    p.f2(gl, "u_shift", shift.0, shift.1);
+                    p.f2(gl, "u_lap", lap.0, lap.1);
+                    for b in set {
+                        gl.bind_vertex_array(Some(b.vao));
+                        gl.draw_arrays_instanced(glow::TRIANGLES, 0, b.count, b.instances);
+                    }
                 }
             }
 

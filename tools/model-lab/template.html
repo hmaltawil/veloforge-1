@@ -624,6 +624,8 @@ function loop() {
 // ---- ride: a stretch of road with the app's own grass and trees ---------
 const APP = __APP_GLSL_JSON__;
 const RIDE_LEN = 1600, LANE = 1.8, GRASS_PATCH = 60;
+// The app's sparse ring of grass beyond the dense patch (GRASS_RING, GRASS_RING_SHARE).
+const GRASS_RING = 104, GRASS_RING_SHARE = 0.55;
 // The app's terrain window: 2 km across in 256 cells, centred 450 m ahead,
 // built again once the camera is more than 320 m from its centre.
 const WINDOW_CELL = 2000 / 256, WINDOW_AHEAD = 450, WINDOW_MOVE = 320;
@@ -685,20 +687,24 @@ function rideUniforms() {
     u_height: { value: null }, u_hmap: { value: new THREE.Vector3() },
     u_water: { value: -1000 }, u_snow: { value: 100000 },
     u_shift: { value: new THREE.Vector2() }, u_lap: { value: new THREE.Vector2() },
+    u_ground_half: { value: 0 },
+    u_outer: { value: 0 }, u_inner: { value: GRASS_PATCH },
     u_sun: { value: new THREE.Vector3(-0.45, 0.8, 0.4).normalize() },
     u_sun_col: { value: new THREE.Vector3(1.9, 1.78, 1.55) },
   };
 }
 
 // This build's models and shaders, or the released app's, to compare.
-const SHADERS_SAME = ["NOISE", "WIND", "GRASS_VS", "OBJECT_VS", "FOLIAGE"].every((k) => APP[k] === APP.BASE[k]);
+const SHADERS_SAME = ["NOISE", "WIND", "GRASS_VS", "OBJECT_VS", "FOLIAGE", "GROUND_MAP"].every((k) => APP[k] === APP.BASE[k]);
 ride.shaders = "now";
 const srcOf = (v) => (v === "base" ? APP.BASE : APP);
 function appMaterial(v, vs, fs, uniforms) {
   const src = srcOf(v);
   return new THREE.RawShaderMaterial({
     glslVersion: THREE.GLSL3, uniforms, side: THREE.DoubleSide,
-    vertexShader: PREC + src.NOISE + src.WIND + src[vs], fragmentShader: fs ? fs : objectFS(src),
+    // The grass reads the ground map where the app has one (the lab has none).
+    vertexShader: PREC + src.NOISE + src.WIND + (vs === "GRASS_VS" && src.GROUND_MAP ? src.GROUND_MAP : "") + src[vs],
+    fragmentShader: fs ? fs : objectFS(src),
   });
 }
 // Grass: one mesh, both versions' shaders.
@@ -798,6 +804,33 @@ function buildRide() {
     const mesh = rideMesh(g, "GRASS_VS", GRASS_FS, ride.gu);
     ride.group.add(mesh);
   }
+  // The sparse ring around it, as in the app (this build only).
+  ride.gr = Object.assign({}, ride.gu, {
+    u_patch: { value: GRASS_RING }, u_outer: { value: 1 },
+    u_shift: { value: new THREE.Vector2() }, u_lap: { value: new THREE.Vector2() },
+  });
+  for (const [k, part] of [[4, 0.65], [5, 0.35]]) {
+    const nf = wasm.grass(k);
+    const verts = new Float32Array(nf); verts.set(f32(wasm.model_ptr(), nf));
+    const g = new THREE.InstancedBufferGeometry();
+    const vb = new THREE.InterleavedBuffer(verts, 6);
+    g.setAttribute("a_pos", new THREE.InterleavedBufferAttribute(vb, 3, 0));
+    g.setAttribute("position", g.attributes.a_pos);
+    g.setAttribute("a_col", new THREE.InterleavedBufferAttribute(vb, 3, 3));
+    const count = Math.floor(total * GRASS_RING_SHARE * part);
+    const seeds = new Float32Array(count * 4);
+    for (let i = 0; i < count; i++) {
+      seeds[i * 4] = rnd() * GRASS_RING; seeds[i * 4 + 1] = rnd() * GRASS_RING;
+      seeds[i * 4 + 2] = rnd() * Math.PI * 2; seeds[i * 4 + 3] = rnd();
+    }
+    g.setAttribute("i_seed", new THREE.InstancedBufferAttribute(seeds, 4));
+    g.instanceCount = count;
+    const mesh = new THREE.Mesh(g, appMaterial("now", "GRASS_VS", GRASS_FS, ride.gr));
+    mesh.frustumCulled = false;
+    mesh.userData.version = "now";
+    mesh.visible = ride.shaders === "now";
+    ride.group.add(mesh);
+  }
 
   // Trees along both sides, placed, sized and tinted as the app does
   // (terrain.rs), for this build and the released app.
@@ -890,6 +923,11 @@ function rideTick(dt) {
   const sx = ox, sz = -oz, lx = Math.floor(sx / GRASS_PATCH), lz = Math.floor(sz / GRASS_PATCH);
   u.u_shift.value.set(sx - lx * GRASS_PATCH, sz - lz * GRASS_PATCH);
   u.u_lap.value.set(lx, lz);
+  if (ride.gr) {
+    const rx = Math.floor(sx / GRASS_RING), rz = Math.floor(sz / GRASS_RING);
+    ride.gr.u_shift.value.set(sx - rx * GRASS_RING, sz - rz * GRASS_RING);
+    ride.gr.u_lap.value.set(rx, rz);
+  }
   const next = ox + WINDOW_MOVE - camX;
   const note = ride.moved !== undefined && time - ride.moved < 2 ? " · the land just moved on" : ` · land moves on in ${next.toFixed(0)} m`;
   $("ride-stats").textContent = `${ride.d.toFixed(0)} m of ${RIDE_LEN} m · ${ride.kmh} km/h` + note;

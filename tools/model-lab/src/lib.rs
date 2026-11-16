@@ -212,7 +212,10 @@ pub extern "C" fn grass(kind: u32) -> u32 {
             0 => mesh::grass_tuft(6, 0, false, 1),
             1 => mesh::grass_tuft(7, 0, false, 2),
             2 => mesh::grass_tuft(5, 0, true, 3),
-            _ => mesh::grass_tuft(4, 2, false, 4),
+            3 => mesh::grass_tuft(4, 2, false, 4),
+            // The sparse ring's tufts.
+            4 => mesh::grass_tuft(4, 0, false, 5),
+            _ => mesh::grass_tuft(5, 0, true, 6),
         };
         l.model.len() as u32
     })

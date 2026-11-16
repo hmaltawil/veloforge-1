@@ -817,6 +817,8 @@ uniform float u_snow;
 uniform float u_gust;
 uniform vec2 u_shift;   // the terrain window's origin, modulo the patch
 uniform vec2 u_lap;     // ... and in whole patches
+uniform float u_outer;  // 0: the dense patch; 1: the sparse ring around it
+uniform float u_inner;  // the dense patch's size
 out vec3 v_col;
 out vec3 v_pos;
 out vec3 v_base;
@@ -855,13 +857,19 @@ void main() {
     float size = (0.55 + 0.9 * rnd);
     // No grass on the road, in water, on rock or snow, or far away.
     size *= smoothstep(u_patch * 0.5, u_patch * 0.34, length(rel));
-    // Further off, fewer but slightly bigger tufts look the same. A tuft
-    // being thinned out shrinks away over several metres of travel: even
-    // at 23 frames a second, no tuft changes by more than a few percent
-    // from one frame to the next.
-    float far = smoothstep(12.0, 30.0, length(xz - u_cam.xz));
-    float pick = fract(rnd * 7.31);
-    size *= smoothstep(pick - 0.2, pick + 0.2, 1.0 - 0.55 * far) * (1.0 + 0.3 * far);
+    if (u_outer > 0.5) {
+        // The sparse ring of bigger tufts grows in just where the dense
+        // patch fades out, and reaches twice as far.
+        size *= smoothstep(u_inner * 0.34, u_inner * 0.5, length(rel)) * 1.5;
+    } else {
+        // Further off, fewer but slightly bigger tufts look the same. A
+        // tuft being thinned out shrinks away over several metres of
+        // travel: even at 23 frames a second, no tuft changes by more than
+        // a few percent from one frame to the next.
+        float far = smoothstep(12.0, 30.0, length(xz - u_cam.xz));
+        float pick = fract(rnd * 7.31);
+        size *= smoothstep(pick - 0.2, pick + 0.2, 1.0 - 0.55 * far) * (1.0 + 0.3 * far);
+    }
     size *= smoothstep(4.1, 6.5, g.y) * (0.45 + 0.55 * smoothstep(5.0, 14.0, g.y));
     size *= smoothstep(u_water + 0.5, u_water + 1.6, g.x);
     size *= 1.0 - smoothstep(0.45, 0.7, steep);
@@ -871,7 +879,9 @@ void main() {
     float c = cos(i_seed.z + again * 6.2832);
     float s = sin(i_seed.z + again * 6.2832);
     vec2 w = vec2(xz.x + u_origin.x, -xz.y + u_origin.y);
-    float n1 = fbm(w * 0.012);
+    // The meadow's colour noise, from the ground map where there is one.
+    vec3 gm;
+    float n1 = ground_map(vec3(xz.x, 0.0, xz.y), gm) ? gm.r : fbm(w * 0.012);
     // Only a few tips show through the snow.
     size *= 1.0 - 0.93 * smoothstep(u_snow - 45.0, u_snow - 5.0, g.x + n1 * 90.0);
     // Little grows on the scree below the snow line.
