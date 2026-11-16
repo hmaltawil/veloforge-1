@@ -91,6 +91,32 @@ void main() {
 }
 "#;
 
+/// How leaves are lit (after `NOISE` and the sun's uniforms in `LIGHT`).
+pub const FOLIAGE: &str = r#"
+// Leaves gather in clusters: lighter where a cluster bulges towards the
+// light, darker in the gaps between. `q` is the place on the tree in
+// metres, so the pattern sways with it.
+float leaf_clusters(vec3 q) {
+    q *= 2.1;
+    float a = vnoise(q.xy + vec2(0.0, q.z * 0.61));
+    float b = vnoise(q.zy * 1.7 + vec2(q.x * 0.53, 7.0));
+    return smoothstep(0.25, 0.75, a * 0.6 + b * 0.4);
+}
+// Light wraps round the crown and glows through it. Close by, the leaves
+// gather in clusters with darker gaps between; further off that detail is
+// smaller than a pixel and fades out.
+vec3 foliage(vec3 col, vec3 n, vec3 view, vec3 q, float dist, float vis, vec3 amb, vec3 lamp) {
+    float near = 1.0 - smoothstep(50.0, 160.0, dist);
+    float cl = near > 0.0 ? leaf_clusters(q) : 0.5;
+    float wrap = max((dot(n, u_sun) + 0.45) / 1.45, 0.0);
+    vec3 leaf = col * mix(1.0, 0.76 + 0.44 * cl, near);
+    vec3 lit = leaf * (u_sun_col * wrap * vis * 1.45 * mix(1.0, 0.8 + 0.4 * cl, near) + amb);
+    float back = pow(max(dot(view, -u_sun), 0.0), 3.0);
+    lit += leaf * vec3(1.2, 1.35, 0.5) * u_sun_col * vis * back * 0.7;
+    return lit + leaf * lamp;
+}
+"#;
+
 /// Fragment helpers: sky, clouds, shadows, fog, lighting and output.
 pub const LIGHT: &str = r#"
 uniform vec3 u_cam;
@@ -621,6 +647,7 @@ out vec3 v_nrm;
 out vec3 v_col;
 out float v_mat;
 out float v_h;
+out vec3 v_leaf;   // where on the tree, in metres, for its leaf clusters
 void main() {
     float c = cos(i_pos_rot.w);
     float s = sin(i_pos_rot.w);
@@ -648,6 +675,9 @@ void main() {
     v_col = a_col.r < 0.0 ? -a_col * i_tint : a_col;
     v_mat = a_mat;
     v_h = a_pos.y;
+    // Each tree's clusters are its own, wherever it stands in the window.
+    v_leaf = vec3(a_pos.x * i_scale.x, a_pos.y * i_scale.y, a_pos.z * i_scale.x)
+           + vec3(hash12(wp), 0.0, hash12(wp + 7.3)) * 40.0;
     gl_Position = u_vp * vec4(v_pos, 1.0);
 }
 "#;
@@ -660,6 +690,7 @@ in vec3 v_nrm;
 in vec3 v_col;
 in float v_mat;
 in float v_h;
+in vec3 v_leaf;
 out vec4 frag;
 void main() {
     vec3 n = normalize(v_nrm);
@@ -685,12 +716,8 @@ void main() {
         float rim = pow(1.0 - max(dot(view, n), 0.0), 2.5);
         lit += (u_sun_col * vis * max(dot(n, u_sun), 0.0) * 0.5 + ambient(n)) * rim * (0.08 + v_col * 0.5);
     } else if (v_mat > 4.5) {
-        // Leaves: light wraps round the crown and glows through it.
-        float wrap = max((dot(n, u_sun) + 0.45) / 1.45, 0.0);
-        lit = v_col * (u_sun_col * wrap * vis * 1.45 + ambient(n));
-        float back = pow(max(dot(view, -u_sun), 0.0), 3.0);
-        lit += v_col * vec3(1.2, 1.35, 0.5) * u_sun_col * vis * back * 0.7;
-        lit += v_col * lamp;
+        // Leaves (see `FOLIAGE`).
+        lit = foliage(v_col, n, view, v_leaf, length(u_cam - v_pos), vis, ambient(n), lamp);
     } else {
         lit = shade(v_col, n, 1.0, vis) + v_col * lamp;
         vec3 h = normalize(view + u_sun);
@@ -730,6 +757,7 @@ out vec3 v_nrm;
 out vec3 v_col;
 out float v_mat;
 out float v_h;
+out vec3 v_leaf;
 void main() {
     mat4 m = u_bones[int(a_bones.x)] * a_weights.x
            + u_bones[int(a_bones.y)] * a_weights.y
@@ -741,6 +769,7 @@ void main() {
     v_col = a_col.r < 0.0 ? -a_col * u_tint : a_col;
     v_mat = a_mat;
     v_h = 0.5;
+    v_leaf = vec3(0.0);
     gl_Position = u_vp * p;
 }
 "#;

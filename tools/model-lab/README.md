@@ -13,9 +13,14 @@ The **Ride** tab rides 1.6 km of road with grass and trees, using the app's
 own grass and tree vertex shaders (taken from `src/gfx/shaders.rs` when the
 page is built) and moving the terrain window on as the app does, so how the
 meadow and trees are placed, thinned and move in the wind as you ride is
-what the app does, bugs included. It can switch to the shaders of the
-released app (`main`) to compare a fix with the bug, cap the frame rate (to
-see a slow graphics card's view), and jump to just before the land moves on.
+what the app does, bugs included. It can cap the frame rate (to see a slow
+graphics card's view) and jump to just before the land moves on.
+
+Both the Ride and Scenery tabs can switch between this build and the
+released app (`main`): `build.sh` also compiles `main`'s model code and
+takes `main`'s shaders, so a change to the trees, grass or their shaders
+can be compared with what it changes. Scenery is drawn with the app's own
+tree shader and leaf lighting (without its shadows).
 
 For automated checks the page has `window.lab`: set `lab.manual = true`,
 then `lab.step(dt, still)` renders one frame (`still` holds the wind);

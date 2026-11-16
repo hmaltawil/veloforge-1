@@ -339,6 +339,24 @@ impl Mesh {
         lump: f32,
         crown: Crown,
     ) {
+        self.clump_lit(c, r, rings, segs, col, seed, lump, crown, 0.45);
+    }
+
+    /// `clump`, with `crown_local` saying how much each clump is lit as a
+    /// ball of its own rather than as part of the whole crown.
+    #[allow(clippy::too_many_arguments)]
+    fn clump_lit(
+        &mut self,
+        c: V3,
+        r: V3,
+        rings: usize,
+        segs: usize,
+        col: V3,
+        seed: u32,
+        lump: f32,
+        crown: Crown,
+        crown_local: f32,
+    ) {
         let pt = |i: usize, j: usize| -> (V3, V3, V3) {
             let j = if i == 0 || i == rings { 0 } else { j % segs };
             let th = i as f32 / rings as f32 * std::f32::consts::PI;
@@ -348,7 +366,10 @@ impl Mesh {
             let p = add(c, [d[0] * r[0] * k, d[1] * r[1] * k, d[2] * r[2] * k]);
             let local = norm([d[0] / r[0], d[1] / r[1], d[2] / r[2]]);
             let radial = norm(sub(p, crown.c));
-            let n = norm(add(scale(local, 0.45), scale(radial, 0.55)));
+            let n = norm(add(
+                scale(local, crown_local),
+                scale(radial, 1.0 - crown_local),
+            ));
             let height = ((p[1] - (crown.c[1] - crown.r)) / (2.0 * crown.r)).clamp(0.0, 1.0);
             let outer = (len(sub(p, crown.c)) / crown.r).clamp(0.0, 1.2);
             let k = (0.45 + 0.6 * height)
@@ -372,13 +393,24 @@ impl Mesh {
     fn whorl(&mut self, y0: f32, y1: f32, r: f32, sides: usize, col: V3, seed: u32, turn: f32) {
         let rim = |i: usize| -> (V3, V3, V3) {
             let i = i % sides;
-            let a = i as f32 / sides as f32 * std::f32::consts::TAU + turn;
+            let q = |n: u32| rnd(seed, i as u32, n);
+            // Branch tips of uneven length and droop, at uneven angles.
+            let a = (i as f32 + 0.35 * (q(2) - 0.5)) / sides as f32 * std::f32::consts::TAU + turn;
             let tip = i & 1 == 0;
-            let k = (if tip { 1.0 } else { 0.7 }) * (1.0 + 0.16 * (rnd(seed, i as u32, 1) - 0.5));
-            let droop = (y1 - y0) * if tip { 0.2 } else { 0.05 };
+            let k = if tip {
+                0.85 + 0.35 * q(1)
+            } else {
+                0.62 + 0.16 * q(1)
+            };
+            let droop = (y1 - y0) * if tip { 0.12 + 0.2 * q(3) } else { 0.04 };
             let p = [a.cos() * r * k, y0 - droop, a.sin() * r * k];
             let n = norm([a.cos() * 0.8, 0.6, a.sin() * 0.8]);
-            let c = scale(col, if tip { 1.25 } else { 0.85 });
+            // Paler, yellower new growth at the tips.
+            let c = if tip {
+                hued(col, 0.5 * q(4), 1.2 + 0.15 * q(4))
+            } else {
+                scale(col, 0.8)
+            };
             (p, n, c)
         };
         let apex = [0.0, y1, 0.0];
@@ -427,27 +459,99 @@ impl Mesh {
 }
 
 const BARK: V3 = [0.115, 0.075, 0.05];
-const PINE_GREEN: V3 = [0.028, 0.07, 0.036];
-const LEAF_GREEN: V3 = [0.07, 0.165, 0.035];
+const PINE_GREEN: V3 = [0.026, 0.064, 0.034];
+const LEAF_GREEN: V3 = [0.068, 0.142, 0.036];
 
-/// Unit-height conifer.
+/// `col` with its hue nudged: towards yellow for `h` > 0, towards blue-green
+/// for `h` < 0, and its brightness scaled by `b`.
+fn hued(col: V3, h: f32, b: f32) -> V3 {
+    [
+        col[0] * b * (1.0 + 0.35 * h),
+        col[1] * b * (1.0 + 0.06 * h),
+        col[2] * b * (1.0 - 0.3 * h),
+    ]
+}
+
+impl Mesh {
+    /// A leafy crown: many small clumps scattered over a lopsided outline
+    /// around `centre` (half sizes `r`), a few more filling its inside, so
+    /// its silhouette is ragged rather than a few smooth balls. Each clump
+    /// has its own shade, between yellower and bluer greens.
+    #[allow(clippy::too_many_arguments)]
+    fn canopy(
+        &mut self,
+        centre: V3,
+        r: V3,
+        clumps: usize,
+        size: (f32, f32),
+        leaf: V3,
+        seed: u32,
+        lump: f32,
+    ) {
+        let crown = Crown {
+            c: centre,
+            r: r[0].max(r[1]).max(r[2]),
+        };
+        let golden = std::f32::consts::PI * (3.0 - 5f32.sqrt());
+        let inner = clumps / 6;
+        for k in 0..clumps + inner {
+            let q = |n: u32| rnd(seed, k as u32, n);
+            let (dir, reach) = if k < clumps {
+                // Spread evenly over the outline, leaving out the very bottom.
+                let y = 1.0 - (k as f32 + 0.5) / clumps as f32 * 1.7;
+                let ring = (1.0 - y * y).max(0.0).sqrt();
+                let a = k as f32 * golden + q(1) * 0.6;
+                ([a.cos() * ring, y, a.sin() * ring], 0.62 + 0.3 * q(2))
+            } else {
+                let a = q(1) * std::f32::consts::TAU;
+                ([a.cos(), 0.3 * q(3) - 0.1, a.sin()], 0.25 * q(2))
+            };
+            let c = add(
+                centre,
+                [
+                    dir[0] * r[0] * reach,
+                    dir[1] * r[1] * reach,
+                    dir[2] * r[2] * reach,
+                ],
+            );
+            let rr = size.0 + (size.1 - size.0) * q(4);
+            let col = hued(leaf, q(5) * 2.0 - 1.0, 0.85 + 0.3 * q(6));
+            self.clump_lit(
+                c,
+                [rr * (0.9 + 0.2 * q(7)), rr * 0.78, rr * (0.9 + 0.2 * q(8))],
+                4,
+                6,
+                tinted(col),
+                seed * 97 + k as u32,
+                lump,
+                crown,
+                0.62,
+            );
+        }
+    }
+}
+
+/// Unit-height conifer: tiers of drooping branches, ragged at the tips and
+/// uneven from tier to tier, with paler new growth at the tips.
 pub fn pine() -> Mesh {
     let mut m = Mesh::default();
     m.tube([0.0, 0.0, 0.0], [0.0, 0.07, 0.0], 0.05, 0.034, 7, BARK);
-    m.tube([0.0, 0.07, 0.0], [0.0, 0.5, 0.0], 0.034, 0.018, 7, BARK);
+    m.tube([0.0, 0.07, 0.0], [0.004, 0.5, 0.0], 0.034, 0.018, 7, BARK);
     m.mat = MAT_LEAF;
-    let tiers = 7;
+    // Many overlapping tiers: the branches of each hang over the next.
+    let tiers = 12;
     for k in 0..tiers {
         let t = k as f32 / (tiers - 1) as f32;
-        let y0 = 0.15 + 0.66 * t;
-        let r = 0.4 * (1.0 - t).powf(0.8) + 0.085;
+        let q = |n: u32| rnd(61, k as u32, n);
+        let y0 = 0.13 + 0.74 * t + 0.015 * (q(1) - 0.5);
+        let r = (0.41 * (1.0 - t).powf(0.9) + 0.06) * (0.88 + 0.24 * q(2));
         let y1 = if k + 1 == tiers {
             1.0
         } else {
-            y0 + 0.24 - 0.06 * t
+            y0 + 0.17 - 0.05 * t
         };
-        let col = scale(PINE_GREEN, 0.8 + 0.5 * t);
-        m.whorl(y0, y1, r, 11, tinted(col), 40 + k as u32, k as f32 * 0.9);
+        let col = hued(PINE_GREEN, q(3) - 0.5, 0.75 + 0.5 * t);
+        m.whorl(y0, y1, r, 15, tinted(col), 40 + k as u32, q(4) * 6.3);
     }
     m
 }
@@ -462,52 +566,46 @@ pub fn pine_far() -> Mesh {
         .enumerate()
     {
         let col = scale(PINE_GREEN, 0.85 + 0.2 * k as f32);
-        m.whorl(y0, y1, r, 6, tinted(col), 70 + k as u32, k as f32);
+        m.whorl(y0, y1, r, 7, tinted(col), 70 + k as u32, k as f32);
     }
     m
 }
 
-/// Unit-height broadleaf tree: a spreading crown on a stout trunk.
+/// Unit-height broadleaf tree: a spreading, uneven crown of many clumps on
+/// a stout trunk whose limbs show through the gaps below.
 pub fn broadleaf() -> Mesh {
     let mut m = Mesh::default();
-    m.tube([0.0, 0.0, 0.0], [0.0, 0.06, 0.0], 0.075, 0.048, 7, BARK);
-    m.tube([0.0, 0.06, 0.0], [0.015, 0.46, 0.0], 0.048, 0.032, 7, BARK);
-    let fork = [0.015, 0.42, 0.0];
-    for end in [
-        [0.2, 0.62, 0.08],
-        [-0.19, 0.62, -0.1],
-        [0.03, 0.64, -0.2],
-        [-0.05, 0.7, 0.18],
-    ] {
-        m.tube(fork, end, 0.024, 0.01, 5, BARK);
+    m.tube([0.0, 0.0, 0.0], [0.0, 0.06, 0.0], 0.08, 0.048, 8, BARK);
+    m.tube([0.0, 0.06, 0.0], [0.02, 0.3, 0.005], 0.048, 0.04, 8, BARK);
+    m.tube([0.02, 0.3, 0.005], [0.01, 0.46, 0.0], 0.04, 0.032, 8, BARK);
+    let fork = [0.01, 0.42, 0.0];
+    for (k, end) in [
+        [0.26, 0.62, 0.1],
+        [-0.24, 0.6, -0.12],
+        [0.04, 0.63, -0.27],
+        [-0.07, 0.66, 0.24],
+        [0.14, 0.76, -0.08],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        m.tube(fork, end, 0.025, 0.011, 5, BARK);
+        // A twig off each limb.
+        let mid = scale(add(fork, end), 0.5);
+        let twig = add(end, [0.0, 0.1, 0.0]);
+        let twig = add(twig, [0.08 * (k as f32 - 2.0), 0.0, 0.06]);
+        m.tube(mid, twig, 0.012, 0.005, 4, BARK);
     }
     m.mat = MAT_LEAF;
-    let crown = Crown {
-        c: [0.0, 0.68, 0.0],
-        r: 0.44,
-    };
-    let clumps: [(V3, V3, f32); 8] = [
-        ([0.0, 0.7, 0.0], [0.3, 0.24, 0.3], 1.0),
-        ([0.25, 0.62, 0.1], [0.22, 0.18, 0.22], 0.93),
-        ([-0.23, 0.63, -0.12], [0.23, 0.19, 0.23], 1.04),
-        ([0.05, 0.61, -0.26], [0.2, 0.17, 0.2], 0.9),
-        ([-0.08, 0.6, 0.26], [0.21, 0.17, 0.2], 0.97),
-        ([0.04, 0.9, 0.02], [0.2, 0.13, 0.2], 1.14),
-        ([-0.17, 0.82, 0.11], [0.17, 0.14, 0.17], 1.08),
-        ([0.19, 0.82, -0.09], [0.17, 0.14, 0.17], 1.1),
-    ];
-    for (k, (c, r, g)) in clumps.into_iter().enumerate() {
-        m.clump(
-            c,
-            r,
-            4,
-            7,
-            tinted(scale(LEAF_GREEN, g)),
-            11 + k as u32,
-            0.2,
-            crown,
-        );
-    }
+    m.canopy(
+        [0.0, 0.69, 0.0],
+        [0.42, 0.29, 0.39],
+        26,
+        (0.1, 0.16),
+        LEAF_GREEN,
+        11,
+        0.3,
+    );
     m
 }
 
@@ -520,45 +618,29 @@ pub fn broadleaf_far() -> Mesh {
         c: [0.0, 0.68, 0.0],
         r: 0.44,
     };
-    let leaf = tinted(LEAF_GREEN);
-    m.clump(
-        [0.0, 0.72, 0.0],
-        [0.36, 0.28, 0.36],
-        3,
-        6,
-        leaf,
-        5,
-        0.2,
-        crown,
-    );
-    m.clump(
-        [0.2, 0.62, 0.1],
-        [0.24, 0.2, 0.24],
-        2,
-        5,
-        leaf,
-        6,
-        0.2,
-        crown,
-    );
-    m.clump(
-        [-0.2, 0.63, -0.12],
-        [0.25, 0.2, 0.25],
-        2,
-        5,
-        leaf,
-        7,
-        0.2,
-        crown,
-    );
+    for (k, (c, r, h)) in [
+        ([0.0, 0.74, 0.0], [0.34, 0.25, 0.32], 0.0),
+        ([0.22, 0.62, 0.1], [0.22, 0.18, 0.22], 0.6),
+        ([-0.21, 0.63, -0.12], [0.23, 0.18, 0.23], -0.5),
+        ([0.03, 0.6, -0.24], [0.2, 0.16, 0.2], 0.3),
+        ([-0.06, 0.62, 0.24], [0.2, 0.16, 0.2], -0.2),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let leaf = tinted(hued(LEAF_GREEN, h, 1.0));
+        m.clump(c, r, 3, 6, leaf, 5 + k as u32, 0.25, crown);
+    }
     m
 }
 
-/// Unit-height birch: a slim pale trunk and a light, airy crown.
+/// Unit-height birch: a slim pale trunk and a light, airy crown of small
+/// clumps hanging from thin branches.
 pub fn birch() -> Mesh {
     let mut m = Mesh::default();
     let pale = [0.6, 0.58, 0.52];
-    m.tube([0.0, 0.0, 0.0], [0.01, 0.78, 0.0], 0.026, 0.011, 6, pale);
+    m.tube([0.0, 0.0, 0.0], [0.006, 0.4, 0.0], 0.026, 0.017, 6, pale);
+    m.tube([0.006, 0.4, 0.0], [0.0, 0.8, 0.004], 0.017, 0.008, 6, pale);
     for (k, y) in [0.08, 0.2, 0.27, 0.41, 0.52].into_iter().enumerate() {
         let r = 0.027 - 0.018 * y;
         let h = 0.012 + 0.006 * (k % 2) as f32;
@@ -571,26 +653,24 @@ pub fn birch() -> Mesh {
             [0.05, 0.045, 0.04],
         );
     }
-    for end in [[0.13, 0.66, 0.05], [-0.12, 0.6, -0.06], [0.02, 0.72, -0.13]] {
+    for end in [
+        [0.14, 0.66, 0.05],
+        [-0.13, 0.6, -0.06],
+        [0.02, 0.72, -0.14],
+        [-0.05, 0.55, 0.12],
+    ] {
         m.tube([0.006, 0.47, 0.0], end, 0.011, 0.005, 4, pale);
     }
     m.mat = MAT_LEAF;
-    let crown = Crown {
-        c: [0.0, 0.7, 0.0],
-        r: 0.34,
-    };
-    let leaf = [0.105, 0.19, 0.035];
-    let clumps: [(V3, V3); 6] = [
-        ([0.0, 0.84, 0.0], [0.17, 0.17, 0.17]),
-        ([0.15, 0.68, 0.06], [0.15, 0.14, 0.15]),
-        ([-0.14, 0.64, -0.07], [0.15, 0.15, 0.15]),
-        ([0.02, 0.72, -0.16], [0.14, 0.13, 0.14]),
-        ([-0.04, 0.6, 0.15], [0.14, 0.12, 0.14]),
-        ([0.06, 0.5, -0.02], [0.12, 0.1, 0.12]),
-    ];
-    for (k, (c, r)) in clumps.into_iter().enumerate() {
-        m.clump(c, r, 4, 6, tinted(leaf), 31 + k as u32, 0.22, crown);
-    }
+    m.canopy(
+        [0.0, 0.69, 0.0],
+        [0.27, 0.27, 0.25],
+        18,
+        (0.075, 0.115),
+        [0.1, 0.18, 0.036],
+        31,
+        0.35,
+    );
     m
 }
 
@@ -1495,5 +1575,22 @@ mod tests {
         assert!((len(sub(k, [0.0, 1.0, 0.0])) - 0.44).abs() < 1e-3);
         assert!((len(sub(k, [0.1, 0.2, 0.0])) - 0.45).abs() < 1e-3);
         assert!(k[0] > 0.1, "knee bends forward");
+    }
+
+    #[test]
+    fn trees_stay_cheap_to_draw() {
+        // Close trees are drawn a few hundred at a time, and again for
+        // their shadows: keep each model within a budget of triangles.
+        for (name, m, budget) in [
+            ("pine", pine(), 1000),
+            ("broadleaf", broadleaf(), 2000),
+            ("birch", birch(), 1500),
+            ("pine far", pine_far(), 120),
+            ("broadleaf far", broadleaf_far(), 300),
+        ] {
+            let tris = m.vertex_count() / 3;
+            println!("{name}: {tris} triangles");
+            assert!(tris <= budget, "{name}: {tris} triangles");
+        }
     }
 }

@@ -82,13 +82,13 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
           <button id="ride-skip">Just before the land moves on</button>
         </div>
         <div class="row"><label for="kmh">Speed</label><input id="kmh" type="range" min="0" max="70" step="1" value="32"><output id="kmh-o"></output></div>
-        <div id="shader-pick" hidden>
-          <h2 style="margin-top:12px">Grass and tree shaders</h2>
-          <div class="presets" id="shaders">
+        <div class="verpick" hidden>
+          <h2 style="margin-top:12px">Trees, grass and their shaders</h2>
+          <div class="presets">
             <button data-v="now" class="on">This build</button>
-            <button data-v="base" id="shader-base">Released</button>
+            <button data-v="base" class="ver-base">Released</button>
           </div>
-          <p class="note">Switch to see the same ride with the shaders of the released app, to compare a fix with the bug it fixes.</p>
+          <p class="note">Switch to see the same ride with the models and shaders of the released app, to compare a change with what it changes.</p>
         </div>
         <h2 style="margin-top:12px">Frame rate</h2>
         <div class="presets" id="fps">
@@ -146,7 +146,13 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
           <button data-m="7">Broadleaf (far)</button>
         </div>
         <label class="check"><input id="scale-rider" type="checkbox" checked> Rider beside it, for scale</label>
-        <p class="note">Models come from the same code as the app. Far versions are the simpler ones drawn in the distance. Colour variation between trees is added by the app and not shown here.</p>
+        <div class="verpick" hidden>
+          <div class="presets" style="margin-top:8px">
+            <button data-v="now" class="on">This build</button>
+            <button data-v="base" class="ver-base">Released</button>
+          </div>
+        </div>
+        <p class="note">Models come from the same code as the app and are drawn with the app's own tree shader and leaf lighting (without its shadows). Far versions are the simpler ones drawn in the distance.</p>
       </section>
     </div>
 
@@ -172,6 +178,8 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 <script>
 const WASM_B64 = "__WASM__";
+// The released app's model code, to compare with (see build.sh).
+const WASM_BASE_B64 = "__WASM_BASE__";
 const $ = (id) => document.getElementById(id);
 
 // ---- three.js scene ---------------------------------------------------
@@ -371,12 +379,24 @@ const bodyMat = material(), bikeMat = material();
 const jointDots = new THREE.Group(); rig.add(jointDots);
 
 let wasm = null, mem = null, bodyStats = "";
+let wasmBase = null;
+// A model's vertices from this build's code or the released app's.
+function modelVerts(v, k) {
+  const w = v === "base" && wasmBase ? wasmBase : wasm;
+  const n = w.model(k);
+  return new Float32Array(w.memory.buffer, w.model_ptr(), n).slice();
+}
 const f32 = (ptr, len) => new Float32Array(mem.buffer, ptr, len);
 
 async function boot() {
   const bytes = Uint8Array.from(atob(WASM_B64), (c) => c.charCodeAt(0));
   const { instance } = await WebAssembly.instantiate(bytes, {});
   wasm = instance.exports; mem = wasm.memory;
+  try {
+    const b = Uint8Array.from(atob(WASM_BASE_B64), (c) => c.charCodeAt(0));
+    wasmBase = (await WebAssembly.instantiate(b, {})).instance.exports;
+  } catch (e) { wasmBase = null; }
+  setupVersions();
   await new Promise((r) => setTimeout(r, 30));
   const t0 = performance.now();
   const nIdx = wasm.build_body(0.01);
@@ -513,27 +533,33 @@ for (const b of document.querySelectorAll("#cams button")) b.addEventListener("c
 let mode = "rider", modelMesh = null;
 // Unit-sized scenery is drawn at about the size the app uses it.
 const HEIGHTS = { 0: 11, 1: 9, 2: 10, 3: 1.4, 4: 1.2, 6: 11, 7: 9 };
+// Uniforms for scenery drawn with the app's shaders (updated each frame).
+let sceneryU = null;
 function showModel(k) {
-  const n = wasm.model(k);
-  const arr = new Float32Array(n); arr.set(f32(wasm.model_ptr(), n));
-  fixTriangles(arr);
-  // Negative colours are tinted per tree by the app's shader: show the base colour.
-  for (let i = 0; i < n; i += 10) for (let c = 6; c < 9; c++) arr[i + c] = Math.abs(arr[i + c]);
-  if (modelMesh) { scene.remove(modelMesh); modelMesh.geometry.dispose(); }
-  const g = interleaved(arr);
-  g.computeBoundingBox();
-  const h = g.boundingBox.max.y - g.boundingBox.min.y;
+  const v = ride.shaders;
+  const arr = modelVerts(v, k);
+  const n = arr.length;
+  if (modelMesh) { scene.remove(modelMesh); modelMesh.geometry.dispose(); modelMesh.material.dispose(); }
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 1; i < n; i += 10) { lo = Math.min(lo, arr[i]); hi = Math.max(hi, arr[i]); }
+  const h = hi - lo;
   const s = HEIGHTS[k] && h < 3 ? HEIGHTS[k] / h : 1;
-  g.setAttribute("aMat", new THREE.InterleavedBufferAttribute(g.attributes.position.data, 1, 9));
-  // Where the tree stands in the world (x, north), as the app times its sway.
-  modelMesh = new THREE.Mesh(g, material(0.45, new THREE.Vector2(MODEL_AT.x, -MODEL_AT.z)));
-  modelMesh.scale.setScalar(s);
-  modelMesh.position.copy(MODEL_AT);
+  if (!sceneryU) sceneryU = rideUniforms();
+  // One instance, as the app places it: tint 1, turned to show its best side.
+  modelMesh = appObjects(arr, [MODEL_AT.x, MODEL_AT.y, MODEL_AT.z, 0.6, s, s, 1, 1, 1], v, sceneryU);
   modelHeight = Math.max(2.5, h * s);
-  modelMesh.castShadow = modelMesh.receiveShadow = true;
   scene.add(modelMesh);
   const size = (h * s).toFixed(1);
-  $("stats").textContent = `${n / 10} vertices · ${size} m tall`;
+  $("stats").textContent = `${(n / 30).toLocaleString()} triangles · ${size} m tall`;
+}
+// Keep the scenery shaders' view and time in step with the lab's.
+function sceneryTick() {
+  if (!sceneryU || mode !== "scenery") return;
+  camera.updateMatrixWorld();
+  sceneryU.u_vp.value.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+  sceneryU.u_cam.value.copy(camera.position);
+  sceneryU.u_time.value = sceneryU.u_obj_time.value = time;
+  sceneryU.u_wind.value = windU.uWind.value;
 }
 for (const b of document.querySelectorAll("#models button")) {
   b.addEventListener("click", () => {
@@ -592,6 +618,7 @@ function loop() {
   resize();
   updateMeshes();
   if (mode !== "ride") controls.update();
+  sceneryTick();
   renderer.render(scene, camera);
 }
 // ---- ride: a stretch of road with the app's own grass and trees ---------
@@ -617,17 +644,33 @@ void main() {
     vec3 c = v_col * (1.6 + 1.6 * v_h);
     frag = vec4(lab_out(c, v_pos), 1.0);
 }`;
-const OBJECT_FS = PREC + LAB_LIGHT + `
+// Objects: the app's leaf lighting (FOLIAGE) where the version has it, the
+// released app's leaf lighting otherwise; sun and sky light as in the app,
+// without its shadows, fog and tone mapping.
+function objectFS(src) {
+  const leaves = src.FOLIAGE
+    ? "c = foliage(v_col, n, view, v_leaf, length(u_cam - v_pos), 1.0, amb(n), vec3(0.0));"
+    : `float wrap = max((dot(n, u_sun) + 0.45) / 1.45, 0.0);
+        c = v_col * (u_sun_col * wrap * 1.45 + amb(n));
+        float back = pow(max(dot(view, -u_sun), 0.0), 3.0);
+        c += v_col * vec3(1.2, 1.35, 0.5) * u_sun_col * back * 0.7;`;
+  return PREC + src.NOISE + "uniform vec3 u_sun;\nuniform vec3 u_sun_col;\n" + (src.FOLIAGE || "") + LAB_LIGHT + `
 in vec3 v_pos; in vec3 v_nrm; in vec3 v_col; in float v_mat; in float v_h;
+${src.FOLIAGE ? "in vec3 v_leaf;" : ""}
 out vec4 frag;
+vec3 amb(vec3 n) { return mix(vec3(0.1, 0.11, 0.08), vec3(0.3, 0.36, 0.46), n.y * 0.5 + 0.5); }
 void main() {
     vec3 n = normalize(v_nrm);
-    vec3 sun = normalize(vec3(-0.45, 0.8, 0.4));
-    float l = max(dot(n, sun), 0.0);
-    if (v_mat > 4.5) l = 0.35 + 0.65 * abs(dot(n, sun));
-    vec3 c = v_col * (0.55 + 2.4 * l);
+    vec3 view = normalize(u_cam - v_pos);
+    vec3 c;
+    if (v_mat > 4.5) {
+        ${leaves}
+    } else {
+        c = v_col * (u_sun_col * max(dot(n, u_sun), 0.0) * 1.45 + amb(n));
+    }
     frag = vec4(lab_out(c, v_pos), 1.0);
 }`;
+}
 
 function rideUniforms() {
   return {
@@ -643,30 +686,71 @@ function rideUniforms() {
     u_height: { value: null }, u_hmap: { value: new THREE.Vector3() },
     u_water: { value: -1000 }, u_snow: { value: 100000 },
     u_shift: { value: new THREE.Vector2() }, u_lap: { value: new THREE.Vector2() },
+    u_sun: { value: new THREE.Vector3(-0.45, 0.8, 0.4).normalize() },
+    u_sun_col: { value: new THREE.Vector3(1.9, 1.78, 1.55) },
   };
 }
 
-// Each ride mesh has this build's shader and the released one, to switch between.
-const SAME = ["NOISE", "WIND", "GRASS_VS", "OBJECT_VS"].every((k) => APP[k] === APP.BASE[k]);
+// This build's models and shaders, or the released app's, to compare.
+const SHADERS_SAME = ["NOISE", "WIND", "GRASS_VS", "OBJECT_VS", "FOLIAGE"].every((k) => APP[k] === APP.BASE[k]);
 ride.shaders = "now";
-function rideMesh(g, vs, fs, uniforms) {
-  const mat = (src) => new THREE.RawShaderMaterial({
+const srcOf = (v) => (v === "base" ? APP.BASE : APP);
+function appMaterial(v, vs, fs, uniforms) {
+  const src = srcOf(v);
+  return new THREE.RawShaderMaterial({
     glslVersion: THREE.GLSL3, uniforms, side: THREE.DoubleSide,
-    vertexShader: PREC + src.NOISE + src.WIND + src[vs], fragmentShader: fs,
+    vertexShader: PREC + src.NOISE + src.WIND + src[vs], fragmentShader: fs ? fs : objectFS(src),
   });
-  const now = mat(APP), mesh = new THREE.Mesh(g, now);
-  mesh.userData.mats = { now, base: SAME ? now : mat(APP.BASE) };
+}
+// Grass: one mesh, both versions' shaders.
+function rideMesh(g, vs, fs, uniforms) {
+  const now = appMaterial("now", vs, fs, uniforms), mesh = new THREE.Mesh(g, now);
+  mesh.userData.mats = { now, base: SHADERS_SAME ? now : appMaterial("base", vs, fs, uniforms) };
   mesh.frustumCulled = false;
+  return mesh;
+}
+// Objects drawn as the app draws them: a model's vertices, instanced
+// (position and turn, width and height, tint).
+function appObjects(verts, inst, v, uniforms) {
+  const g = new THREE.InstancedBufferGeometry();
+  const vb = new THREE.InterleavedBuffer(verts, 10);
+  g.setAttribute("a_pos", new THREE.InterleavedBufferAttribute(vb, 3, 0));
+  g.setAttribute("position", g.attributes.a_pos); // three.js draws nothing without one
+  g.setAttribute("a_nrm", new THREE.InterleavedBufferAttribute(vb, 3, 3));
+  g.setAttribute("a_col", new THREE.InterleavedBufferAttribute(vb, 3, 6));
+  g.setAttribute("a_mat", new THREE.InterleavedBufferAttribute(vb, 1, 9));
+  const ib = new THREE.InstancedInterleavedBuffer(new Float32Array(inst), 9);
+  g.setAttribute("i_pos_rot", new THREE.InterleavedBufferAttribute(ib, 4, 0));
+  g.setAttribute("i_scale", new THREE.InterleavedBufferAttribute(ib, 2, 4));
+  g.setAttribute("i_tint", new THREE.InterleavedBufferAttribute(ib, 3, 6));
+  g.instanceCount = inst.length / 9;
+  const mesh = new THREE.Mesh(g, appMaterial(v, "OBJECT_VS", null, uniforms));
+  mesh.frustumCulled = false;
+  mesh.userData.version = v;
   return mesh;
 }
 function pickShaders(v) {
   ride.shaders = v;
-  if (ride.group) ride.group.traverse((o) => { if (o.userData.mats) o.material = o.userData.mats[v]; });
-  for (const b of document.querySelectorAll("#shaders button")) b.classList.toggle("on", b.dataset.v === v);
+  if (ride.group) ride.group.traverse((o) => {
+    if (o.userData.mats) o.material = o.userData.mats[v];
+    if (o.userData.version) o.visible = o.userData.version === v;
+  });
+  for (const b of document.querySelectorAll(".verpick button")) b.classList.toggle("on", b.dataset.v === v);
+  if (mode === "scenery") showModel(+document.querySelector("#models button.on").dataset.m);
 }
-$("shader-pick").hidden = SAME;
-$("shader-base").textContent = "Released (" + APP.BASE_VERSION + ")";
-for (const b of document.querySelectorAll("#shaders button")) b.addEventListener("click", () => pickShaders(b.dataset.v));
+function setupVersions() {
+  let modelsSame = !wasmBase;
+  if (wasmBase) {
+    modelsSame = [0, 1, 2, 3, 6, 7].every((k) => {
+      const a = modelVerts("now", k), b = modelVerts("base", k);
+      return a.length === b.length && a.every((x, i) => x === b[i]);
+    });
+  }
+  ride.versionsSame = modelsSame && SHADERS_SAME;
+  for (const el of document.querySelectorAll(".verpick")) el.hidden = ride.versionsSame;
+  for (const el of document.querySelectorAll(".ver-base")) el.textContent = "Released (" + APP.BASE_VERSION + ")";
+  for (const b of document.querySelectorAll(".verpick button")) b.addEventListener("click", () => pickShaders(b.dataset.v));
+}
 
 function buildRide() {
   if (ride.group) return;
@@ -716,38 +800,33 @@ function buildRide() {
     ride.group.add(mesh);
   }
 
-  // Trees along both sides, placed and sized as the app does.
-  const kinds = [{ m: 0, pine: true }, { m: 1, pine: false }];
+  // Trees along both sides, placed, sized and tinted as the app does
+  // (terrain.rs), for this build and the released app.
+  const kinds = [
+    { m: 0, h: 14, w: 0.72, warm: 0.25, seed: 91, share: 0.4 },
+    { m: 1, h: 10.5, w: 1.0, warm: 0.7, seed: 57, share: 0.4 },
+    { m: 2, h: 11, w: 0.7, warm: 0.7, seed: 23, share: 0.2 },
+  ];
   for (const kind of kinds) {
-    const nf = wasm.model(kind.m);
-    const verts = new Float32Array(nf); verts.set(f32(wasm.model_ptr(), nf));
-    const g = new THREE.InstancedBufferGeometry();
-    const vb = new THREE.InterleavedBuffer(verts, 10);
-    g.setAttribute("a_pos", new THREE.InterleavedBufferAttribute(vb, 3, 0));
-    g.setAttribute("position", g.attributes.a_pos); // three.js draws nothing without one
-    g.setAttribute("a_nrm", new THREE.InterleavedBufferAttribute(vb, 3, 3));
-    g.setAttribute("a_col", new THREE.InterleavedBufferAttribute(vb, 3, 6));
-    g.setAttribute("a_mat", new THREE.InterleavedBufferAttribute(vb, 1, 9));
     const inst = [];
-    seed = kind.pine ? 91 : 57;
+    seed = kind.seed;
     for (let x = -60; x < RIDE_LEN + 200; x += 7) {
       for (const side of [1, -1]) {
-        if (rnd() > 0.55) continue;
+        if (rnd() > 1.1 * kind.share) continue;
         const z = side * (10 + Math.pow(rnd(), 1.6) * 70);
         const tall = 0.7 + 0.6 * rnd();
-        const h = (kind.pine ? 14 : 10.5) * tall;
-        const w = h * (kind.pine ? 0.72 : 1.0) * (0.85 + 0.3 * rnd());
-        const t = 0.78 + 0.44 * rnd(), warm = Math.pow(rnd(), 2) * (kind.pine ? 0.25 : 0.7);
-        inst.push(x + rnd() * 6, -0.2, z, rnd() * Math.PI * 2, w, h, t * (1 + 0.25 * warm), t, t * (1 - 0.45 * warm));
+        const h = kind.h * tall;
+        const w = h * kind.w * (0.85 + 0.3 * rnd());
+        const t = 0.78 + 0.44 * rnd(), warm = Math.pow(rnd(), 2) * kind.warm;
+        inst.push(x + rnd() * 6, -0.2, z, rnd() * Math.PI * 2, w, h,
+          t * (0.95 + 0.4 * warm), t * (1 + 0.08 * warm), t * (0.9 - 0.3 * warm));
       }
     }
-    const ib = new THREE.InstancedInterleavedBuffer(new Float32Array(inst), 9);
-    g.setAttribute("i_pos_rot", new THREE.InterleavedBufferAttribute(ib, 4, 0));
-    g.setAttribute("i_scale", new THREE.InterleavedBufferAttribute(ib, 2, 4));
-    g.setAttribute("i_tint", new THREE.InterleavedBufferAttribute(ib, 3, 6));
-    g.instanceCount = inst.length / 9;
-    const mesh = rideMesh(g, "OBJECT_VS", OBJECT_FS, ride.u);
-    ride.group.add(mesh);
+    for (const v of ride.versionsSame ? ["now"] : ["now", "base"]) {
+      const mesh = appObjects(modelVerts(v, kind.m), inst, v, ride.u);
+      mesh.visible = v === ride.shaders;
+      ride.group.add(mesh);
+    }
   }
   // Roadside posts every 50 m, for a sense of speed.
   const postGeo = new THREE.CylinderGeometry(0.06, 0.06, 1.0, 8);
@@ -820,7 +899,7 @@ function rideTick(dt) {
 window.lab = {
   manual: false, holdView: false,
   // still: the wind holds its breath, so only the ride moves the picture.
-  step(dt, still) { if (!still) time += dt; windU.uT.value = time; if (mode === "ride") rideTick(dt); else controls.update(); updateMeshes(); renderer.render(scene, camera); },
+  step(dt, still) { if (!still) time += dt; windU.uT.value = time; if (mode === "ride") rideTick(dt); else controls.update(); updateMeshes(); sceneryTick(); renderer.render(scene, camera); },
   hideRider: () => { rig.visible = false; }, skipToMove: () => skipToMove(),
   ride: () => ride, pickShaders: (v) => pickShaders(v), setMode: (m) => setMode(m), setCam: (c) => setCam(c),
 };

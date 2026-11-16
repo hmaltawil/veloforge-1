@@ -1607,7 +1607,7 @@ impl GlState {
                 gl,
                 "object",
                 &[NOISE, WIND, OBJECT_VS],
-                &[NOISE, LIGHT, OBJECT_FS],
+                &[NOISE, LIGHT, FOLIAGE, OBJECT_FS],
                 &object_attribs,
             )?;
             self.compile(
@@ -1665,7 +1665,7 @@ impl GlState {
                 gl,
                 "skinned",
                 &[SKINNED_VS],
-                &[NOISE, LIGHT, OBJECT_FS],
+                &[NOISE, LIGHT, FOLIAGE, OBJECT_FS],
                 &skinned_attribs,
             )?;
             self.compile(
