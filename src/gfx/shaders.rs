@@ -677,7 +677,9 @@ void main() {
     float f = mod((phi - i_pos_rot.w) / 6.2831853 * IMP_FRAMES, IMP_FRAMES);
     float f0 = floor(f);
     float f1 = mod(f0 + 1.0, IMP_FRAMES);
-    v_blend = f - f0;
+    // Mostly one view, blending into the next only around halfway, so the
+    // two hardly show at once (asymmetric crowns would look doubled).
+    v_blend = smoothstep(0.3, 0.7, f - f0);
     vec2 uv = vec2(a_corner.x * 0.5 + 0.5, a_corner.y);
     v_uv0 = (vec2(mod(f0, IMP_GRID), floor(f0 / IMP_GRID)) + uv) / IMP_GRID;
     v_uv1 = (vec2(mod(f1, IMP_GRID), floor(f1 / IMP_GRID)) + uv) / IMP_GRID;

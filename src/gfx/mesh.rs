@@ -735,6 +735,18 @@ pub fn birch_mid() -> Mesh {
     let mut m = Mesh::default();
     let pale = [0.6, 0.58, 0.52];
     m.tube([0.0, 0.0, 0.0], [0.003, 0.8, 0.0], 0.026, 0.008, 5, pale);
+    // The dark bands that make a birch a birch, fewer than close by.
+    for y in [0.08, 0.27, 0.52] {
+        let r = 0.027 - 0.018 * y;
+        m.tube(
+            [0.0, y, 0.0],
+            [0.0, y + 0.015, 0.0],
+            r,
+            r,
+            5,
+            [0.05, 0.045, 0.04],
+        );
+    }
     for end in [[0.14, 0.66, 0.05], [-0.13, 0.6, -0.06]] {
         m.tube([0.006, 0.47, 0.0], end, 0.011, 0.005, 3, pale);
     }

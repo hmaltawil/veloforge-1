@@ -1,10 +1,13 @@
-//! The app's own model code (src/gfx/math.rs, mesh.rs and body.rs, included
-//! as they are) behind a few functions a web page can call.
+//! The app's own model code (src/gfx/math.rs, mesh.rs, body.rs and
+//! impostor.rs, included as they are) behind a few functions a web page can
+//! call.
 
 #![allow(dead_code)]
 
 #[path = "../../../src/gfx/body.rs"]
 mod body;
+#[path = "../../../src/gfx/impostor.rs"]
+mod impostor;
 #[path = "../../../src/gfx/math.rs"]
 mod math;
 #[path = "../../../src/gfx/mesh.rs"]
@@ -21,6 +24,7 @@ struct Lab {
     bike: Vec<f32>,
     model: Vec<f32>,
     joints: Vec<f32>,
+    card: Option<impostor::Atlas>,
 }
 
 thread_local! {
@@ -31,6 +35,7 @@ thread_local! {
         bike: Vec::new(),
         model: Vec::new(),
         joints: Vec::new(),
+        card: None,
     }) };
 }
 
@@ -194,7 +199,10 @@ pub extern "C" fn model(kind: u32) -> u32 {
             4 => mesh::rock(),
             5 => mesh::house(),
             6 => mesh::pine_far(),
-            _ => mesh::broadleaf_far(),
+            7 => mesh::broadleaf_far(),
+            8 => mesh::pine_mid(),
+            9 => mesh::broadleaf_mid(),
+            _ => mesh::birch_mid(),
         };
         l.model = m.v;
         l.model.len() as u32
@@ -224,4 +232,54 @@ pub extern "C" fn grass(kind: u32) -> u32 {
 #[no_mangle]
 pub extern "C" fn model_ptr() -> *const f32 {
     LAB.with(|l| l.borrow().model.as_ptr())
+}
+
+/// Make the card pictures of tree `kind` (0 pine, 1 broadleaf, 2 birch) as
+/// the app does (`impostor::bake`). Returns the number of mipmap levels;
+/// `card_size`, `card_albedo`, `card_normal` and `card_depth` give each.
+#[no_mangle]
+pub extern "C" fn card_bake(kind: u32) -> u32 {
+    LAB.with(|l| {
+        let mut l = l.borrow_mut();
+        let m = match kind {
+            0 => mesh::pine(),
+            1 => mesh::broadleaf(),
+            _ => mesh::birch(),
+        };
+        let a = impostor::bake(&m.v);
+        let n = a.levels.len() as u32;
+        l.card = Some(a);
+        n
+    })
+}
+
+fn card_level<T>(level: u32, f: impl Fn(&impostor::Level) -> T, none: T) -> T {
+    LAB.with(|l| {
+        let l = l.borrow();
+        l.card
+            .as_ref()
+            .and_then(|a| a.levels.get(level as usize))
+            .map(f)
+            .unwrap_or(none)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn card_size(level: u32) -> u32 {
+    card_level(level, |l| l.size as u32, 0)
+}
+
+#[no_mangle]
+pub extern "C" fn card_albedo(level: u32) -> *const u8 {
+    card_level(level, |l| l.albedo.as_ptr(), std::ptr::null())
+}
+
+#[no_mangle]
+pub extern "C" fn card_normal(level: u32) -> *const u8 {
+    card_level(level, |l| l.normal.as_ptr(), std::ptr::null())
+}
+
+#[no_mangle]
+pub extern "C" fn card_depth(level: u32) -> *const u8 {
+    card_level(level, |l| l.depth.as_ptr(), std::ptr::null())
 }

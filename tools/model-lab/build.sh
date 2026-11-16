@@ -13,7 +13,7 @@ wasm="$here/target/wasm32-unknown-unknown/release/model_lab.wasm"
 # the page can switch between them and this build's.
 base_dir="$(mktemp -d)"
 mkdir -p "$base_dir/src/gfx" "$base_dir/tools/model-lab"
-for f in math mesh body; do
+for f in math mesh body impostor; do
     git -C "$here" show "main:src/gfx/$f.rs" >"$base_dir/src/gfx/$f.rs" 2>/dev/null \
         || cp "$here/../../src/gfx/$f.rs" "$base_dir/src/gfx/$f.rs"
 done
@@ -49,7 +49,8 @@ helpers = noise[noise.index("float hash12"):noise.index("float fbm(")]
 page = page.replace("/*__WIND_GLSL__*/", (helpers + const("WIND")).replace("`", "'").replace("${", "$ {"))
 # The app's own shaders for the ride: grass and trees run exactly as there.
 import json
-names = ["NOISE", "WIND", "GRASS_VS", "OBJECT_VS", "FOLIAGE", "GROUND_MAP"]
+names = ["NOISE", "WIND", "GRASS_VS", "OBJECT_VS", "FOLIAGE", "GROUND_MAP",
+         "LOD_FS", "IMPOSTOR_VS", "IMPOSTOR_SURFACE"]
 glsl = {k: const(k) for k in names}
 base = open(base_rs).read()
 glsl["BASE"] = {k: const(k, base) for k in names}

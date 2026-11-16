@@ -146,13 +146,19 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
           <button data-m="7">Broadleaf (far)</button>
         </div>
         <label class="check"><input id="scale-rider" type="checkbox" checked> Rider beside it, for scale</label>
+        <div id="walk" hidden>
+          <h2 style="margin-top:12px">Seen from</h2>
+          <div class="row"><label for="dist">Distance</label><input id="dist" type="range" min="6" max="400" step="1" value="20"><output id="dist-o"></output></div>
+          <label class="check"><input id="same-size" type="checkbox" checked> Keep it the same size (zoom in as you back off)</label>
+          <p class="note" id="lod-o"></p>
+        </div>
         <div class="verpick" hidden>
           <div class="presets" style="margin-top:8px">
             <button data-v="now" class="on">This build</button>
             <button data-v="base" class="ver-base">Released</button>
           </div>
         </div>
-        <p class="note">Models come from the same code as the app and are drawn with the app's own tree shader and leaf lighting (without its shadows). Far versions are the simpler ones drawn in the distance.</p>
+        <p class="note">Models come from the same code as the app and are drawn with the app's own tree shader and leaf lighting (without its shadows). Trees are drawn as the app draws them at the distance you see them from: full models close by, middle ones further off, then cards, dissolving from one to the next. Move the distance to watch.</p>
       </section>
     </div>
 
@@ -211,10 +217,15 @@ scene.add(sun);
 // Grass, and a road with its centre line, along the x axis.
 const grass = new THREE.Mesh(new THREE.PlaneGeometry(2400, 400), new THREE.MeshStandardMaterial({ color: 0x4f7a37, roughness: 1 }));
 grass.rotation.x = -Math.PI / 2; grass.position.set(850, -0.01, 0); grass.receiveShadow = true; scene.add(grass);
-const road = new THREE.Mesh(new THREE.PlaneGeometry(2400, 6.4), new THREE.MeshStandardMaterial({ color: 0x3a3c41, roughness: 0.95 }));
+// The road and its paint are pulled towards the camera so they always win
+// over the ground just below, whatever order they are drawn in.
+const pulled = (color, roughness, k) => new THREE.MeshStandardMaterial({
+  color, roughness, polygonOffset: true, polygonOffsetFactor: -k, polygonOffsetUnits: -k,
+});
+const road = new THREE.Mesh(new THREE.PlaneGeometry(2400, 6.4), pulled(0x3a3c41, 0.95, 2));
 road.rotation.x = -Math.PI / 2; road.position.x = 850; road.receiveShadow = true; scene.add(road);
 for (let x = -150; x < 2000; x += 6) {
-  const d = new THREE.Mesh(new THREE.PlaneGeometry(3, 0.12), new THREE.MeshStandardMaterial({ color: 0xe8e8e8, roughness: 0.8 }));
+  const d = new THREE.Mesh(new THREE.PlaneGeometry(3, 0.12), pulled(0xe8e8e8, 0.8, 4));
   d.rotation.x = -Math.PI / 2; d.position.set(x, 0.002, -1.4); d.receiveShadow = true; scene.add(d);
 }
 
@@ -521,6 +532,8 @@ function setCam(name) {
     const centre = MODEL_AT.clone().add(new THREE.Vector3(0, modelHeight * 0.45, 0));
     camera.position.copy(centre).addScaledVector(o, dist);
     controls.target.copy(centre);
+    camera.fov = 40; camera.updateProjectionMatrix();
+    $("dist").value = Math.round(dist); $("dist-o").textContent = Math.round(dist) + " m";
   } else {
     const [p, t] = CAMS[name];
     camera.position.set(...p);
@@ -536,11 +549,28 @@ let mode = "rider", modelMesh = null;
 const HEIGHTS = { 0: 11, 1: 9, 2: 10, 3: 1.4, 4: 1.2, 6: 11, 7: 9 };
 // Uniforms for scenery drawn with the app's shaders (updated each frame).
 let sceneryU = null;
+// A tree in the Scenery tab, drawn as the app would at the camera's distance.
+let sceneryForest = null;
 function showModel(k) {
   const v = ride.shaders;
   const arr = modelVerts(v, k);
   const n = arr.length;
-  if (modelMesh) { scene.remove(modelMesh); modelMesh.geometry.dispose(); modelMesh.material.dispose(); }
+  if (modelMesh) { scene.remove(modelMesh); modelMesh.geometry.dispose(); modelMesh.material.dispose(); modelMesh = null; }
+  if (sceneryForest) { scene.remove(sceneryForest.group); sceneryForest = null; }
+  $("walk").hidden = k > 2;
+  if (k <= 2) {
+    if (!sceneryU) sceneryU = rideUniforms();
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 1; i < n; i += 10) { lo = Math.min(lo, arr[i]); hi = Math.max(hi, arr[i]); }
+    const s = HEIGHTS[k] / (hi - lo);
+    const trees = [[], [], []];
+    trees[k] = [MODEL_AT.x, MODEL_AT.y, MODEL_AT.z, 0.6, s, s, 1, 1, 1];
+    sceneryForest = new Forest(trees, sceneryU);
+    scene.add(sceneryForest.group);
+    modelHeight = HEIGHTS[k];
+    $("stats").textContent = `${(n / 30).toLocaleString()} triangles close by · ${HEIGHTS[k]} m tall`;
+    return;
+  }
   let lo = Infinity, hi = -Infinity;
   for (let i = 1; i < n; i += 10) { lo = Math.min(lo, arr[i]); hi = Math.max(hi, arr[i]); }
   const h = hi - lo;
@@ -561,7 +591,30 @@ function sceneryTick() {
   sceneryU.u_cam.value.copy(camera.position);
   sceneryU.u_time.value = sceneryU.u_obj_time.value = time;
   sceneryU.u_wind.value = windU.uWind.value;
+  if (sceneryForest) {
+    sceneryForest.update(camera.position, ride.shaders, time);
+    const c = sceneryForest.counts;
+    const d = Math.hypot(camera.position.x - MODEL_AT.x, camera.position.z - MODEL_AT.z);
+    const what = c[3] ? "dissolving between levels" : c[0] ? "full model" : c[1] ? "middle model" : c[2] ? (LOD_RULES[ride.shaders].cards ? "card (one picture, two triangles)" : "simple distant model") : "";
+    $("lod-o").textContent = `${d.toFixed(0)} m away: ${what}`;
+  }
 }
+// Back off from the tree (or come closer), keeping it the same size on
+// screen if asked, to see each level of detail up close.
+function walkTo(dist) {
+  const centre = MODEL_AT.clone().add(new THREE.Vector3(0, modelHeight * 0.5, 0));
+  const dir = camera.position.clone().sub(centre);
+  dir.y = Math.max(dir.y, 0); dir.normalize();
+  camera.position.copy(centre).addScaledVector(dir, dist);
+  controls.target.copy(centre);
+  camera.fov = $("same-size").checked
+    ? Math.min(40, Math.max(0.6, 2 * Math.atan2(modelHeight * 0.75, dist) * 180 / Math.PI)) : 40;
+  camera.updateProjectionMatrix();
+  $("dist-o").textContent = dist + " m";
+}
+$("dist").addEventListener("input", (e) => walkTo(+e.target.value));
+$("same-size").addEventListener("change", () => walkTo(+$("dist").value));
+$("dist-o").textContent = "20 m";
 for (const b of document.querySelectorAll("#models button")) {
   b.addEventListener("click", () => {
     for (const o of document.querySelectorAll("#models button")) o.classList.toggle("on", o === b);
@@ -590,7 +643,11 @@ function setMode(m) {
   $("scenery").hidden = m !== "scenery";
   if (m === "scenery") { showModel(+document.querySelector("#models button.on").dataset.m); rig.visible = $("scale-rider").checked; }
   else { $("stats").textContent = bodyStats; }
-  if (m !== "scenery") { if (modelMesh) { scene.remove(modelMesh); modelMesh = null; } rig.visible = true; }
+  if (m !== "scenery") {
+    if (modelMesh) { scene.remove(modelMesh); modelMesh = null; }
+    if (sceneryForest) { scene.remove(sceneryForest.group); sceneryForest = null; }
+    rig.visible = true;
+  }
   setCam(m === "ride" ? "chase" : "side");
 }
 $("tab-rider").addEventListener("click", () => setMode("rider"));
@@ -658,11 +715,17 @@ function objectFS(src) {
         c = v_col * (u_sun_col * wrap * 1.45 + amb(n));
         float back = pow(max(dot(view, -u_sun), 0.0), 3.0);
         c += v_col * vec3(1.2, 1.35, 0.5) * u_sun_col * back * 0.7;`;
-  return PREC + src.NOISE + "uniform vec3 u_sun;\nuniform vec3 u_sun_col;\n" + (src.FOLIAGE || "") + LAB_LIGHT + `
+  return PREC + src.NOISE + "uniform vec3 u_sun;\nuniform vec3 u_sun_col;\n" + (src.FOLIAGE || "") + LAB_LIGHT + (src.LOD_FS || "") + `
 in vec3 v_pos; in vec3 v_nrm; in vec3 v_col; in float v_mat; in float v_h;
+#ifdef LOD_FADE
+in vec2 v_lod;
+#endif
 out vec4 frag;
 vec3 amb(vec3 n) { return mix(vec3(0.1, 0.11, 0.08), vec3(0.3, 0.36, 0.46), n.y * 0.5 + 0.5); }
 void main() {
+#ifdef LOD_FADE
+    if (!lod_keep(v_lod)) discard;
+#endif
     vec3 n = normalize(v_nrm);
     vec3 view = normalize(u_cam - v_pos);
     vec3 c;
@@ -700,13 +763,14 @@ function rideUniforms() {
 const SHADERS_SAME = ["NOISE", "WIND", "GRASS_VS", "OBJECT_VS", "FOLIAGE", "GROUND_MAP"].every((k) => APP[k] === APP.BASE[k]);
 ride.shaders = "now";
 const srcOf = (v) => (v === "base" ? APP.BASE : APP);
-function appMaterial(v, vs, fs, uniforms) {
+function appMaterial(v, vs, fs, uniforms, fade) {
   const src = srcOf(v);
+  const def = fade ? "#define LOD_FADE\n" : "";
   return new THREE.RawShaderMaterial({
     glslVersion: THREE.GLSL3, uniforms, side: THREE.DoubleSide,
     // The grass reads the ground map where the app has one (the lab has none).
-    vertexShader: PREC + src.NOISE + src.WIND + (vs === "GRASS_VS" && src.GROUND_MAP ? src.GROUND_MAP : "") + src[vs],
-    fragmentShader: fs ? fs : objectFS(src),
+    vertexShader: PREC + def + src.NOISE + src.WIND + (vs === "GRASS_VS" && src.GROUND_MAP ? src.GROUND_MAP : "") + src[vs],
+    fragmentShader: fs ? fs : def + objectFS(src),
   });
 }
 // Grass: one mesh, both versions' shaders.
@@ -736,6 +800,217 @@ function appObjects(verts, inst, v, uniforms) {
   mesh.userData.version = v;
   return mesh;
 }
+// ---- trees as the app draws them: levels of detail ------------------------
+// The app's rules (gfx/mod.rs, split_scattered), for this build and, to
+// compare, the released app's: full meshes close by, middle ones further
+// off, then (this build) cards, each tree changing at its own distance with
+// some slack and dissolving over a moment; (released) simple distant meshes,
+// switched at fixed distances.
+const LOD_RULES = {
+  now: { mid: 55, card: 110, jitter: 6, slack: 2.5, secs: 0.45, cards: true },
+  base: { mid: 60, card: 190, jitter: 0, slack: 0, secs: 0, cards: false },
+};
+const LOD_THIN_FROM = 400, LOD_FAR_CULL = 1600;
+function lodFirst(d, m, c) { return d < m ? 0 : d < c ? 1 : 2; }
+function lodNext(l, d, m, c, s) {
+  for (;;) {
+    const n = l === 0 && d > m + s ? 1 : l === 1 && d < m - s ? 0 : l === 1 && d > c + s ? 2 : l === 2 && d < c - s ? 1 : l;
+    if (n === l) return l;
+    l = n;
+  }
+}
+function unitHash(a, b) {
+  let h = Math.imul(a + 0x9e3779b9, 0x85ebca6b) ^ Math.imul(b + 0x7f4a7c15, 0xc2b2ae35);
+  h ^= h >>> 15; h = Math.imul(h, 0x2c1b3c6d); h ^= h >>> 12;
+  return (h >>> 8) / 16777216;
+}
+
+// The cards' pictures, made by the app's own code (impostor.rs).
+let cardTex = null;
+function cardTextures() {
+  if (cardTex) return cardTex;
+  cardTex = [0, 1, 2].map((k) => {
+    const levels = wasm.card_bake(k);
+    const sizes = [];
+    for (let i = 0; i < levels; i++) sizes.push(wasm.card_size(i));
+    const make = (fn, chans) => {
+      const mips = sizes.map((size, i) => ({
+        data: new Uint8Array(wasm.memory.buffer, fn(i), size * size * chans).slice(), width: size, height: size,
+      }));
+      const t = new THREE.DataTexture(mips[0].data, sizes[0], sizes[0],
+        chans === 4 ? THREE.RGBAFormat : THREE.RedFormat, THREE.UnsignedByteType);
+      t.mipmaps = mips;
+      t.generateMipmaps = false;
+      t.minFilter = THREE.LinearMipmapLinearFilter;
+      t.magFilter = THREE.LinearFilter;
+      t.flipY = false;
+      t.unpackAlignment = 1;
+      t.needsUpdate = true;
+      return t;
+    };
+    return { albedo: make(wasm.card_albedo, 4), normal: make(wasm.card_normal, 4), depth: make(wasm.card_depth, 1) };
+  });
+  return cardTex;
+}
+// Cards: the app's IMPOSTOR_VS and picture decoding, lit like the lab's meshes.
+function cardFS() {
+  return PREC + APP.NOISE + "uniform vec3 u_sun;\nuniform vec3 u_sun_col;\n" + APP.FOLIAGE + LAB_LIGHT + APP.LOD_FS + APP.IMPOSTOR_SURFACE + `
+uniform float u_a2c;
+in vec3 v_pos; in vec3 v_tint; in vec2 v_lod;
+out vec4 frag;
+vec3 amb(vec3 n) { return mix(vec3(0.1, 0.11, 0.08), vec3(0.3, 0.36, 0.46), n.y * 0.5 + 0.5); }
+void main() {
+    if (!lod_keep(v_lod)) discard;
+    vec3 col; vec3 n; float leaf; vec3 front;
+    float cov = imp_surface(col, n, leaf, front);
+    if (u_a2c > 0.5) {
+        cov = (cov - 0.5) / max(fwidth(cov), 1.0e-4) + 0.5;
+        if (cov <= 0.0) discard;
+    } else if (cov < 0.5) discard;
+    col *= mix(vec3(1.0), v_tint, leaf);
+    vec3 p = v_pos + front;
+    vec3 view = normalize(u_cam - p);
+    vec3 c = mix(col * (u_sun_col * max(dot(n, u_sun), 0.0) * 1.45 + amb(n)),
+                 foliage(col, n, view, 1.0, amb(n), vec3(0.0)), leaf);
+    frag = vec4(lab_out(c, p), clamp(cov, 0.0, 1.0));
+}`;
+}
+
+// A set of instanced meshes whose instances change every frame.
+function dynamicObjects(verts, cap, fade, v, uniforms) {
+  const g = new THREE.InstancedBufferGeometry();
+  const vb = new THREE.InterleavedBuffer(verts, 10);
+  g.setAttribute("a_pos", new THREE.InterleavedBufferAttribute(vb, 3, 0));
+  g.setAttribute("position", g.attributes.a_pos);
+  g.setAttribute("a_nrm", new THREE.InterleavedBufferAttribute(vb, 3, 3));
+  g.setAttribute("a_col", new THREE.InterleavedBufferAttribute(vb, 3, 6));
+  g.setAttribute("a_mat", new THREE.InterleavedBufferAttribute(vb, 1, 9));
+  const stride = fade ? 11 : 9;
+  const ib = new THREE.InstancedInterleavedBuffer(new Float32Array(Math.max(cap, 1) * stride), stride);
+  ib.setUsage(THREE.DynamicDrawUsage);
+  g.setAttribute("i_pos_rot", new THREE.InterleavedBufferAttribute(ib, 4, 0));
+  g.setAttribute("i_scale", new THREE.InterleavedBufferAttribute(ib, 2, 4));
+  g.setAttribute("i_tint", new THREE.InterleavedBufferAttribute(ib, 3, 6));
+  if (fade) g.setAttribute("i_lod", new THREE.InterleavedBufferAttribute(ib, 2, 9));
+  g.instanceCount = 0;
+  const mesh = new THREE.Mesh(g, appMaterial(v, "OBJECT_VS", null, uniforms, fade));
+  mesh.frustumCulled = false;
+  return { mesh, ib, stride };
+}
+function dynamicCards(kind, cap, uniforms) {
+  const g = new THREE.InstancedBufferGeometry();
+  g.setAttribute("a_corner", new THREE.BufferAttribute(new Float32Array([-1, 0, 1, 0, 1, 1, -1, 0, 1, 1, -1, 1]), 2));
+  g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(18), 3));
+  const ib = new THREE.InstancedInterleavedBuffer(new Float32Array(Math.max(cap, 1) * 11), 11);
+  ib.setUsage(THREE.DynamicDrawUsage);
+  g.setAttribute("i_pos_rot", new THREE.InterleavedBufferAttribute(ib, 4, 0));
+  g.setAttribute("i_scale", new THREE.InterleavedBufferAttribute(ib, 2, 4));
+  g.setAttribute("i_tint", new THREE.InterleavedBufferAttribute(ib, 3, 6));
+  g.setAttribute("i_lod", new THREE.InterleavedBufferAttribute(ib, 2, 9));
+  g.instanceCount = 0;
+  const tex = cardTextures()[kind];
+  const mat = new THREE.RawShaderMaterial({
+    glslVersion: THREE.GLSL3, side: THREE.DoubleSide,
+    uniforms: Object.assign({}, uniforms, {
+      u_face: { value: new THREE.Vector3() },
+      u_imp_albedo: { value: tex.albedo }, u_imp_normal: { value: tex.normal }, u_imp_depth: { value: tex.depth },
+      u_a2c: { value: 1 },
+    }),
+    vertexShader: PREC + APP.NOISE + APP.WIND + APP.IMPOSTOR_VS,
+    fragmentShader: cardFS(),
+  });
+  // Soft edges from the multisampling, as in the app.
+  mat.alphaToCoverage = true;
+  const mesh = new THREE.Mesh(g, mat);
+  mesh.frustumCulled = false;
+  return { mesh, ib, stride: 11 };
+}
+function fill(d, list) {
+  const n = Math.min(list.length / d.stride, d.ib.array.length / d.stride);
+  d.ib.array.set(list.length > d.ib.array.length ? list.slice(0, d.ib.array.length) : list);
+  d.ib.needsUpdate = true;
+  d.mesh.geometry.instanceCount = n;
+  d.mesh.visible = n > 0;
+}
+
+// Trees of the three kinds (pine, broadleaf, birch: instances of 9 floats
+// as the app keeps them), drawn as the app would.
+class Forest {
+  constructor(trees, uniforms) {
+    this.trees = trees;
+    this.group = new THREE.Group();
+    this.eye = new THREE.Vector3();
+    this.u = Object.assign({}, uniforms, { u_eye: { value: this.eye } });
+    this.states = { now: new Map(), base: new Map() };
+    this.sets = {};
+    this.counts = [0, 0, 0, 0];
+    for (const v of ride.versionsSame ? ["now"] : ["now", "base"]) {
+      const set = [];
+      for (let t = 0; t < 3; t++) {
+        const cap = trees[t].length / 9;
+        const far = t === 0 ? 6 : 7;
+        const k = {
+          full: dynamicObjects(modelVerts(v, t), cap, false, v, this.u),
+          mid: dynamicObjects(modelVerts(v, 8 + t), cap, false, v, this.u),
+        };
+        if (LOD_RULES[v].cards) {
+          k.fullFade = dynamicObjects(modelVerts(v, t), cap, true, v, this.u);
+          k.midFade = dynamicObjects(modelVerts(v, 8 + t), cap, true, v, this.u);
+          k.card = dynamicCards(t, cap, this.u);
+        } else {
+          k.far = dynamicObjects(modelVerts(v, far), cap, false, v, this.u);
+        }
+        for (const d of Object.values(k)) this.group.add(d.mesh);
+        set.push(k);
+      }
+      this.sets[v] = set;
+    }
+  }
+  // Sort the trees into levels for a camera at `eye`, at time `now`.
+  update(eye, v, now) {
+    if (!this.sets[v]) v = "now";
+    this.eye.copy(eye);
+    const R = LOD_RULES[v], states = this.states[v];
+    for (const [w, set] of Object.entries(this.sets)) {
+      for (const k of set) for (const d of Object.values(k)) if (w !== v) d.mesh.visible = false;
+    }
+    this.counts = [0, 0, 0, 0];
+    for (let t = 0; t < 3; t++) {
+      const list = this.trees[t], k = this.sets[v][t];
+      const out = { full: [], mid: [], fullFade: [], midFade: [], card: [], far: [] };
+      for (let i = 0; i < list.length; i += 9) {
+        const x = list[i], z = list[i + 2];
+        const d = Math.hypot(x - eye.x, z - eye.z);
+        if (d > LOD_FAR_CULL) continue;
+        const shift = (unitHash(i, t) - 0.5) * 2 * R.jitter;
+        const m = R.mid + shift, c = R.card + shift;
+        const key = t * 1000000 + i;
+        let st = states.get(key);
+        if (!st) { const l = lodFirst(d, m, c); st = { level: l, from: l, since: -1e9 }; states.set(key, st); }
+        const l = lodNext(st.level, d, m, c, R.slack);
+        if (l !== st.level) { st.from = st.level; st.level = l; st.since = now; }
+        const p = R.secs > 0 ? Math.min(1, Math.max(0, (now - st.since) / R.secs)) : 1;
+        const keep = 1 - 0.6 * Math.min(1, Math.max(0, (d - LOD_THIN_FROM) / (LOD_FAR_CULL - LOD_THIN_FROM)));
+        const h = Math.abs((Math.sin(x * 12.9898 + z * 78.233) * 43758.547) % 1);
+        const thin = Math.min(1, Math.max(0, (keep * 1.05 - h) / 0.05));
+        const inst = list.slice(i, i + 9);
+        const grown = inst.slice(); grown[4] /= Math.sqrt(keep); grown[5] /= Math.sqrt(keep);
+        const place = (level, fin, fout) => {
+          const solid = fin >= 1 && fout <= 0;
+          this.counts[level + (solid ? 0 : 0)]++;
+          if (level === 0) solid ? out.full.push(...inst) : out.fullFade.push(...inst, fin, fout);
+          else if (level === 1) solid ? out.mid.push(...inst) : out.midFade.push(...inst, fin, fout);
+          else if (R.cards) { if (thin > 0) out.card.push(...grown, fin, Math.max(fout, 1 - thin)); }
+          else if (thin > 0.5) out.far.push(...grown);
+        };
+        if (p < 1 && st.from !== st.level) { this.counts[3]++; place(st.from, 1, p); place(st.level, p, 0); }
+        else place(st.level, 1, 0);
+      }
+      for (const [name, d] of Object.entries(k)) fill(d, new Float32Array(out[name]));
+    }
+  }
+}
+
 function pickShaders(v) {
   ride.shaders = v;
   if (ride.group) ride.group.traverse((o) => {
@@ -841,6 +1116,7 @@ function buildRide() {
     { m: 1, h: 10.5, w: 1.0, warm: 0.7, seed: 57, share: 0.4 },
     { m: 2, h: 11, w: 0.7, warm: 0.7, seed: 23, share: 0.2 },
   ];
+  const forestTrees = [];
   for (const kind of kinds) {
     const inst = [];
     seed = kind.seed;
@@ -856,12 +1132,10 @@ function buildRide() {
           t * (0.95 + 0.4 * warm), t * (1 + 0.08 * warm), t * (0.9 - 0.3 * warm));
       }
     }
-    for (const v of ride.versionsSame ? ["now"] : ["now", "base"]) {
-      const mesh = appObjects(modelVerts(v, kind.m), inst, v, ride.u);
-      mesh.visible = v === ride.shaders;
-      ride.group.add(mesh);
-    }
+    forestTrees.push(inst);
   }
+  ride.forest = new Forest(forestTrees, ride.u);
+  ride.group.add(ride.forest.group);
   // Roadside posts every 50 m, for a sense of speed.
   const postGeo = new THREE.CylinderGeometry(0.06, 0.06, 1.0, 8);
   const postMat = new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.6 });
@@ -904,6 +1178,7 @@ function rideTick(dt) {
   u.u_cam.value.set(...eye);
   u.u_time.value = u.u_obj_time.value = time;
   u.u_wind.value = u.u_gust.value = windU.uWind.value;
+  ride.forest.update(new THREE.Vector3(...eye), ride.shaders, time);
   const fwd = new THREE.Vector3(...at).sub(new THREE.Vector3(...eye)); fwd.y = 0; fwd.normalize();
   // The app's terrain window, in its coordinates (x east, z north = -z here).
   const camX = eye[0], camZ = -eye[2];
@@ -941,6 +1216,7 @@ window.lab = {
   step(dt, still) { if (!still) time += dt; windU.uT.value = time; if (mode === "ride") rideTick(dt); else controls.update(); updateMeshes(); sceneryTick(); renderer.render(scene, camera); },
   hideRider: () => { rig.visible = false; }, skipToMove: () => skipToMove(),
   ride: () => ride, pickShaders: (v) => pickShaders(v), setMode: (m) => setMode(m), setCam: (c) => setCam(c),
+  walkTo: (d) => walkTo(d), scene: () => scene, rig: () => rig, camera: () => camera,
 };
 
 $("ride-go").addEventListener("click", () => { ride.on = !ride.on; $("ride-go").textContent = ride.on ? "Pause" : "Ride"; $("ride-go").classList.toggle("on", ride.on); });

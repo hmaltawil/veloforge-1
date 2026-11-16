@@ -22,6 +22,12 @@ takes `main`'s shaders, so a change to the trees, grass or their shaders
 can be compared with what it changes. Scenery is drawn with the app's own
 tree shader and leaf lighting (without its shadows).
 
+Trees are drawn as the app draws them at the distance they are seen from:
+full models, middle ones, then cards whose pictures the page makes with the
+app's own `impostor.rs`, each tree dissolving from one level to the next.
+The Scenery tab's distance slider walks away from a tree (keeping it the
+same size on screen if asked) to watch it go through every level.
+
 For automated checks the page has `window.lab`: set `lab.manual = true`,
 then `lab.step(dt, still)` renders one frame (`still` holds the wind);
 `lab.holdView`, `lab.pickShaders("base" | "now")` and `lab.ride()` let a
