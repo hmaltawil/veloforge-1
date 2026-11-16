@@ -200,9 +200,19 @@ pub extern "C" fn model(kind: u32) -> u32 {
             5 => mesh::house(),
             6 => mesh::pine_far(),
             7 => mesh::broadleaf_far(),
+            // Middle-distance trees, which releases before 1.6.8 drew (build.sh
+            // sets lab_mid when the released code still has them).
+            #[cfg(lab_mid)]
             8 => mesh::pine_mid(),
+            #[cfg(lab_mid)]
             9 => mesh::broadleaf_mid(),
-            _ => mesh::birch_mid(),
+            #[cfg(lab_mid)]
+            10 => mesh::birch_mid(),
+            #[cfg(not(lab_mid))]
+            8 => mesh::pine(),
+            #[cfg(not(lab_mid))]
+            9 => mesh::broadleaf(),
+            _ => mesh::birch(),
         };
         l.model = m.v;
         l.model.len() as u32

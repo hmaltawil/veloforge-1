@@ -19,7 +19,10 @@ for f in math mesh body impostor; do
 done
 cp -r "$here/Cargo.toml" "$here/Cargo.lock" "$here/src" "$base_dir/tools/model-lab/"
 cp "$here/../../rust-toolchain.toml" "$base_dir/"   # the same Rust as this build
-(cd "$base_dir/tools/model-lab" && CARGO_TARGET_DIR="$here/target-base" \
+# Releases before 1.6.8 had middle-distance trees: draw them with those.
+base_cfg=""
+if grep -q "pub fn broadleaf_mid" "$base_dir/src/gfx/mesh.rs"; then base_cfg="--cfg lab_mid"; fi
+(cd "$base_dir/tools/model-lab" && CARGO_TARGET_DIR="$here/target-base" RUSTFLAGS="$base_cfg" \
     cargo build --release --target wasm32-unknown-unknown --quiet)
 wasm_base="$here/target-base/wasm32-unknown-unknown/release/model_lab.wasm"
 rm -rf "${base_dir:?}"

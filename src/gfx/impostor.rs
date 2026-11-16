@@ -411,32 +411,6 @@ mod tests {
         }
     }
 
-    /// How much two models' outlines agree, over all views: the area both
-    /// cover over the area either covers.
-    pub(crate) fn outline_match(a: &[f32], b: &[f32]) -> f32 {
-        let (a, b) = (bake(a), bake(b));
-        let (mut both, mut either) = (0u64, 0u64);
-        let pairs = a.levels[0].albedo.as_chunks::<4>().0.iter();
-        for (x, y) in pairs.zip(b.levels[0].albedo.as_chunks::<4>().0) {
-            let (p, q) = (x[3] > 127, y[3] > 127);
-            both += (p && q) as u64;
-            either += (p || q) as u64;
-        }
-        both as f32 / either.max(1) as f32
-    }
-
-    #[test]
-    #[ignore]
-    fn print_outline_matches() {
-        for (name, near, mid) in [
-            ("pine", mesh::pine(), mesh::pine_mid()),
-            ("broadleaf", mesh::broadleaf(), mesh::broadleaf_mid()),
-            ("birch", mesh::birch(), mesh::birch_mid()),
-        ] {
-            println!("{name}: {:.3}", outline_match(&near.v, &mid.v));
-        }
-    }
-
     #[test]
     fn distant_pictures_stay_as_dense_as_the_tree() {
         let a = bake(&mesh::broadleaf().v);

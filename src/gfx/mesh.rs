@@ -538,12 +538,6 @@ pub fn pine() -> Mesh {
     pine_with(12, 15, 7)
 }
 
-/// The same conifer for trees at a middle distance: the same tiers, with
-/// fewer branch tips.
-pub fn pine_mid() -> Mesh {
-    pine_with(12, 11, 5)
-}
-
 fn pine_with(tiers: usize, tips: usize, bark_sides: usize) -> Mesh {
     let mut m = Mesh::default();
     m.tube(
@@ -627,9 +621,6 @@ pub fn broadleaf() -> Mesh {
     m
 }
 
-/// Rings and segments of each clump in the middle-distance trees' crowns.
-const MID_CLUMP: (usize, usize) = (3, 4);
-
 fn broadleaf_crown(m: &mut Mesh, detail: (usize, usize)) {
     m.canopy(
         [0.0, 0.69, 0.0],
@@ -654,22 +645,6 @@ fn birch_crown(m: &mut Mesh, detail: (usize, usize)) {
         0.35,
         detail,
     );
-}
-
-/// The broadleaf for trees at a middle distance: the same clumps in the
-/// same places (so its outline matches and one dissolves into the other
-/// unseen), each with fewer facets, and plainer limbs.
-pub fn broadleaf_mid() -> Mesh {
-    let mut m = Mesh::default();
-    m.tube([0.0, 0.0, 0.0], [0.0, 0.06, 0.0], 0.08, 0.048, 6, BARK);
-    m.tube([0.0, 0.06, 0.0], [0.01, 0.46, 0.0], 0.048, 0.032, 6, BARK);
-    let fork = [0.01, 0.42, 0.0];
-    for end in [[0.26, 0.62, 0.1], [-0.24, 0.6, -0.12], [0.04, 0.63, -0.27]] {
-        m.tube(fork, end, 0.025, 0.011, 4, BARK);
-    }
-    m.mat = MAT_LEAF;
-    broadleaf_crown(&mut m, MID_CLUMP);
-    m
 }
 
 /// Simplified broadleaf tree for distant trees.
@@ -726,32 +701,6 @@ pub fn birch() -> Mesh {
     }
     m.mat = MAT_LEAF;
     birch_crown(&mut m, (4, 6));
-    m
-}
-
-/// The birch for trees at a middle distance: the same clumps in the same
-/// places, each with fewer facets.
-pub fn birch_mid() -> Mesh {
-    let mut m = Mesh::default();
-    let pale = [0.6, 0.58, 0.52];
-    m.tube([0.0, 0.0, 0.0], [0.003, 0.8, 0.0], 0.026, 0.008, 5, pale);
-    // The dark bands that make a birch a birch, fewer than close by.
-    for y in [0.08, 0.27, 0.52] {
-        let r = 0.027 - 0.018 * y;
-        m.tube(
-            [0.0, y, 0.0],
-            [0.0, y + 0.015, 0.0],
-            r,
-            r,
-            5,
-            [0.05, 0.045, 0.04],
-        );
-    }
-    for end in [[0.14, 0.66, 0.05], [-0.13, 0.6, -0.06]] {
-        m.tube([0.006, 0.47, 0.0], end, 0.011, 0.005, 3, pale);
-    }
-    m.mat = MAT_LEAF;
-    birch_crown(&mut m, MID_CLUMP);
     m
 }
 
@@ -1666,9 +1615,6 @@ mod tests {
             ("pine", pine(), 1000),
             ("broadleaf", broadleaf(), 2000),
             ("birch", birch(), 1500),
-            ("pine mid", pine_mid(), 320),
-            ("broadleaf mid", broadleaf_mid(), 800),
-            ("birch mid", birch_mid(), 600),
             ("pine far", pine_far(), 120),
             ("broadleaf far", broadleaf_far(), 300),
         ] {

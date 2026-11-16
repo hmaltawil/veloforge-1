@@ -68,23 +68,13 @@ impl Quality {
             Quality::Low => 2.0 / 3.0,
         }
     }
-    /// Where trees change from their full meshes to the middle ones, and
-    /// from those to cards (metres; every tree's own is shifted by up to
-    /// `LOD_JITTER` either way).
+    /// Where trees change from their full meshes to cards (metres; every
+    /// tree's own is shifted by up to `LOD_JITTER` either way).
     fn tree_lod(self) -> TreeLod {
         match self {
-            Quality::High => TreeLod {
-                mid: 70.0,
-                card: 120.0,
-            },
-            Quality::Medium => TreeLod {
-                mid: 52.0,
-                card: 95.0,
-            },
-            Quality::Low => TreeLod {
-                mid: 38.0,
-                card: 75.0,
-            },
+            Quality::High => TreeLod { card: 100.0 },
+            Quality::Medium => TreeLod { card: 80.0 },
+            Quality::Low => TreeLod { card: 62.0 },
         }
     }
     /// Levels of the blur pyramid (bloom and the frosted glass).
@@ -1529,21 +1519,13 @@ const OBJ_RIDER: usize = 8;
 const OBJ_PINE_FAR: usize = 9;
 const OBJ_BROAD_FAR: usize = 10;
 const OBJ_REFLECTOR: usize = 11;
-/// Trees at a middle distance: the same shapes with fewer triangles.
-const OBJ_PINE_MID: usize = 12;
-const OBJ_BROAD_MID: usize = 13;
-const OBJ_BIRCH_MID: usize = 14;
-/// The same meshes again, for trees dissolving from one level to the next.
-const OBJ_PINE_FADE: usize = 15;
-const OBJ_BROAD_FADE: usize = 16;
-const OBJ_BIRCH_FADE: usize = 17;
-const OBJ_PINE_MID_FADE: usize = 18;
-const OBJ_BROAD_MID_FADE: usize = 19;
-const OBJ_BIRCH_MID_FADE: usize = 20;
+/// The trees' meshes again, for trees dissolving into or out of cards.
+const OBJ_PINE_FADE: usize = 12;
+const OBJ_BROAD_FADE: usize = 13;
+const OBJ_BIRCH_FADE: usize = 14;
 /// Distances where trees change level of detail (`Quality::tree_lod`).
 #[derive(Clone, Copy)]
 struct TreeLod {
-    mid: f32,
     card: f32,
 }
 /// How far each tree's own distances are shifted, at most, so trees
@@ -1562,7 +1544,7 @@ const THIN_SLACK: f32 = 0.02;
 const FADE_STRIDE: usize = INSTANCE_STRIDE + 2;
 const CARD_STRIDE: usize = FADE_STRIDE;
 
-/// Which level of detail a tree is drawn at (0 full, 1 middle, 2 card),
+/// Which level of detail a tree is drawn at (`FULL`, `CARD` or `THINNED`),
 /// the one it is leaving, and since when.
 struct TreeState {
     level: u8,
@@ -1571,15 +1553,20 @@ struct TreeState {
     seen: u64,
 }
 
-/// What decides a tree's level of detail (0 full, 1 middle, 2 card, 3
-/// thinned out of distant forest): its own distances to the middle mesh and
-/// to a card, whether it has a middle mesh, how far it is across the ground
-/// (`d`) and in all (`dist`), and `thin`: its share against the share of
-/// trees kept at that distance (above 0, it is thinned out).
+/// A tree's levels of detail: its full mesh, a card, or thinned out of
+/// distant forest (not drawn). There is no level between the mesh and the
+/// card: a simpler mesh changing places with the full one showed, however
+/// alike they were made.
+const FULL: u8 = 0;
+const CARD: u8 = 1;
+const THINNED: u8 = 2;
+
+/// What decides a tree's level of detail: its own distance to becoming a
+/// card, how far it is across the ground (`d`) and in all (`dist`), and
+/// `thin`: its share against the share of trees kept at that distance
+/// (above 0, it is thinned out).
 struct Reach {
-    to_mid: f32,
     to_card: f32,
-    has_mid: bool,
     thin: f32,
     d: f32,
     dist: f32,
@@ -1594,17 +1581,11 @@ fn keep_share(dist: f32) -> f32 {
 /// The level of detail for a tree first seen (back in view, or new).
 fn first_level(r: &Reach) -> u8 {
     if r.thin > 0.0 || r.dist > FAR_CULL - 60.0 {
-        3
-    } else if r.d < r.to_mid && r.has_mid {
-        0
+        THINNED
     } else if r.d < r.to_card {
-        if r.has_mid && r.d >= r.to_mid {
-            1
-        } else {
-            0
-        }
+        FULL
     } else {
-        2
+        CARD
     }
 }
 
@@ -1615,19 +1596,10 @@ fn next_level(level: u8, r: &Reach) -> u8 {
     let mut l = level;
     loop {
         l = match l {
-            0 if r.has_mid && r.d > r.to_mid + LOD_SLACK => 1,
-            0 if !r.has_mid && r.d > r.to_card + LOD_SLACK => 2,
-            1 if r.d < r.to_mid - LOD_SLACK => 0,
-            1 if r.d > r.to_card + LOD_SLACK => 2,
-            2 if r.d < r.to_card - LOD_SLACK => {
-                if r.has_mid {
-                    1
-                } else {
-                    0
-                }
-            }
-            2 if r.thin > THIN_SLACK || r.dist > FAR_CULL - 40.0 => 3,
-            3 if r.thin < -THIN_SLACK && r.dist < FAR_CULL - 80.0 => 2,
+            FULL if r.d > r.to_card + LOD_SLACK => CARD,
+            CARD if r.d < r.to_card - LOD_SLACK => FULL,
+            CARD if r.thin > THIN_SLACK || r.dist > FAR_CULL - 40.0 => THINNED,
+            THINNED if r.thin < -THIN_SLACK && r.dist < FAR_CULL - 80.0 => CARD,
             _ => return l,
         };
     }
@@ -1647,31 +1619,9 @@ const UNIT_CARD_ALBEDO: u32 = 9;
 const UNIT_CARD_NORMAL: u32 = 10;
 const UNIT_CARD_DEPTH: u32 = 11;
 
-/// The meshes of each kind of tree (pine, broadleaf, birch) besides its
-/// own: at a middle distance, and the full and middle ones again for trees
-/// dissolving between levels.
-struct TreeMeshes {
-    near_fade: usize,
-    mid: usize,
-    mid_fade: usize,
-}
-const TREES: [TreeMeshes; 3] = [
-    TreeMeshes {
-        near_fade: OBJ_PINE_FADE,
-        mid: OBJ_PINE_MID,
-        mid_fade: OBJ_PINE_MID_FADE,
-    },
-    TreeMeshes {
-        near_fade: OBJ_BROAD_FADE,
-        mid: OBJ_BROAD_MID,
-        mid_fade: OBJ_BROAD_MID_FADE,
-    },
-    TreeMeshes {
-        near_fade: OBJ_BIRCH_FADE,
-        mid: OBJ_BIRCH_MID,
-        mid_fade: OBJ_BIRCH_MID_FADE,
-    },
-];
+/// Each kind of tree's mesh again (pine, broadleaf, birch), for trees
+/// dissolving into or out of cards.
+const TREE_FADES: [usize; 3] = [OBJ_PINE_FADE, OBJ_BROAD_FADE, OBJ_BIRCH_FADE];
 /// Objects further than this are hidden in the haze anyway.
 const FAR_CULL: f32 = 1600.0;
 /// Distant forest thins out from here on.
@@ -1950,19 +1900,13 @@ impl GlState {
                 mesh::pine_far(),
                 mesh::broadleaf_far(),
                 mesh::reflector(),
-                mesh::pine_mid(),
-                mesh::broadleaf_mid(),
-                mesh::birch_mid(),
                 mesh::pine(),
                 mesh::broadleaf(),
                 mesh::birch(),
-                mesh::pine_mid(),
-                mesh::broadleaf_mid(),
-                mesh::birch_mid(),
             ];
             for (i, m) in meshes.iter().enumerate() {
                 // Trees changing level carry how far they are through it.
-                let fading = TREES.iter().any(|t| t.near_fade == i || t.mid_fade == i);
+                let fading = TREE_FADES.contains(&i);
                 let instance: &[(i32, i32)] = if fading {
                     &[(4, 0), (2, 4), (3, 6), (2, 9)]
                 } else {
@@ -1997,7 +1941,7 @@ impl GlState {
             let card = [
                 -1.0f32, 0.0, 1.0, 0.0, 1.0, 1.0, -1.0, 0.0, 1.0, 1.0, -1.0, 1.0,
             ];
-            for _ in 0..TREES.len() {
+            for _ in 0..TREE_FADES.len() {
                 let mut b = Self::buffers(
                     gl,
                     &[(2, 0)],
@@ -2187,8 +2131,6 @@ impl GlState {
         let mut states = std::mem::take(&mut self.tree_states);
         let mut near: [Vec<f32>; KINDS] = Default::default();
         let mut near_fade: [Vec<f32>; 3] = Default::default();
-        let mut mid: [Vec<f32>; 3] = Default::default();
-        let mut mid_fade: [Vec<f32>; 3] = Default::default();
         let mut far: [Vec<f32>; 2] = Default::default();
         let mut card: [Vec<f32>; 3] = Default::default();
         for (kind, list) in self.scattered.iter().enumerate() {
@@ -2230,10 +2172,7 @@ impl GlState {
                 );
                 let shift = (unit_hash(key) - 0.5) * 2.0 * LOD_JITTER;
                 let reach = Reach {
-                    to_mid: lod.mid + shift,
                     to_card: lod.card + shift,
-                    // Pines' middle meshes save too little to be worth a change.
-                    has_mid: kind != OBJ_PINE,
                     // Thin distant forest: in the haze fewer, slightly bigger
                     // trees look the same, and masses of tiny trees are slow
                     // to draw. Which trees stay depends only on where they
@@ -2260,8 +2199,7 @@ impl GlState {
                 }
                 let progress = ((now - st.since) / LOD_FADE_SECS).clamp(0.0, 1.0);
                 // Without cards, distant trees switch to the simple meshes.
-                let fading =
-                    progress < 1.0 && st.from != st.level && (cards || st.from.max(st.level) < 2);
+                let fading = progress < 1.0 && st.from != st.level && cards;
                 let keep = keep_share(dist);
                 let mut grown = *inst;
                 let g = keep.sqrt().recip();
@@ -2271,21 +2209,16 @@ impl GlState {
                 let mut place = |level: u8, fin: f32, fout: f32| {
                     let solid = fin >= 1.0 && fout <= 0.0;
                     match level {
-                        0 if solid => near[kind].extend_from_slice(inst),
-                        0 => {
+                        FULL if solid => near[kind].extend_from_slice(inst),
+                        FULL => {
                             near_fade[t].extend_from_slice(inst);
                             near_fade[t].extend_from_slice(&[fin, fout]);
                         }
-                        1 if solid => mid[t].extend_from_slice(inst),
-                        1 => {
-                            mid_fade[t].extend_from_slice(inst);
-                            mid_fade[t].extend_from_slice(&[fin, fout]);
-                        }
-                        2 if cards => {
+                        CARD if cards => {
                             card[t].extend_from_slice(&grown);
                             card[t].extend_from_slice(&[fin, fout]);
                         }
-                        2 => far[if kind == OBJ_PINE { 0 } else { 1 }].extend_from_slice(&grown),
+                        CARD => far[if kind == OBJ_PINE { 0 } else { 1 }].extend_from_slice(&grown),
                         // Thinned out: not drawn.
                         _ => {}
                     }
@@ -2319,34 +2252,18 @@ impl GlState {
                 .collect();
             *list = sorted;
         };
-        for list in near.iter_mut().chain(mid.iter_mut()).chain(far.iter_mut()) {
+        for list in near.iter_mut().chain(far.iter_mut()) {
             by_distance(list, INSTANCE_STRIDE);
         }
-        for list in near_fade
-            .iter_mut()
-            .chain(mid_fade.iter_mut())
-            .chain(card.iter_mut())
-        {
+        for list in near_fade.iter_mut().chain(card.iter_mut()) {
             by_distance(list, FADE_STRIDE);
         }
         unsafe {
             for (kind, list) in near.iter().enumerate() {
                 Self::set_instances(gl, &mut self.objects[kind], list, INSTANCE_STRIDE);
             }
-            for (t, meshes) in TREES.iter().enumerate() {
-                Self::set_instances(
-                    gl,
-                    &mut self.objects[meshes.near_fade],
-                    &near_fade[t],
-                    FADE_STRIDE,
-                );
-                Self::set_instances(gl, &mut self.objects[meshes.mid], &mid[t], INSTANCE_STRIDE);
-                Self::set_instances(
-                    gl,
-                    &mut self.objects[meshes.mid_fade],
-                    &mid_fade[t],
-                    FADE_STRIDE,
-                );
+            for (t, &obj) in TREE_FADES.iter().enumerate() {
+                Self::set_instances(gl, &mut self.objects[obj], &near_fade[t], FADE_STRIDE);
                 Self::set_instances(gl, &mut self.cards[t], &card[t], CARD_STRIDE);
             }
             Self::set_instances(
@@ -3106,12 +3023,6 @@ impl GlState {
                         OBJ_PINE_FADE,
                         OBJ_BROAD_FADE,
                         OBJ_BIRCH_FADE,
-                        OBJ_PINE_MID,
-                        OBJ_BROAD_MID,
-                        OBJ_BIRCH_MID,
-                        OBJ_PINE_MID_FADE,
-                        OBJ_BROAD_MID_FADE,
-                        OBJ_BIRCH_MID_FADE,
                     ],
                 );
                 if k == 1 {
@@ -3443,9 +3354,6 @@ impl GlState {
                     OBJ_BROAD,
                     OBJ_BIRCH,
                     OBJ_BUSH,
-                    OBJ_PINE_MID,
-                    OBJ_BROAD_MID,
-                    OBJ_BIRCH_MID,
                     OBJ_PINE_FAR,
                     OBJ_BROAD_FAR,
                 ],
@@ -3455,17 +3363,7 @@ impl GlState {
             let p = self.programs.get_mut("object_fade").unwrap();
             p.f1(gl, "u_obj_time", f.time);
             p.f1(gl, "u_wind", f.look.wind);
-            self.draw_instanced(
-                gl,
-                &[
-                    OBJ_PINE_FADE,
-                    OBJ_BROAD_FADE,
-                    OBJ_BIRCH_FADE,
-                    OBJ_PINE_MID_FADE,
-                    OBJ_BROAD_MID_FADE,
-                    OBJ_BIRCH_MID_FADE,
-                ],
-            );
+            self.draw_instanced(gl, &[OBJ_PINE_FADE, OBJ_BROAD_FADE, OBJ_BIRCH_FADE]);
             // Distant trees as cards, with edges smoothed by the
             // multisampling where there is some.
             if self.card_tex.is_some() {
@@ -3831,41 +3729,35 @@ mod tests {
 
     #[test]
     fn trees_change_level_with_slack_and_never_flicker() {
-        let at = |d: f32, has_mid: bool, thin: f32| Reach {
-            to_mid: 70.0,
-            to_card: 120.0,
-            has_mid,
+        let at = |d: f32, thin: f32| Reach {
+            to_card: 100.0,
             thin,
             d,
             dist: d,
         };
-        assert_eq!(first_level(&at(30.0, true, -0.5)), 0);
-        assert_eq!(first_level(&at(90.0, true, -0.5)), 1);
-        assert_eq!(first_level(&at(200.0, true, -0.5)), 2);
-        // Riding away: a tree moves on only past its distance and the slack...
-        assert_eq!(next_level(0, &at(71.0, true, -0.5)), 0);
-        assert_eq!(next_level(0, &at(73.0, true, -0.5)), 1);
-        // ...and back only well inside it, so hovering at 70 m changes nothing.
-        assert_eq!(next_level(1, &at(69.0, true, -0.5)), 1);
-        assert_eq!(next_level(1, &at(67.0, true, -0.5)), 0);
+        assert_eq!(first_level(&at(30.0, -0.5)), FULL);
+        assert_eq!(first_level(&at(200.0, -0.5)), CARD);
+        // Riding away: a tree becomes a card only past its distance and the
+        // slack...
+        assert_eq!(next_level(FULL, &at(101.0, -0.5)), FULL);
+        assert_eq!(next_level(FULL, &at(103.0, -0.5)), CARD);
+        // ...and comes back only well inside it, so hovering at 100 m changes
+        // nothing.
+        assert_eq!(next_level(CARD, &at(99.0, -0.5)), CARD);
+        assert_eq!(next_level(CARD, &at(97.0, -0.5)), FULL);
         // A jump (the view turned, a new window) settles in one go.
-        assert_eq!(next_level(0, &at(300.0, true, -0.5)), 2);
-        assert_eq!(next_level(2, &at(10.0, true, -0.5)), 0);
-        // Pines have no middle mesh: full until they become cards.
-        assert_eq!(first_level(&at(90.0, false, -0.5)), 0);
-        assert_eq!(next_level(0, &at(100.0, false, -0.5)), 0);
-        assert_eq!(next_level(0, &at(123.0, false, -0.5)), 2);
-        assert_eq!(next_level(2, &at(117.0, false, -0.5)), 0);
+        assert_eq!(next_level(FULL, &at(900.0, 0.1)), THINNED);
+        assert_eq!(next_level(THINNED, &at(10.0, -0.5)), FULL);
         // Thinned out of distant forest only clearly past its share, and back
         // only clearly inside it.
-        assert_eq!(next_level(2, &at(800.0, true, 0.01)), 2);
-        assert_eq!(next_level(2, &at(800.0, true, 0.03)), 3);
-        assert_eq!(next_level(3, &at(800.0, true, -0.01)), 3);
-        assert_eq!(next_level(3, &at(800.0, true, -0.03)), 2);
+        assert_eq!(next_level(CARD, &at(800.0, 0.01)), CARD);
+        assert_eq!(next_level(CARD, &at(800.0, 0.03)), THINNED);
+        assert_eq!(next_level(THINNED, &at(800.0, -0.01)), THINNED);
+        assert_eq!(next_level(THINNED, &at(800.0, -0.03)), CARD);
         // At the far edge of the forest, trees fade out, and in a little closer.
-        assert_eq!(next_level(2, &at(FAR_CULL - 30.0, true, -0.5)), 3);
-        assert_eq!(next_level(3, &at(FAR_CULL - 60.0, true, -0.5)), 3);
-        assert_eq!(next_level(3, &at(FAR_CULL - 90.0, true, -0.5)), 2);
+        assert_eq!(next_level(CARD, &at(FAR_CULL - 30.0, -0.5)), THINNED);
+        assert_eq!(next_level(THINNED, &at(FAR_CULL - 60.0, -0.5)), THINNED);
+        assert_eq!(next_level(THINNED, &at(FAR_CULL - 90.0, -0.5)), CARD);
         // Distances and which trees are thinned are shifted per tree, evenly.
         let shifts: Vec<f32> = (0..1000)
             .map(|i| unit_hash((i * 37, i * 11 - 500)))
@@ -3873,9 +3765,8 @@ mod tests {
         assert!(shifts.iter().all(|&h| (0.0..1.0).contains(&h)));
         let mean = shifts.iter().sum::<f32>() / shifts.len() as f32;
         assert!((mean - 0.5).abs() < 0.05, "mean {mean}");
-        assert!(
-            (keep_share(100.0) - 1.0).abs() < 1e-6 && (keep_share(FAR_CULL) - 0.4).abs() < 1e-6
-        );
+        assert!((keep_share(100.0) - 1.0).abs() < 1e-6);
+        assert!((keep_share(FAR_CULL) - 0.4).abs() < 1e-6);
     }
 
     #[test]
