@@ -67,6 +67,15 @@ impl Quality {
             Quality::Low => 2.0 / 3.0,
         }
     }
+    /// Trees closer than this use the most detailed meshes; up to
+    /// `near_trees` they use the middle ones.
+    fn detailed_trees(self) -> f32 {
+        match self {
+            Quality::High => 60.0,
+            Quality::Medium => 45.0,
+            Quality::Low => 35.0,
+        }
+    }
     /// Trees closer than this use the detailed meshes.
     fn near_trees(self) -> f32 {
         match self {
@@ -1495,6 +1504,10 @@ const OBJ_RIDER: usize = 8;
 const OBJ_PINE_FAR: usize = 9;
 const OBJ_BROAD_FAR: usize = 10;
 const OBJ_REFLECTOR: usize = 11;
+/// Trees at a middle distance: the same shapes with fewer triangles.
+const OBJ_PINE_MID: usize = 12;
+const OBJ_BROAD_MID: usize = 13;
+const OBJ_BIRCH_MID: usize = 14;
 /// Trees closer than this use the detailed meshes.
 const NEAR_TREES: f32 = 190.0;
 /// Objects further than this are hidden in the haze anyway.
@@ -1751,6 +1764,9 @@ impl GlState {
                 mesh::pine_far(),
                 mesh::broadleaf_far(),
                 mesh::reflector(),
+                mesh::pine_mid(),
+                mesh::broadleaf_mid(),
+                mesh::birch_mid(),
             ];
             for m in meshes.iter() {
                 let mut b = Self::buffers(
@@ -1941,6 +1957,7 @@ impl GlState {
         let reach_x = len([m[0], m[4], m[8]]);
         let reach_y = len([m[1], m[5], m[9]]);
         let mut near: [Vec<f32>; KINDS] = Default::default();
+        let mut mid: [Vec<f32>; 3] = Default::default();
         let mut far: [Vec<f32>; 2] = Default::default();
         for (kind, list) in self.scattered.iter().enumerate() {
             let tree = matches!(kind, OBJ_PINE | OBJ_BROAD | OBJ_BIRCH);
@@ -1982,13 +1999,25 @@ impl GlState {
                         grown[k] *= g;
                     }
                     far[if kind == OBJ_PINE { 0 } else { 1 }].extend_from_slice(&grown);
+                } else if tree && dist > f.quality.detailed_trees() {
+                    let k = match kind {
+                        OBJ_PINE => 0,
+                        OBJ_BROAD => 1,
+                        _ => 2,
+                    };
+                    mid[k].extend_from_slice(inst);
                 } else {
                     near[kind].extend_from_slice(inst);
                 }
             }
         }
         // Nearest first, so what they hide is not worked out at all.
-        for (kind, list) in near.iter_mut().chain(far.iter_mut()).enumerate() {
+        for (kind, list) in near
+            .iter_mut()
+            .chain(mid.iter_mut())
+            .chain(far.iter_mut())
+            .enumerate()
+        {
             let order = &mut self.order[kind % KINDS];
             order.clear();
             order.extend(list.as_chunks::<INSTANCE_STRIDE>().0.iter().map(|inst| {
@@ -2001,6 +2030,12 @@ impl GlState {
         }
         unsafe {
             for (kind, list) in near.iter().enumerate() {
+                Self::set_instances(gl, &mut self.objects[kind], list, INSTANCE_STRIDE);
+            }
+            for (kind, list) in [OBJ_PINE_MID, OBJ_BROAD_MID, OBJ_BIRCH_MID]
+                .into_iter()
+                .zip(&mid)
+            {
                 Self::set_instances(gl, &mut self.objects[kind], list, INSTANCE_STRIDE);
             }
             Self::set_instances(
@@ -2653,7 +2688,18 @@ impl GlState {
                 p.f2(gl, "u_origin", f.origin.0 as f32, f.origin.1 as f32);
                 p.f1(gl, "u_obj_time", f.time);
                 p.f1(gl, "u_wind", f.look.wind);
-                self.draw_instanced(gl, &[OBJ_PINE, OBJ_BROAD, OBJ_BIRCH, OBJ_BUSH]);
+                self.draw_instanced(
+                    gl,
+                    &[
+                        OBJ_PINE,
+                        OBJ_BROAD,
+                        OBJ_BIRCH,
+                        OBJ_BUSH,
+                        OBJ_PINE_MID,
+                        OBJ_BROAD_MID,
+                        OBJ_BIRCH_MID,
+                    ],
+                );
                 if k == 1 {
                     self.draw_instanced(gl, &[OBJ_PINE_FAR, OBJ_BROAD_FAR]);
                 }
@@ -2973,6 +3019,9 @@ impl GlState {
                     OBJ_BROAD,
                     OBJ_BIRCH,
                     OBJ_BUSH,
+                    OBJ_PINE_MID,
+                    OBJ_BROAD_MID,
+                    OBJ_BIRCH_MID,
                     OBJ_PINE_FAR,
                     OBJ_BROAD_FAR,
                 ],

@@ -487,6 +487,7 @@ impl Mesh {
         leaf: V3,
         seed: u32,
         lump: f32,
+        (rings, segs): (usize, usize),
     ) {
         let crown = Crown {
             c: centre,
@@ -519,8 +520,8 @@ impl Mesh {
             self.clump_lit(
                 c,
                 [rr * (0.9 + 0.2 * q(7)), rr * 0.78, rr * (0.9 + 0.2 * q(8))],
-                4,
-                6,
+                rings,
+                segs,
                 tinted(col),
                 seed * 97 + k as u32,
                 lump,
@@ -534,24 +535,49 @@ impl Mesh {
 /// Unit-height conifer: tiers of drooping branches, ragged at the tips and
 /// uneven from tier to tier, with paler new growth at the tips.
 pub fn pine() -> Mesh {
+    pine_with(12, 15, 7)
+}
+
+/// The same conifer with fewer tiers and branch tips, for trees at a
+/// middle distance.
+pub fn pine_mid() -> Mesh {
+    pine_with(8, 9, 5)
+}
+
+fn pine_with(tiers: usize, tips: usize, bark_sides: usize) -> Mesh {
     let mut m = Mesh::default();
-    m.tube([0.0, 0.0, 0.0], [0.0, 0.07, 0.0], 0.05, 0.034, 7, BARK);
-    m.tube([0.0, 0.07, 0.0], [0.004, 0.5, 0.0], 0.034, 0.018, 7, BARK);
+    m.tube(
+        [0.0, 0.0, 0.0],
+        [0.0, 0.07, 0.0],
+        0.05,
+        0.034,
+        bark_sides,
+        BARK,
+    );
+    m.tube(
+        [0.0, 0.07, 0.0],
+        [0.004, 0.5, 0.0],
+        0.034,
+        0.018,
+        bark_sides,
+        BARK,
+    );
     m.mat = MAT_LEAF;
     // Many overlapping tiers: the branches of each hang over the next.
-    let tiers = 12;
     for k in 0..tiers {
         let t = k as f32 / (tiers - 1) as f32;
         let q = |n: u32| rnd(61, k as u32, n);
         let y0 = 0.13 + 0.74 * t + 0.015 * (q(1) - 0.5);
         let r = (0.41 * (1.0 - t).powf(0.9) + 0.06) * (0.88 + 0.24 * q(2));
+        // Fewer tiers stand further apart, so the tree keeps its height.
+        let gap = 0.17 * 12.0 / tiers as f32;
         let y1 = if k + 1 == tiers {
             1.0
         } else {
-            y0 + 0.17 - 0.05 * t
+            y0 + gap - 0.05 * t
         };
         let col = hued(PINE_GREEN, 0.3 * (q(3) - 0.5), 0.75 + 0.5 * t);
-        m.whorl(y0, y1, r, 15, tinted(col), 40 + k as u32, q(4) * 6.3);
+        m.whorl(y0, y1, r, tips, tinted(col), 40 + k as u32, q(4) * 6.3);
     }
     m
 }
@@ -605,6 +631,31 @@ pub fn broadleaf() -> Mesh {
         LEAF_GREEN,
         11,
         0.3,
+        (4, 6),
+    );
+    m
+}
+
+/// The broadleaf with fewer, simpler clumps and plainer limbs, for trees at
+/// a middle distance: the same outline at a third of the triangles.
+pub fn broadleaf_mid() -> Mesh {
+    let mut m = Mesh::default();
+    m.tube([0.0, 0.0, 0.0], [0.0, 0.06, 0.0], 0.08, 0.048, 6, BARK);
+    m.tube([0.0, 0.06, 0.0], [0.01, 0.46, 0.0], 0.048, 0.032, 6, BARK);
+    let fork = [0.01, 0.42, 0.0];
+    for end in [[0.26, 0.62, 0.1], [-0.24, 0.6, -0.12], [0.04, 0.63, -0.27]] {
+        m.tube(fork, end, 0.025, 0.011, 4, BARK);
+    }
+    m.mat = MAT_LEAF;
+    m.canopy(
+        [0.0, 0.69, 0.0],
+        [0.42, 0.29, 0.39],
+        13,
+        (0.14, 0.2),
+        LEAF_GREEN,
+        11,
+        0.3,
+        (3, 5),
     );
     m
 }
@@ -670,6 +721,29 @@ pub fn birch() -> Mesh {
         [0.1, 0.18, 0.036],
         31,
         0.35,
+        (4, 6),
+    );
+    m
+}
+
+/// The birch with fewer, simpler clumps, for trees at a middle distance.
+pub fn birch_mid() -> Mesh {
+    let mut m = Mesh::default();
+    let pale = [0.6, 0.58, 0.52];
+    m.tube([0.0, 0.0, 0.0], [0.003, 0.8, 0.0], 0.026, 0.008, 5, pale);
+    for end in [[0.14, 0.66, 0.05], [-0.13, 0.6, -0.06]] {
+        m.tube([0.006, 0.47, 0.0], end, 0.011, 0.005, 3, pale);
+    }
+    m.mat = MAT_LEAF;
+    m.canopy(
+        [0.0, 0.69, 0.0],
+        [0.27, 0.27, 0.25],
+        9,
+        (0.1, 0.15),
+        [0.1, 0.18, 0.036],
+        31,
+        0.35,
+        (3, 5),
     );
     m
 }
@@ -1585,6 +1659,9 @@ mod tests {
             ("pine", pine(), 1000),
             ("broadleaf", broadleaf(), 2000),
             ("birch", birch(), 1500),
+            ("pine mid", pine_mid(), 250),
+            ("broadleaf mid", broadleaf_mid(), 600),
+            ("birch mid", birch_mid(), 450),
             ("pine far", pine_far(), 120),
             ("broadleaf far", broadleaf_far(), 300),
         ] {

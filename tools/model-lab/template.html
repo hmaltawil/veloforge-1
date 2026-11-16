@@ -162,7 +162,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
         <button id="wind-old" role="tab">Before</button>
         <button id="wind-new" class="on" role="tab">Now</button>
       </div>
-      <div class="row"><label for="wind">Strength</label><input id="wind" type="range" min="0" max="1.5" step="0.05" value="0.8"><output id="wind-o"></output></div>
+      <div class="row"><label for="wind">Strength</label><input id="wind" type="range" min="0" max="1.5" step="0.05" value="0.6"><output id="wind-o"></output></div>
       <label class="check"><input id="meadow" type="checkbox" checked> Meadow beside the road</label>
       <p class="note" id="wind-note"></p>
     </section>
@@ -244,7 +244,8 @@ function fixTriangles(P) {
 }
 // The app's wind, copied from its shaders when this page is built.
 const WIND_GLSL = `/*__WIND_GLSL__*/`;
-const windU = { uT: { value: 0 }, uWind: { value: 0.8 }, uNew: { value: 1 } };
+// 0.6: the app's wind in clear weather (0.9 cloudy, 1.4 rain, 0.25 fog).
+const windU = { uT: { value: 0 }, uWind: { value: 0.6 }, uNew: { value: 1 } };
 
 function material(glow = 0, sway = null) {
   const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.62, metalness: 0.0, side: THREE.DoubleSide });

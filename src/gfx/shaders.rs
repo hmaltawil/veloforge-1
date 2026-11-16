@@ -663,14 +663,14 @@ void main() {
     float gust = gust_at(wp, u_obj_time);
     float sway = u_wind * a_pos.y * a_pos.y
         * ((0.35 + 0.9 * gust) * sway_at(u_obj_time, ph) + 1.1 * gust);
-    p.x += sway * i_scale.y * 0.011;
-    p.z += sway * i_scale.y * 0.007;
+    p.x += sway * i_scale.y * 0.0066;
+    p.z += sway * i_scale.y * 0.0042;
     vec3 n = vec3(c * a_nrm.x + s * a_nrm.z, a_nrm.y, -s * a_nrm.x + c * a_nrm.z);
     n = normalize(n / vec3(i_scale.x, i_scale.y, i_scale.x));
     if (a_mat > 4.5 && u_wind > 0.0) {
         float fl = sin(u_obj_time * 3.1 + a_pos.x * 37.0 + a_pos.z * 29.0 + ph * 3.0)
                  + sin(u_obj_time * 4.7 + a_pos.y * 41.0 + ph);
-        p += n * fl * 0.011 * i_scale.x * u_wind * (0.3 + 1.2 * gust);
+        p += n * fl * 0.0055 * i_scale.x * u_wind * (0.3 + 1.2 * gust);
     }
     v_pos = p + i_pos_rot.xyz;
     v_nrm = n;
