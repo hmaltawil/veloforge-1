@@ -538,6 +538,24 @@ void main() {
 }
 "#;
 
+/// Wind for trees and grass (after `NOISE`): it comes in gusts, a field of
+/// stronger and calmer air drifting across the land, and sways at speeds
+/// that drift too, so nothing settles into a loop.
+pub const WIND: &str = r#"
+// 0 calm .. 1 in a gust, at world position `w` (metres) and time `t`.
+float gust_at(vec2 w, float t) {
+    float g = 0.65 * vnoise(w * 0.012 - vec2(t * 0.21, t * 0.07))
+            + 0.35 * vnoise(w * 0.037 - vec2(t * 0.43, -t * 0.11) + 13.0);
+    return smoothstep(0.2, 0.85, g);
+}
+// A sway about -1..1 that never repeats exactly: two swings whose speeds
+// wander slowly.
+float sway_at(float t, float ph) {
+    return 0.65 * sin(t * 1.1 + ph + 0.8 * sin(t * 0.13 + ph))
+         + 0.35 * sin(t * 1.9 + ph * 2.3 + 1.1 * sin(t * 0.07 + ph * 1.7));
+}
+"#;
+
 pub const OBJECT_VS: &str = r#"
 in vec3 a_pos;
 in vec3 a_nrm;
@@ -559,9 +577,14 @@ void main() {
     float s = sin(i_pos_rot.w);
     vec3 p = vec3(a_pos.x * i_scale.x, a_pos.y * i_scale.y, a_pos.z * i_scale.x);
     p = vec3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z);
-    // Trees sway gently, more towards the top, and their leaves flutter.
-    float ph = i_pos_rot.x * 0.13 + i_pos_rot.z * 0.07;
-    float sway = u_wind * a_pos.y * a_pos.y * (sin(u_obj_time * 1.1 + ph) + 0.4 * sin(u_obj_time * 2.3 + ph * 1.7));
+    // Trees sway gently, more towards the top, leaning further and swaying
+    // harder as gusts pass, and their leaves flutter. Each tree's timing
+    // comes from where it stands in the world, so it never jumps.
+    vec2 wp = vec2(i_pos_rot.x + u_origin.x, u_origin.y - i_pos_rot.z);
+    float ph = hash12(floor(wp * 0.5)) * 6.2832;
+    float gust = gust_at(wp, u_obj_time);
+    float sway = u_wind * a_pos.y * a_pos.y
+        * ((0.35 + 0.9 * gust) * sway_at(u_obj_time, ph) + 1.1 * gust);
     p.x += sway * i_scale.y * 0.011;
     p.z += sway * i_scale.y * 0.007;
     vec3 n = vec3(c * a_nrm.x + s * a_nrm.z, a_nrm.y, -s * a_nrm.x + c * a_nrm.z);
@@ -569,7 +592,7 @@ void main() {
     if (a_mat > 4.5 && u_wind > 0.0) {
         float fl = sin(u_obj_time * 3.1 + a_pos.x * 37.0 + a_pos.z * 29.0 + ph * 3.0)
                  + sin(u_obj_time * 4.7 + a_pos.y * 41.0 + ph);
-        p += n * fl * 0.011 * i_scale.x * u_wind;
+        p += n * fl * 0.011 * i_scale.x * u_wind * (0.3 + 1.2 * gust);
     }
     v_pos = p + i_pos_rot.xyz;
     v_nrm = n;
@@ -767,7 +790,13 @@ void main() {
     vec3 p = a_pos * vec3(0.5, 0.42, 0.5) * vec3(1.0, size, 1.0);
     p = vec3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z);
     // Wind runs across the meadow in waves.
-    float wave = sin(u_time * 1.7 + w.x * 0.21 + w.y * 0.13) + 0.6 * sin(u_time * 2.9 + w.x * 0.47 - w.y * 0.31 + rnd * 6.0);
+    // Gusts sweep across the meadow: the grass leans with them and waves
+    // harder, then settles.
+    float gust = gust_at(w, u_time);
+    float wave = (0.35 + 0.9 * gust)
+        * (sin(u_time * 1.7 + w.x * 0.21 + w.y * 0.13 + 0.8 * sin(u_time * 0.11 + w.x * 0.05))
+           + 0.6 * sin(u_time * 2.9 + w.x * 0.47 - w.y * 0.31 + rnd * 6.0))
+        + 1.2 * gust;
     float bend = a_pos.y * a_pos.y * (0.07 + 0.09 * u_gust) * wave;
     p.x += bend;
     p.z += bend * 0.6;

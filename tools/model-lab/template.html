@@ -117,9 +117,20 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
           <button data-m="7">Broadleaf (far)</button>
         </div>
         <label class="check"><input id="scale-rider" type="checkbox" checked> Rider beside it, for scale</label>
-        <p class="note">Models come from the same code as the app. Far versions are the simpler ones drawn in the distance. Wind sway and colour variation are added by the app's shaders and are not shown here.</p>
+        <p class="note">Models come from the same code as the app. Far versions are the simpler ones drawn in the distance. Colour variation between trees is added by the app and not shown here.</p>
       </section>
     </div>
+
+    <section>
+      <h2>Wind (trees and grass)</h2>
+      <div class="tabs" role="tablist" style="margin-bottom:6px">
+        <button id="wind-old" role="tab">Before</button>
+        <button id="wind-new" class="on" role="tab">Now</button>
+      </div>
+      <div class="row"><label for="wind">Strength</label><input id="wind" type="range" min="0" max="1.5" step="0.05" value="0.8"><output id="wind-o"></output></div>
+      <label class="check"><input id="meadow" type="checkbox" checked> Meadow beside the road</label>
+      <p class="note" id="wind-note"></p>
+    </section>
 
     <section>
       <h2>About</h2>
@@ -194,18 +205,122 @@ function fixTriangles(P) {
     }
   }
 }
-function material(glow = 0) {
+// The app's wind, copied from its shaders when this page is built.
+const WIND_GLSL = `/*__WIND_GLSL__*/`;
+const windU = { uT: { value: 0 }, uWind: { value: 0.8 }, uNew: { value: 1 } };
+
+function material(glow = 0, sway = null) {
   const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.62, metalness: 0.0, side: THREE.DoubleSide });
-  // Leaves let light through: the app lights them from both sides. A share
-  // of their own colour stands in for that here.
-  if (glow > 0) {
-    m.onBeforeCompile = (sh) => {
+  m.onBeforeCompile = (sh) => {
+    // Leaves let light through: the app lights them from both sides. A
+    // share of their own colour stands in for that here.
+    if (glow > 0) {
       sh.fragmentShader = sh.fragmentShader.replace(
         "vec3 totalEmissiveRadiance = emissive;",
         `vec3 totalEmissiveRadiance = emissive + vColor * ${glow.toFixed(2)};`);
-    };
-  }
+    }
+    if (sway) {
+      Object.assign(sh.uniforms, windU, { uAt: { value: sway } });
+      sh.vertexShader = sh.vertexShader
+        .replace("#include <common>", `#include <common>
+attribute float aMat;
+uniform float uT, uWind, uNew;
+uniform vec2 uAt;
+${WIND_GLSL}`)
+        .replace("#include <begin_vertex>", `#include <begin_vertex>
+{
+    // As the app's tree shader (OBJECT_VS), in the model's own units.
+    float sway, ph, gust;
+    vec3 ap = position;
+    if (uNew > 0.5) {
+        ph = hash12(floor(uAt * 0.5)) * 6.2832;
+        gust = gust_at(uAt, uT);
+        sway = uWind * ap.y * ap.y * ((0.35 + 0.9 * gust) * sway_at(uT, ph) + 1.1 * gust);
+    } else {
+        // Before: two fixed swings, timed from where the tree stood
+        // relative to the loaded patch of ground.
+        ph = uAt.x * 0.13 - uAt.y * 0.07;
+        gust = 0.5;
+        sway = uWind * ap.y * ap.y * (sin(uT * 1.1 + ph) + 0.4 * sin(uT * 2.3 + ph * 1.7));
+    }
+    transformed.x += sway * 0.011;
+    transformed.z += sway * 0.007;
+    if (aMat > 4.5 && uWind > 0.0) {
+        float fl = sin(uT * 3.1 + ap.x * 37.0 + ap.z * 29.0 + ph * 3.0) + sin(uT * 4.7 + ap.y * 41.0 + ph);
+        float k = uNew > 0.5 ? 0.3 + 1.2 * gust : 1.0;
+        transformed += normalize(normal) * fl * 0.011 * uWind * k;
+    }
+}`);
+    }
+  };
   return m;
+}
+
+// ---- meadow: the app's grass tufts, waving as in its grass shader ------
+let meadow = null;
+function buildMeadow() {
+  const variants = [0, 1, 2, 3].map((k) => { const n = wasm.grass(k); const a = new Float32Array(n); a.set(f32(wasm.model_ptr(), n)); return a; });
+  const share = [0.46, 0.3, 0.14, 0.1];
+  const pos = [], col = [], base = [], hh = [], rr = [];
+  let seed = 7;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const tufts = 1400;
+  for (let i = 0; i < tufts; i++) {
+    let r = rnd(), v = 0;
+    while (v < 3 && r > share[v]) { r -= share[v]; v++; }
+    const t = variants[v];
+    const bx = -9 + 18 * rnd(), bz = -3.2 - 9 * rnd();
+    const rot = rnd() * Math.PI * 2, rn = rnd();
+    const size = 0.55 + 0.9 * rn, c = Math.cos(rot), s = Math.sin(rot);
+    const blade = [0.30, 0.52, 0.16].map((x) => x * (0.82 + 0.36 * rn));
+    for (let j = 0; j < t.length; j += 6) {
+      let x = t[j] * 0.5, y = t[j + 1] * 0.42 * size, z = t[j + 2] * 0.5;
+      pos.push(bx + c * x + s * z, y, bz - s * x + c * z);
+      base.push(bx, 0, bz); hh.push(t[j + 1]); rr.push(rn);
+      const cr = t[j + 3];
+      if (cr < -1.5) col.push(...(rn < 0.3 ? [0.6, 0.59, 0.55] : rn < 0.58 ? [0.62, 0.43, 0.03] : rn < 0.82 ? [0.33, 0.16, 0.5] : [0.55, 0.05, 0.035]));
+      else if (cr < 0) { const k = 0.55 + 0.57 * t[j + 1]; col.push(blade[0] * -cr * k, blade[1] * -cr * k, blade[2] * -cr * k); }
+      else col.push(t[j + 3], t[j + 4], t[j + 5]);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+  g.setAttribute("aBase", new THREE.Float32BufferAttribute(base, 3));
+  g.setAttribute("aH", new THREE.Float32BufferAttribute(hh, 1));
+  g.setAttribute("aRnd", new THREE.Float32BufferAttribute(rr, 1));
+  g.computeVertexNormals();
+  const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, side: THREE.DoubleSide });
+  m.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, windU);
+    sh.vertexShader = sh.vertexShader
+      .replace("#include <common>", `#include <common>
+attribute vec3 aBase;
+attribute float aH, aRnd;
+uniform float uT, uWind, uNew;
+${WIND_GLSL}`)
+      .replace("#include <begin_vertex>", `#include <begin_vertex>
+{
+    // As the app's grass shader (GRASS_VS).
+    vec2 w = vec2(aBase.x, -aBase.z);
+    float wave;
+    if (uNew > 0.5) {
+        float gust = gust_at(w, uT);
+        wave = (0.35 + 0.9 * gust)
+            * (sin(uT * 1.7 + w.x * 0.21 + w.y * 0.13 + 0.8 * sin(uT * 0.11 + w.x * 0.05))
+               + 0.6 * sin(uT * 2.9 + w.x * 0.47 - w.y * 0.31 + aRnd * 6.0))
+            + 1.2 * gust;
+    } else {
+        wave = sin(uT * 1.7 + w.x * 0.21 + w.y * 0.13) + 0.6 * sin(uT * 2.9 + w.x * 0.47 - w.y * 0.31 + aRnd * 6.0);
+    }
+    float bend = aH * aH * (0.07 + 0.09 * uWind) * wave;
+    transformed.x += bend;
+    transformed.z += bend * 0.6;
+}`);
+  };
+  meadow = new THREE.Mesh(g, m);
+  meadow.receiveShadow = true;
+  scene.add(meadow);
 }
 // The models' vertices are 10 floats: position, normal, colour, material.
 function interleaved(array) {
@@ -248,6 +363,7 @@ async function boot() {
   bodyMesh.castShadow = true; bodyMesh.receiveShadow = true;
   rig.add(bodyMesh);
   makeBike();
+  buildMeadow();
   $("status").hidden = true;
   bodyStats = `Body: ${nVert.toLocaleString()} vertices, ${(nIdx / 3).toLocaleString()} triangles, built in ${Math.round(performance.now() - t0)} ms.`;
   $("stats").textContent = bodyStats;
@@ -377,7 +493,9 @@ function showModel(k) {
   g.computeBoundingBox();
   const h = g.boundingBox.max.y - g.boundingBox.min.y;
   const s = HEIGHTS[k] && h < 3 ? HEIGHTS[k] / h : 1;
-  modelMesh = new THREE.Mesh(g, material(0.45));
+  g.setAttribute("aMat", new THREE.InterleavedBufferAttribute(g.attributes.position.data, 1, 9));
+  // Where the tree stands in the world (x, north), as the app times its sway.
+  modelMesh = new THREE.Mesh(g, material(0.45, new THREE.Vector2(MODEL_AT.x, -MODEL_AT.z)));
   modelMesh.scale.setScalar(s);
   modelMesh.position.copy(MODEL_AT);
   modelHeight = Math.max(2.5, h * s);
@@ -419,6 +537,7 @@ let last = performance.now();
 function loop() {
   const now = performance.now(), dt = Math.min(0.05, (now - last) / 1000); last = now;
   time += dt;
+  windU.uT.value = time;
   if (P.cad > 0) { P.crank = (P.crank + P.cad / 60 * 360 * dt) % 360; $("crank").value = P.crank; $("crank-o").textContent = fmt.crank(P.crank); }
   resize();
   updateMeshes();
@@ -426,5 +545,23 @@ function loop() {
   renderer.render(scene, camera);
   requestAnimationFrame(loop);
 }
+// ---- wind controls -----------------------------------------------------
+const WIND_NOTES = {
+  1: "Gusts drift across the land: trees and grass lean further and sway harder as one passes, then settle. Each tree's timing comes from where it stands, so nothing loops or jumps.",
+  0: "Before: every tree and tuft swings on two fixed rhythms, so the motion repeats every few seconds, and each tree's timing changed with the loaded patch of ground, so trees jumped as you rode.",
+};
+function setWind(v) {
+  windU.uNew.value = v;
+  $("wind-old").classList.toggle("on", v === 0);
+  $("wind-new").classList.toggle("on", v === 1);
+  $("wind-note").textContent = WIND_NOTES[v];
+}
+$("wind-old").addEventListener("click", () => setWind(0));
+$("wind-new").addEventListener("click", () => setWind(1));
+$("wind").addEventListener("input", (e) => { windU.uWind.value = +e.target.value; $("wind-o").textContent = Math.round(+e.target.value * 100) + "%"; });
+$("wind-o").textContent = "80%";
+$("meadow").addEventListener("change", (e) => { if (meadow) meadow.visible = e.target.checked; });
+setWind(1);
+
 boot().catch((e) => { $("status").textContent = "Could not start: " + e.message; });
 </script>

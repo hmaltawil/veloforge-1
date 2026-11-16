@@ -201,6 +201,23 @@ pub extern "C" fn model(kind: u32) -> u32 {
     })
 }
 
+/// Build grass tuft variant `kind` (0..4, as the app's meadow uses them):
+/// position and colour, 6 floats a vertex. Returns the float count; the
+/// floats are at `model_ptr`.
+#[no_mangle]
+pub extern "C" fn grass(kind: u32) -> u32 {
+    LAB.with(|l| {
+        let mut l = l.borrow_mut();
+        l.model = match kind {
+            0 => mesh::grass_tuft(6, 0, false, 1),
+            1 => mesh::grass_tuft(7, 0, false, 2),
+            2 => mesh::grass_tuft(5, 0, true, 3),
+            _ => mesh::grass_tuft(4, 2, false, 4),
+        };
+        l.model.len() as u32
+    })
+}
+
 #[no_mangle]
 pub extern "C" fn model_ptr() -> *const f32 {
     LAB.with(|l| l.borrow().model.as_ptr())

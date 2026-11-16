@@ -1558,7 +1558,7 @@ impl GlState {
             self.compile(
                 gl,
                 "object",
-                &[OBJECT_VS],
+                &[NOISE, WIND, OBJECT_VS],
                 &[NOISE, LIGHT, OBJECT_FS],
                 &object_attribs,
             )?;
@@ -1572,7 +1572,7 @@ impl GlState {
             self.compile(
                 gl,
                 "grass",
-                &[NOISE, GRASS_VS],
+                &[NOISE, WIND, GRASS_VS],
                 &[NOISE, LIGHT, GRASS_FS],
                 &["a_pos", "a_col", "i_seed"],
             )?;
@@ -1605,7 +1605,13 @@ impl GlState {
                 &[DEPTH_FS],
                 &terrain_attribs,
             )?;
-            self.compile(gl, "sh_object", &[OBJECT_VS], &[DEPTH_FS], &object_attribs)?;
+            self.compile(
+                gl,
+                "sh_object",
+                &[NOISE, WIND, OBJECT_VS],
+                &[DEPTH_FS],
+                &object_attribs,
+            )?;
             let skinned_attribs = ["a_pos", "a_nrm", "a_col", "a_mat", "a_bones", "a_weights"];
             self.compile(
                 gl,
@@ -2507,6 +2513,7 @@ impl GlState {
                 let p = self.programs.get_mut("sh_object").unwrap();
                 gl.use_program(Some(p.id));
                 p.m4(gl, "u_vp", &f.light_vp[k]);
+                p.f2(gl, "u_origin", f.origin.0 as f32, f.origin.1 as f32);
                 p.f1(gl, "u_obj_time", f.time);
                 p.f1(gl, "u_wind", f.look.wind);
                 self.draw_instanced(gl, &[OBJ_PINE, OBJ_BROAD, OBJ_BIRCH, OBJ_BUSH]);
