@@ -229,6 +229,11 @@ pub struct App {
     demo: bool,
     /// `--bench`: measuring how fast the 3D view draws.
     bench: Option<Bench>,
+    /// When this frame's `logic` started and the last `ui` ended.
+    frame_marks: (Option<Instant>, Option<Instant>),
+    /// `VELOFORGE_STILL=metres`, for comparing screenshots: the 3D view
+    /// holds the rider at that distance with its clock stopped.
+    still: Option<f64>,
     graphics: String,
     egui_ctx: egui::Context,
     remote: Option<crate::remote::Remote>,
@@ -351,6 +356,10 @@ impl App {
             curve_failed: Default::default(),
             demo: false,
             bench: None,
+            frame_marks: (None, None),
+            still: std::env::var("VELOFORGE_STILL")
+                .ok()
+                .and_then(|v| v.parse().ok()),
             graphics: String::new(),
             tired_dismissed: None,
             store,
@@ -1201,6 +1210,7 @@ impl App {
             b.last = now;
             return;
         }
+        b.measuring = true;
         b.frames
             .push(now.duration_since(b.last).as_secs_f32() * 1000.0);
         b.last = now;
@@ -2518,6 +2528,19 @@ impl eframe::App for App {
     /// Ride timing, trainer control and saving live here rather than in `ui`
     /// because eframe keeps calling `logic` while the window is minimised.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let now = Instant::now();
+        if let (Some(b), (Some(start), Some(end))) = (&mut self.bench, self.frame_marks) {
+            if end > start {
+                let (prep, paint) = self.gpu.cpu_ms();
+                b.cpu_frame(
+                    end.duration_since(start).as_secs_f32() * 1000.0,
+                    now.duration_since(end).as_secs_f32() * 1000.0,
+                    prep,
+                    paint,
+                );
+            }
+        }
+        self.frame_marks.0 = Some(now);
         self.pump_events();
         self.tick_ride();
         self.pump_icu();
@@ -2548,7 +2571,25 @@ impl eframe::App for App {
         }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        self.ui_frame(ui, frame);
+        self.frame_marks.1 = Some(Instant::now());
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Never lose a ride by closing the window.
+        if self.ride_active() && self.ride.samples.len() >= 10 {
+            self.finish_ride();
+        }
+        self.dev.send(Cmd::Control(devices::Control::Grade(0.0)));
+        if self.dirty {
+            let _ = self.store.save(&self.paths.state_file());
+        }
+    }
+}
+
+impl App {
+    fn ui_frame(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
         // Drag & drop import.
@@ -2645,17 +2686,6 @@ impl eframe::App for App {
             ctx.request_repaint_after(self.frame_wait());
         } else {
             ctx.request_repaint_after(std::time::Duration::from_millis(500));
-        }
-    }
-
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        // Never lose a ride by closing the window.
-        if self.ride_active() && self.ride.samples.len() >= 10 {
-            self.finish_ride();
-        }
-        self.dev.send(Cmd::Control(devices::Control::Grade(0.0)));
-        if self.dirty {
-            let _ = self.store.save(&self.paths.state_file());
         }
     }
 }
@@ -3225,8 +3255,17 @@ impl App {
             self.log_line(format!("3D graphics: {e}"));
             self.notify("Using the simple 3D view (the detailed one is not supported here — see the log in Devices)");
         }
+        let mut riders = self.scene_riders();
+        let mut dt = dt;
+        if let Some(d) = self.still {
+            dt = 0.0;
+            for r in &mut riders {
+                r.d = d;
+                r.crank = 0.0;
+            }
+        }
         let scene = Scene {
-            riders: self.scene_riders(),
+            riders,
             route: &self.routes[self.route_idx],
             sky: Sky {
                 time: self.store.settings.time_of_day,
@@ -6212,6 +6251,11 @@ struct Bench {
     frames: Vec<f32>,
     /// GPU milliseconds per frame for each stage (see `gfx::STAGES`).
     gpu: Vec<[f32; crate::gfx::STAGES]>,
+    /// The computer's milliseconds per frame: the app's work (of which
+    /// preparing the 3D frame), issuing the 3D drawing commands, and the
+    /// rest of drawing and presenting the screen.
+    cpu: Vec<[f32; 4]>,
+    measuring: bool,
 }
 
 impl Bench {
@@ -6226,6 +6270,15 @@ impl Bench {
             secs,
             frames: Vec::new(),
             gpu: Vec::new(),
+            cpu: Vec::new(),
+            measuring: false,
+        }
+    }
+
+    fn cpu_frame(&mut self, app: f32, present: f32, prep: f32, paint: f32) {
+        if self.measuring {
+            self.cpu
+                .push([app, prep, paint, (present - paint).max(0.0)]);
         }
     }
 
@@ -6278,6 +6331,18 @@ impl Bench {
                 st[4],
                 all * 30.0 / 10.0,
                 all * 60.0 / 10.0,
+            );
+        }
+        if !self.cpu.is_empty() {
+            let k = self.cpu.len() as f32;
+            let avg = |i: usize| self.cpu.iter().map(|c| c[i]).sum::<f32>() / k;
+            out += &format!(
+                "Computer time per frame: the app {:.1} ms (of which preparing the 3D view {:.1}), \
+                 3D drawing commands {:.1}, the rest of the screen and showing it {:.1}\n",
+                avg(0),
+                avg(1),
+                avg(2),
+                avg(3),
             );
         }
         out

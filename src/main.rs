@@ -29,9 +29,14 @@ mod workout;
 mod world;
 
 /// Window configurations to try: (MSAA samples, depth bits). Some GL drivers
-/// lack multisampling or depth buffers; winit cannot create a second event
-/// loop in-process, so each fallback relaunches the program.
-const ATTEMPTS: [(u16, u8); 3] = [(4, 24), (0, 24), (0, 0)];
+/// lack depth buffers; winit cannot create a second event loop in-process,
+/// so each fallback relaunches the program. The window itself is not
+/// multisampled: the 3D view smooths its edges in its own buffers, egui
+/// smooths its shapes itself, and a multisampled window would cost the
+/// graphics card a large buffer to fill and resolve every frame. (Only the
+/// rare fallback that draws the 3D view straight into the window has
+/// jagged edges without it.)
+const ATTEMPTS: [(u16, u8); 2] = [(0, 24), (0, 0)];
 
 fn run(attempt: usize) -> eframe::Result {
     let (msaa, depth) = ATTEMPTS[attempt];
@@ -63,14 +68,11 @@ fn run(attempt: usize) -> eframe::Result {
 }
 
 fn main() -> eframe::Result {
-    let mut attempt: usize = std::env::var("VELOFORGE_GL")
+    let attempt: usize = std::env::var("VELOFORGE_GL")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0)
         .min(ATTEMPTS.len() - 1);
-    if attempt == 0 && std::env::var("VELOFORGE_MSAA").is_ok_and(|v| v == "0") {
-        attempt = 1;
-    }
     match run(attempt) {
         Err(e) if attempt + 1 < ATTEMPTS.len() => {
             eprintln!("veloforge: {e}; retrying with simpler graphics settings");

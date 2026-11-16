@@ -56,6 +56,41 @@ vec3 grass_albedo(float n1) {
 }
 "#;
 
+/// The ground's large-scale noise, worked out once per terrain window
+/// (`GROUND_MAP_FS`) instead of for every pixel, every frame (after `NOISE`).
+pub const GROUND_MAP: &str = r#"
+uniform sampler2D u_ground;
+uniform float u_ground_half;   // half the window's size, or 0 without a map
+// At a render-space point inside the window: the meadow noise `n1`, the
+// coarse octaves of the ground's detail noise (as fbm3) and the patches
+// of wild flowers.
+bool ground_map(vec3 p, out vec3 g) {
+    if (u_ground_half <= 0.0) return false;
+    vec2 uv = (p.xz + u_ground_half) / (2.0 * u_ground_half);
+    if (uv != clamp(uv, 0.0, 1.0)) return false;
+    g = texture(u_ground, uv).rgb;
+    return true;
+}
+// The finest two octaves of `fbm(q)`, which `ground_map` leaves out:
+// fbm(q) = (fbm3(q) * 0.875 + fbm_fine(q)) / 0.96875.
+float fbm_fine(vec2 q) {
+    for (int i = 0; i < 3; i++) q = q * 2.03 + vec2(17.1, 9.2);
+    return 0.0625 * vnoise(q) + 0.03125 * vnoise(q * 2.03 + vec2(17.1, 9.2));
+}
+"#;
+
+/// Fills the ground map for the terrain window (see `GROUND_MAP`).
+pub const GROUND_MAP_FS: &str = r#"
+uniform float u_ground_half;
+in vec2 v_uv;
+out vec4 frag;
+void main() {
+    vec2 local = (v_uv * 2.0 - 1.0) * u_ground_half;
+    vec2 w = world_xz(vec3(local.x, 0.0, local.y));
+    frag = vec4(fbm(w * 0.012), fbm3(w * 0.11), fbm3(w * 0.021 + 9.0), 1.0);
+}
+"#;
+
 /// Fragment helpers: sky, clouds, shadows, fog, lighting and output.
 pub const LIGHT: &str = r#"
 uniform vec3 u_cam;
@@ -359,10 +394,15 @@ void main() {
     // Fine detail fades out with distance so it does not shimmer.
     float detail = 1.0 - smoothstep(40.0, 260.0, dcam);
     float near = 1.0 - smoothstep(10.0, 90.0, dcam);
-    float n1 = fbm(w * 0.012);
+    // The large-scale noise comes from the ground map where there is one.
+    vec3 gm;
+    bool mapped = ground_map(v_pos, gm);
+    float n1 = mapped ? gm.r : fbm(w * 0.012);
+    float coarse = mapped ? gm.g : fbm3(w * 0.11);
     // Far away, the finest noise is smaller than a pixel: skip it.
-    float n2 = detail > 0.0 ? mix(0.5, fbm(w * 0.11), 0.4 + 0.6 * detail)
-                            : mix(0.5, fbm3(w * 0.11), 0.4);
+    float n2 = detail > 0.0
+        ? mix(0.5, (coarse * 0.875 + fbm_fine(w * 0.11)) / 0.96875, 0.4 + 0.6 * detail)
+        : mix(0.5, coarse, 0.4);
     float n3 = detail > 0.0 ? mix(0.5, vnoise(w * 1.7), detail) : 0.5;
     float n4 = near > 0.0 ? mix(0.5, vnoise(w * 7.0), near) : 0.5;
     vec3 grass = grass_albedo(n1) * (0.76 + 0.36 * n2 + 0.1 * n3) * (0.88 + 0.24 * n4);
@@ -372,7 +412,7 @@ void main() {
         float fh = hash12(fc);
         if (fh > 0.93) {
             vec2 ff = fract(w * 2.4) - 0.5 - (vec2(hash12(fc + 1.7), hash12(fc + 5.1)) - 0.5) * 0.6;
-            float patchy = smoothstep(0.45, 0.7, fbm3(w * 0.021 + 9.0));
+            float patchy = smoothstep(0.45, 0.7, mapped ? gm.b : fbm3(w * 0.021 + 9.0));
             vec3 fcol = fh > 0.975 ? vec3(0.7, 0.68, 0.62) : (fh > 0.952 ? vec3(0.7, 0.5, 0.04) : vec3(0.36, 0.16, 0.5));
             grass = mix(grass, fcol, smoothstep(0.17, 0.07, length(ff)) * near * patchy);
         }
@@ -406,12 +446,14 @@ void main() {
     col = mix(col, floor_col, smoothstep(0.15, 0.55, v_forest));
     // Rock on steep slopes, in tilted layers.
     float rock = smoothstep(0.8, 0.62, n.y);
-    float strata = vnoise(vec2(dot(w, vec2(0.02, 0.013)), v_pos.y * 0.45 + n2 * 2.0));
-    vec3 rockc = mix(vec3(0.2, 0.185, 0.165), vec3(0.1, 0.098, 0.097), strata) * (0.75 + 0.5 * n2);
     if (u_scenery == 2) {
         rock = max(rock, smoothstep(u_snow - 220.0, u_snow - 90.0, v_pos.y + n1 * 70.0) * 0.85);
     }
-    col = mix(col, rockc, rock);
+    if (rock > 0.0) {
+        float strata = vnoise(vec2(dot(w, vec2(0.02, 0.013)), v_pos.y * 0.45 + n2 * 2.0));
+        vec3 rockc = mix(vec3(0.2, 0.185, 0.165), vec3(0.1, 0.098, 0.097), strata) * (0.75 + 0.5 * n2);
+        col = mix(col, rockc, rock);
+    }
     float gloss = 0.0;
     if (u_scenery == 2) {
         float snow = smoothstep(u_snow - 15.0, u_snow + 25.0, v_pos.y + n1 * 90.0) * smoothstep(0.5, 0.75, n.y);
@@ -480,24 +522,31 @@ void main() {
     // Polished wheel tracks, darker repair patches and tar-filled cracks.
     asphalt *= 1.0 - 0.16 * exp(-pow((a - 1.6) / 0.4, 2.0));
     asphalt = mix(asphalt, asphalt * 0.62, smoothstep(0.66, 0.7, fbm(vec2(u * 0.25, v * 0.04) + 3.0)));
-    float crack = abs(fbm3(vec2(u * 0.9, v * 0.22) + 21.0) - 0.5);
-    asphalt *= 1.0 - 0.45 * (1.0 - smoothstep(0.0, 0.0045, crack)) * detail * smoothstep(0.52, 0.7, fbm3(vec2(u * 0.1, v * 0.02)));
+    // Cracks only show close by, and only in stretches of worn road.
+    if (detail > 0.0) {
+        float worn = smoothstep(0.52, 0.7, fbm3(vec2(u * 0.1, v * 0.02)));
+        if (worn > 0.0) {
+            float crack = abs(fbm3(vec2(u * 0.9, v * 0.22) + 21.0) - 0.5);
+            asphalt *= 1.0 - 0.45 * (1.0 - smoothstep(0.0, 0.0045, crack)) * detail * worn;
+        }
+    }
     vec3 col = asphalt;
     float aa = fwidth(u) * 1.5;
     float edge = smoothstep(2.86 - aa, 2.86, a) * (1.0 - smoothstep(3.0, 3.0 + aa, a));
     float dash = step(fract(v / 12.0), 0.42);
     float centre = (1.0 - smoothstep(0.065, 0.065 + aa, a)) * dash;
     // Paint wears thin where tyres run over it.
-    float wear = 0.75 + 0.25 * smoothstep(0.3, 0.6, fbm3(vec2(u * 3.0, v * 0.5) + 2.0));
+    float painted = max(edge, centre);
+    if (painted > 0.0) painted *= 0.75 + 0.25 * smoothstep(0.3, 0.6, fbm3(vec2(u * 3.0, v * 0.5) + 2.0));
     vec3 paint = vec3(0.66, 0.66, 0.63) * (0.85 + 0.2 * fine);
-    float painted = max(edge, centre) * wear;
     col = mix(col, paint, painted);
     vec3 gravel = vec3(0.11, 0.098, 0.078) * (0.6 + 0.5 * fine + 0.5 * (chips - 0.5));
     float shoulder = smoothstep(3.2, 3.35, a);
     col = mix(col, gravel, shoulder);
     // The verge takes the colour of the meadow beside it.
     vec2 w = world_xz(v_pos);
-    float n1 = fbm(w * 0.012);
+    vec3 gm;
+    float n1 = ground_map(v_pos, gm) ? gm.r : fbm(w * 0.012);
     vec3 verge = grass_albedo(n1) * (0.72 + 0.4 * g + 0.2 * fine);
     // High up the verge lies under snow, ploughed back from the tarmac.
     float snow = smoothstep(u_snow - 15.0, u_snow + 25.0, v_pos.y + n1 * 90.0);
@@ -506,7 +555,7 @@ void main() {
     col = mix(col, verge, grassy);
     float tarmac = 1.0 - smoothstep(3.0, 3.3, a);
     // Rain darkens the surface and leaves puddles that mirror the sky.
-    float puddle = u_wet * tarmac * smoothstep(0.58, 0.7, fbm(vec2(u * 0.7, v * 0.09) + 11.0));
+    float puddle = u_wet > 0.0 ? u_wet * tarmac * smoothstep(0.58, 0.7, fbm(vec2(u * 0.7, v * 0.09) + 11.0)) : 0.0;
     col *= 1.0 - 0.42 * u_wet * (1.0 - smoothstep(3.6, 4.2, a));
 
     vec3 up = vec3(0.0, 1.0, 0.0);

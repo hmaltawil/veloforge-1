@@ -439,6 +439,8 @@ pub struct GpuWorld {
     stances: Vec<Stance>,
     /// The body's bones at rest, inverted.
     rest_inverse: [M4; body::BONES],
+    /// Milliseconds the last frame took to prepare (for `--bench`).
+    prep_ms: f32,
 }
 
 impl Default for GpuWorld {
@@ -460,6 +462,7 @@ impl Default for GpuWorld {
                 start_sculpting();
                 body::rest_inverse()
             },
+            prep_ms: 0.0,
         }
     }
 }
@@ -577,7 +580,28 @@ impl GpuWorld {
         self.gl.lock().is_ok_and(|g| !g.direct && g.error.is_none())
     }
 
+    /// Milliseconds the computer spent on the last frame: preparing it, and
+    /// issuing its drawing commands (for `--bench`).
+    pub fn cpu_ms(&self) -> (f32, f32) {
+        let paint = self.gl.lock().map(|g| g.paint_ms).unwrap_or(0.0);
+        (self.prep_ms, paint)
+    }
+
     pub fn draw(
+        &mut self,
+        painter: &egui::Painter,
+        rect: Rect,
+        scene: &Scene,
+        quality: Quality,
+        render_scale: f32,
+        glass: &[Glass],
+    ) {
+        let t0 = std::time::Instant::now();
+        self.prepare(painter, rect, scene, quality, render_scale, glass);
+        self.prep_ms = t0.elapsed().as_secs_f32() * 1000.0;
+    }
+
+    fn prepare(
         &mut self,
         painter: &egui::Painter,
         rect: Rect,
@@ -1329,6 +1353,11 @@ struct GlState {
     /// Cloud shadows for the deck above the view, made once per frame.
     cloud_map: Option<Target>,
     cloud_map_failed: bool,
+    /// The ground's large-scale noise for the terrain window (`GROUND_MAP`),
+    /// and the window origin it was worked out for.
+    ground_map: Option<Target>,
+    ground_map_failed: bool,
+    ground_for: Option<(f64, f64)>,
     /// Its centre and half size in cloud-deck coordinates (0: no map).
     cloud_box: V3,
     /// Scratch space for sorting nearby objects by distance.
@@ -1341,6 +1370,8 @@ struct GlState {
     timers_failed: bool,
     /// Milliseconds the GPU last spent on shadows, the scene and finishing.
     gpu_ms: Option<[f32; STAGES]>,
+    /// Milliseconds the last frame's drawing commands took to issue.
+    paint_ms: f32,
 }
 
 /// Stages of a frame timed on the GPU: shadows, trees and objects, ground
@@ -1450,6 +1481,10 @@ const UNIT_HEIGHT: u32 = 4;
 const UNIT_SM0: u32 = 5;
 const UNIT_SM1: u32 = 6;
 const UNIT_CLOUD: u32 = 7;
+const UNIT_GROUND: u32 = 8;
+/// The ground map's texels per side: about a metre each across the 2 km
+/// terrain window, finer than the smallest noise it holds (2.2 m).
+const GROUND_MAP_SIZE: i32 = 2048;
 /// The cloud shadow map: texels per side, and the half size of the patch of
 /// cloud deck it covers, in metres. The finest cloud detail is about 65 m
 /// across, several texels.
@@ -1553,18 +1588,19 @@ impl GlState {
                 &[NOISE, LIGHT, CLOUD_MAP_FS],
                 &[],
             )?;
+            self.compile(gl, "ground_map", &[SCREEN_VS], &[NOISE, GROUND_MAP_FS], &[])?;
             self.compile(
                 gl,
                 "terrain",
                 &[TERRAIN_VS],
-                &[NOISE, LIGHT, TERRAIN_FS],
+                &[NOISE, LIGHT, GROUND_MAP, TERRAIN_FS],
                 &terrain_attribs,
             )?;
             self.compile(
                 gl,
                 "road",
                 &[ROAD_VS],
-                &[NOISE, LIGHT, ROAD_FS],
+                &[NOISE, LIGHT, GROUND_MAP, ROAD_FS],
                 &["a_pos", "a_uv"],
             )?;
             self.compile(
@@ -2354,6 +2390,13 @@ impl GlState {
             p.i1(gl, "u_sm1", UNIT_SM1 as i32);
             p.i1(gl, "u_cloud_map", UNIT_CLOUD as i32);
             p.v3(gl, "u_cloud_box", self.cloud_box);
+            p.i1(gl, "u_ground", UNIT_GROUND as i32);
+            let ground = self.ground_map.is_some() && self.ground_for == Some(f.origin);
+            p.f1(
+                gl,
+                "u_ground_half",
+                if ground { self.height_map[0] } else { 0.0 },
+            );
             let strength = if f.quality == Quality::Low {
                 0.0
             } else {
@@ -2579,6 +2622,41 @@ impl GlState {
         }
     }
 
+    /// Work out the ground's large-scale noise once for each terrain window
+    /// (`GROUND_MAP_FS`), instead of in every ground pixel, every frame.
+    /// Without the map, each pixel works it out itself.
+    unsafe fn ground_pass(&mut self, gl: &glow::Context, f: &FrameData) {
+        unsafe {
+            if self.height_tex.is_none() || self.ground_for == Some(f.origin) {
+                return;
+            }
+            if self.ground_map.is_none() && !self.ground_map_failed {
+                Self::drain_errors(gl);
+                // Half floats where they can be drawn to, bytes otherwise.
+                let made = Self::target(gl, GROUND_MAP_SIZE, GROUND_MAP_SIZE, true)
+                    .or_else(|_| Self::target(gl, GROUND_MAP_SIZE, GROUND_MAP_SIZE, false));
+                match made {
+                    Ok(t) => self.ground_map = Some(t),
+                    Err(_) => self.ground_map_failed = true,
+                }
+                Self::drain_errors(gl);
+            }
+            let Some(fbo) = self.ground_map.as_ref().map(|m| m.fbo) else {
+                return;
+            };
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+            gl.viewport(0, 0, GROUND_MAP_SIZE, GROUND_MAP_SIZE);
+            gl.disable(glow::DEPTH_TEST);
+            self.common(gl, "ground_map", f);
+            let half = self.height_map[0];
+            let p = self.programs.get_mut("ground_map").unwrap();
+            p.f1(gl, "u_ground_half", half);
+            gl.bind_vertex_array(self.sky_vao);
+            gl.draw_arrays(glow::TRIANGLES, 0, 3);
+            self.ground_for = Some(f.origin);
+        }
+    }
+
     /// Copy the scene drawn so far into the textures later passes read.
     unsafe fn resolve(gl: &glow::Context, t: &Targets) {
         unsafe {
@@ -2600,6 +2678,12 @@ impl GlState {
     }
 
     fn paint(&mut self, gl: &glow::Context, info: &egui::PaintCallbackInfo, f: &FrameData) {
+        let t0 = std::time::Instant::now();
+        self.paint_frame(gl, info, f);
+        self.paint_ms = t0.elapsed().as_secs_f32() * 1000.0;
+    }
+
+    fn paint_frame(&mut self, gl: &glow::Context, info: &egui::PaintCallbackInfo, f: &FrameData) {
         if self.error.is_some() {
             return;
         }
@@ -2683,6 +2767,7 @@ impl GlState {
 
             self.time_stage(gl, 0);
             self.cloud_pass(gl, f);
+            self.ground_pass(gl, f);
             let shadows = f.quality != Quality::Low && f.look.shadow > 0.0;
             if shadows {
                 self.shadow_pass(gl, f);
@@ -2697,6 +2782,8 @@ impl GlState {
             gl.bind_texture(glow::TEXTURE_2D, self.height_tex);
             gl.active_texture(glow::TEXTURE0 + UNIT_CLOUD);
             gl.bind_texture(glow::TEXTURE_2D, self.cloud_map.as_ref().map(|m| m.tex));
+            gl.active_texture(glow::TEXTURE0 + UNIT_GROUND);
+            gl.bind_texture(glow::TEXTURE_2D, self.ground_map.as_ref().map(|m| m.tex));
             gl.active_texture(glow::TEXTURE0);
 
             // --- the scene ---------------------------------------------------
@@ -2762,6 +2849,38 @@ impl GlState {
             self.common(gl, "skinned", f);
             self.draw_skins(gl, f, "skinned");
 
+            // Grass around the camera, before the ground: the ground behind
+            // its blades is then never shaded.
+            self.time_stage(gl, 3);
+            if !self.grass.is_empty() && self.height_tex.is_some() {
+                self.common(gl, "grass", f);
+                let p = self.programs.get_mut("grass").unwrap();
+                let flat = norm([f.fwd[0], 0.0, f.fwd[2]]);
+                let ahead = GRASS_PATCH * 0.3;
+                p.f2(
+                    gl,
+                    "u_centre",
+                    f.cam[0] + flat[0] * ahead,
+                    f.cam[2] + flat[2] * ahead,
+                );
+                p.f1(gl, "u_patch", GRASS_PATCH);
+                p.i1(gl, "u_height", UNIT_HEIGHT as i32);
+                p.v3(gl, "u_hmap", self.height_map);
+                p.f1(gl, "u_water", f.water);
+                p.f1(gl, "u_snow", f.snow);
+                p.f1(gl, "u_gust", f.look.wind);
+                // Pin the meadow to the world: the window's origin, in the
+                // shader's (x, -z) frame, split into whole patches and the
+                // rest, so it stays exact in single precision.
+                let (shift, lap) = grass_anchor(f.origin, GRASS_PATCH as f64);
+                p.f2(gl, "u_shift", shift.0, shift.1);
+                p.f2(gl, "u_lap", lap.0, lap.1);
+                for b in &self.grass {
+                    gl.bind_vertex_array(Some(b.vao));
+                    gl.draw_arrays_instanced(glow::TRIANGLES, 0, b.count, b.instances);
+                }
+            }
+
             // Distant mountains, far to near.
             self.time_stage(gl, 2);
             if let Some((b, rings)) = self.mountains.as_ref().filter(|_| f.look.mountains) {
@@ -2804,37 +2923,6 @@ impl GlState {
             gl.bind_vertex_array(Some(rvao));
             gl.draw_arrays(glow::TRIANGLES, 0, rcount);
             gl.disable(glow::POLYGON_OFFSET_FILL);
-
-            // Grass around the camera.
-            self.time_stage(gl, 3);
-            if !self.grass.is_empty() && self.height_tex.is_some() {
-                self.common(gl, "grass", f);
-                let p = self.programs.get_mut("grass").unwrap();
-                let flat = norm([f.fwd[0], 0.0, f.fwd[2]]);
-                let ahead = GRASS_PATCH * 0.3;
-                p.f2(
-                    gl,
-                    "u_centre",
-                    f.cam[0] + flat[0] * ahead,
-                    f.cam[2] + flat[2] * ahead,
-                );
-                p.f1(gl, "u_patch", GRASS_PATCH);
-                p.i1(gl, "u_height", UNIT_HEIGHT as i32);
-                p.v3(gl, "u_hmap", self.height_map);
-                p.f1(gl, "u_water", f.water);
-                p.f1(gl, "u_snow", f.snow);
-                p.f1(gl, "u_gust", f.look.wind);
-                // Pin the meadow to the world: the window's origin, in the
-                // shader's (x, -z) frame, split into whole patches and the
-                // rest, so it stays exact in single precision.
-                let (shift, lap) = grass_anchor(f.origin, GRASS_PATCH as f64);
-                p.f2(gl, "u_shift", shift.0, shift.1);
-                p.f2(gl, "u_lap", lap.0, lap.1);
-                for b in &self.grass {
-                    gl.bind_vertex_array(Some(b.vao));
-                    gl.draw_arrays_instanced(glow::TRIANGLES, 0, b.count, b.instances);
-                }
-            }
 
             // Soft darkening under trees and riders.
             self.time_stage(gl, 4);
