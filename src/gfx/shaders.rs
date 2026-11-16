@@ -741,6 +741,8 @@ uniform vec3 u_hmap;          // half size, cell size, cells per side
 uniform float u_water;
 uniform float u_snow;
 uniform float u_gust;
+uniform vec2 u_shift;   // the terrain window's origin, modulo the patch
+uniform vec2 u_lap;     // ... and in whole patches
 out vec3 v_col;
 out vec3 v_pos;
 out vec3 v_base;
@@ -762,10 +764,13 @@ void main() {
     // The patch follows the camera; tufts wrap round as it moves. Each
     // time a tuft comes round (at the far edge, where tufts fade in) it
     // grows somewhere slightly different, with its own size, angle and
-    // shade, so the meadow does not repeat every patch length.
-    vec2 lap = floor((i_seed.xy - u_centre) / u_patch);
+    // shade, so the meadow does not repeat every patch length. The layout
+    // is pinned to the world, not to the terrain window, so the meadow
+    // stays put when the window moves on.
+    vec2 pinned = u_centre + u_shift;
+    vec2 lap = floor((i_seed.xy - pinned) / u_patch) - u_lap;
     float again = hash12(lap * 1.618 + i_seed.xy * 0.37);
-    vec2 rel = mod(i_seed.xy - u_centre, u_patch) - u_patch * 0.5;
+    vec2 rel = mod(i_seed.xy - pinned, u_patch) - u_patch * 0.5;
     rel += (vec2(again, fract(again * 7.31)) - 0.5) * 1.6;
     vec2 xz = u_centre + rel;
     vec4 g = ground(xz);
@@ -777,11 +782,12 @@ void main() {
     // No grass on the road, in water, on rock or snow, or far away.
     size *= smoothstep(u_patch * 0.5, u_patch * 0.34, length(rel));
     // Further off, fewer but slightly bigger tufts look the same. A tuft
-    // being thinned out shrinks away over a few metres of travel, never
-    // vanishing from one frame to the next.
-    float far = smoothstep(14.0, 28.0, length(xz - u_cam.xz));
+    // being thinned out shrinks away over several metres of travel: even
+    // at 23 frames a second, no tuft changes by more than a few percent
+    // from one frame to the next.
+    float far = smoothstep(12.0, 30.0, length(xz - u_cam.xz));
     float pick = fract(rnd * 7.31);
-    size *= smoothstep(pick - 0.075, pick + 0.075, 1.0 - 0.55 * far) * (1.0 + 0.3 * far);
+    size *= smoothstep(pick - 0.2, pick + 0.2, 1.0 - 0.55 * far) * (1.0 + 0.3 * far);
     size *= smoothstep(4.1, 6.5, g.y) * (0.45 + 0.55 * smoothstep(5.0, 14.0, g.y));
     size *= smoothstep(u_water + 0.5, u_water + 1.6, g.x);
     size *= 1.0 - smoothstep(0.45, 0.7, steep);

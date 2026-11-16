@@ -27,7 +27,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--body); over
 #status { position: absolute; inset: 0; display: grid; place-items: center; color: var(--dim); font: 14px var(--body); pointer-events: none; }
 .cams { position: absolute; left: 50%; transform: translateX(-50%); bottom: 14px; display: flex; gap: 4px; background: #0f1116cc; border: 1px solid var(--line); border-radius: 10px; padding: 4px; }
 .rail { background: var(--panel); border-left: 1px solid var(--line); overflow-y: auto; padding-block: 14px 24px; padding-left: 16px; padding-right: max(16px, env(safe-area-inset-right, 0px)); display: flex; flex-direction: column; gap: 18px; }
-.tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; background: var(--raised); border-radius: 9px; padding: 3px; }
+.tabs { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 4px; background: var(--raised); border-radius: 9px; padding: 3px; }
 h2 { font: 600 11px var(--body); letter-spacing: .09em; text-transform: uppercase; color: var(--dim); margin: 0 0 8px; }
 section { display: flex; flex-direction: column; gap: 10px; }
 button { font: 500 13px var(--body); color: var(--text); background: var(--raised); border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px; cursor: pointer; }
@@ -69,6 +69,35 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
     <div class="tabs" role="tablist">
       <button id="tab-rider" class="on" role="tab">Rider</button>
       <button id="tab-scenery" role="tab">Scenery</button>
+      <button id="tab-ride" role="tab">Ride</button>
+    </div>
+
+    <div id="ride" hidden>
+      <section>
+        <h2>Ride</h2>
+        <p class="note">The rider rides 1.6 km of road with grass and trees, then starts again. Grass and trees run the app's own shaders, and the land around moves on every few hundred metres as the app's does, so what they do as you ride is what the app does.</p>
+        <div class="presets">
+          <button id="ride-go" class="on">Pause</button>
+          <button id="ride-back">Back to the start</button>
+          <button id="ride-skip">Just before the land moves on</button>
+        </div>
+        <div class="row"><label for="kmh">Speed</label><input id="kmh" type="range" min="0" max="70" step="1" value="32"><output id="kmh-o"></output></div>
+        <div id="shader-pick" hidden>
+          <h2 style="margin-top:12px">Grass and tree shaders</h2>
+          <div class="presets" id="shaders">
+            <button data-v="now" class="on">This build</button>
+            <button data-v="base" id="shader-base">Released</button>
+          </div>
+          <p class="note">Switch to see the same ride with the shaders of the released app, to compare a fix with the bug it fixes.</p>
+        </div>
+        <h2 style="margin-top:12px">Frame rate</h2>
+        <div class="presets" id="fps">
+          <button data-fps="0" class="on">As smooth as it gets</button>
+          <button data-fps="30">30 fps</button>
+          <button data-fps="23">23 fps (MX250 on High)</button>
+        </div>
+        <p class="note" id="ride-stats"></p>
+      </section>
     </div>
 
     <div id="rider">
@@ -157,7 +186,7 @@ renderer.toneMappingExposure = 0.9;
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x8fb6dc);
 scene.fog = new THREE.Fog(0x8fb6dc, 45, 160);
-const camera = new THREE.PerspectiveCamera(40, 1, 0.05, 400);
+const camera = new THREE.PerspectiveCamera(40, 1, 0.05, 700);
 const controls = new THREE.OrbitControls(camera, canvas);
 controls.enableDamping = true;
 controls.target.set(0.15, 0.95, 0);
@@ -172,11 +201,11 @@ sun.shadow.bias = -0.0004;
 scene.add(sun);
 
 // Grass, and a road with its centre line, along the x axis.
-const grass = new THREE.Mesh(new THREE.PlaneGeometry(300, 300), new THREE.MeshStandardMaterial({ color: 0x4f7a37, roughness: 1 }));
-grass.rotation.x = -Math.PI / 2; grass.position.y = -0.01; grass.receiveShadow = true; scene.add(grass);
-const road = new THREE.Mesh(new THREE.PlaneGeometry(300, 6), new THREE.MeshStandardMaterial({ color: 0x3a3c41, roughness: 0.95 }));
-road.rotation.x = -Math.PI / 2; road.receiveShadow = true; scene.add(road);
-for (let x = -150; x < 150; x += 6) {
+const grass = new THREE.Mesh(new THREE.PlaneGeometry(2400, 400), new THREE.MeshStandardMaterial({ color: 0x4f7a37, roughness: 1 }));
+grass.rotation.x = -Math.PI / 2; grass.position.set(850, -0.01, 0); grass.receiveShadow = true; scene.add(grass);
+const road = new THREE.Mesh(new THREE.PlaneGeometry(2400, 6.4), new THREE.MeshStandardMaterial({ color: 0x3a3c41, roughness: 0.95 }));
+road.rotation.x = -Math.PI / 2; road.position.x = 850; road.receiveShadow = true; scene.add(road);
+for (let x = -150; x < 2000; x += 6) {
   const d = new THREE.Mesh(new THREE.PlaneGeometry(3, 0.12), new THREE.MeshStandardMaterial({ color: 0xe8e8e8, roughness: 0.8 }));
   d.rotation.x = -Math.PI / 2; d.position.set(x, 0.002, -1.4); d.receiveShadow = true; scene.add(d);
 }
@@ -463,7 +492,9 @@ const SCENERY_CAMS = { chase: [-1, 0.3, 0.7], side: [0.05, 0.12, 1], front: [1, 
 const MODEL_AT = new THREE.Vector3(2, 0, -7);
 let modelHeight = 10;
 function setCam(name) {
-  if (mode === "scenery") {
+  if (mode === "ride") {
+    rideCam = name;
+  } else if (mode === "scenery") {
     const o = new THREE.Vector3(...SCENERY_CAMS[name]).normalize();
     const dist = (modelHeight * 1.7 + 4) * (name === "close" ? 0.45 : 1);
     const centre = MODEL_AT.clone().add(new THREE.Vector3(0, modelHeight * 0.45, 0));
@@ -516,14 +547,27 @@ function setMode(m) {
   mode = m;
   $("tab-rider").classList.toggle("on", m === "rider");
   $("tab-scenery").classList.toggle("on", m === "scenery");
+  $("tab-ride").classList.toggle("on", m === "ride");
+  $("ride").hidden = m !== "ride";
+  if (m === "ride") buildRide();
+  if (ride.group) ride.group.visible = m === "ride";
+  if (meadow) meadow.visible = m !== "ride" && $("meadow").checked;
+  controls.enabled = m !== "ride";
+  if (m !== "ride") rig.position.set(0, 0, 0);
+  if (m !== "ride") { sun.position.set(-5, 10, 4); sun.target.position.set(0, 0, 0); sun.target.updateMatrixWorld(); }
+  // The app's lens in ride mode.
+  camera.fov = m === "ride" ? 55 : 40; camera.updateProjectionMatrix();
+  grass.material.color.set(m === "ride" ? 0x31501d : 0x4f7a37);
+  scene.fog.near = m === "ride" ? 120 : 45; scene.fog.far = m === "ride" ? 500 : 160;
   $("rider").hidden = m !== "rider";
   $("scenery").hidden = m !== "scenery";
   if (m === "scenery") { showModel(+document.querySelector("#models button.on").dataset.m); rig.visible = $("scale-rider").checked; }
   else { $("stats").textContent = bodyStats; }
   if (m !== "scenery") { if (modelMesh) { scene.remove(modelMesh); modelMesh = null; } rig.visible = true; }
-  setCam("side");
+  setCam(m === "ride" ? "chase" : "side");
 }
 $("tab-rider").addEventListener("click", () => setMode("rider"));
+$("tab-ride").addEventListener("click", () => setMode("ride"));
 $("tab-scenery").addEventListener("click", () => setMode("scenery"));
 
 // ---- loop -------------------------------------------------------------
@@ -535,16 +579,270 @@ function resize() {
 }
 let last = performance.now();
 function loop() {
-  const now = performance.now(), dt = Math.min(0.05, (now - last) / 1000); last = now;
+  requestAnimationFrame(loop);
+  if (window.lab && window.lab.manual) return;
+  const now = performance.now();
+  // A frame-rate cap, to see the ride as a slower graphics card shows it.
+  if (mode === "ride" && ride.fps > 0 && now - last < 1000 / ride.fps - 2) return;
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
   time += dt;
   windU.uT.value = time;
+  if (mode === "ride") rideTick(dt);
   if (P.cad > 0) { P.crank = (P.crank + P.cad / 60 * 360 * dt) % 360; $("crank").value = P.crank; $("crank-o").textContent = fmt.crank(P.crank); }
   resize();
   updateMeshes();
-  controls.update();
+  if (mode !== "ride") controls.update();
   renderer.render(scene, camera);
-  requestAnimationFrame(loop);
 }
+// ---- ride: a stretch of road with the app's own grass and trees ---------
+const APP = __APP_GLSL_JSON__;
+const RIDE_LEN = 1600, LANE = 1.8, GRASS_PATCH = 60;
+// The app's terrain window: 2 km across in 256 cells, centred 450 m ahead,
+// built again once the camera is more than 320 m from its centre.
+const WINDOW_CELL = 2000 / 256, WINDOW_AHEAD = 450, WINDOW_MOVE = 320;
+const ride = { on: true, d: 0, kmh: 32, fps: 0, shown: 0, group: null, grass: null, trees: [], u: null };
+const PREC = "precision highp float;\nprecision highp int;\nprecision highp sampler2D;\n";
+// Simple light for the lab: the app's placement, thinning and wind, lit plainly.
+const LAB_LIGHT = `
+uniform vec3 u_cam;
+vec3 lab_out(vec3 c, vec3 p) {
+    float d = length(p - u_cam);
+    c = mix(c, vec3(0.62, 0.74, 0.86), smoothstep(60.0, 420.0, d) * 0.7);
+    return pow(clamp(c, 0.0, 1.0), vec3(1.0 / 2.2));
+}`;
+const GRASS_FS = PREC + LAB_LIGHT + `
+in vec3 v_col; in vec3 v_pos; in vec3 v_base; in float v_h;
+out vec4 frag;
+void main() {
+    vec3 c = v_col * (1.6 + 1.6 * v_h);
+    frag = vec4(lab_out(c, v_pos), 1.0);
+}`;
+const OBJECT_FS = PREC + LAB_LIGHT + `
+in vec3 v_pos; in vec3 v_nrm; in vec3 v_col; in float v_mat; in float v_h;
+out vec4 frag;
+void main() {
+    vec3 n = normalize(v_nrm);
+    vec3 sun = normalize(vec3(-0.45, 0.8, 0.4));
+    float l = max(dot(n, sun), 0.0);
+    if (v_mat > 4.5) l = 0.35 + 0.65 * abs(dot(n, sun));
+    vec3 c = v_col * (0.55 + 2.4 * l);
+    frag = vec4(lab_out(c, v_pos), 1.0);
+}`;
+
+function rideUniforms() {
+  return {
+    u_vp: { value: new THREE.Matrix4() },
+    u_cam: { value: new THREE.Vector3() },
+    u_time: { value: 0 }, u_obj_time: { value: 0 },
+    u_origin: { value: new THREE.Vector2(0, 0) },
+    u_grass0: { value: new THREE.Vector3(0.036, 0.09, 0.02) },
+    u_grass1: { value: new THREE.Vector3(0.08, 0.15, 0.036) },
+    u_grass2: { value: new THREE.Vector3(0.16, 0.16, 0.06) },
+    u_wind: { value: 0.6 }, u_gust: { value: 0.6 },
+    u_centre: { value: new THREE.Vector2() }, u_patch: { value: GRASS_PATCH },
+    u_height: { value: null }, u_hmap: { value: new THREE.Vector3() },
+    u_water: { value: -1000 }, u_snow: { value: 100000 },
+    u_shift: { value: new THREE.Vector2() }, u_lap: { value: new THREE.Vector2() },
+  };
+}
+
+// Each ride mesh has this build's shader and the released one, to switch between.
+const SAME = ["NOISE", "WIND", "GRASS_VS", "OBJECT_VS"].every((k) => APP[k] === APP.BASE[k]);
+ride.shaders = "now";
+function rideMesh(g, vs, fs, uniforms) {
+  const mat = (src) => new THREE.RawShaderMaterial({
+    glslVersion: THREE.GLSL3, uniforms, side: THREE.DoubleSide,
+    vertexShader: PREC + src.NOISE + src.WIND + src[vs], fragmentShader: fs,
+  });
+  const now = mat(APP), mesh = new THREE.Mesh(g, now);
+  mesh.userData.mats = { now, base: SAME ? now : mat(APP.BASE) };
+  mesh.frustumCulled = false;
+  return mesh;
+}
+function pickShaders(v) {
+  ride.shaders = v;
+  if (ride.group) ride.group.traverse((o) => { if (o.userData.mats) o.material = o.userData.mats[v]; });
+  for (const b of document.querySelectorAll("#shaders button")) b.classList.toggle("on", b.dataset.v === v);
+}
+$("shader-pick").hidden = SAME;
+$("shader-base").textContent = "Released (" + APP.BASE_VERSION + ")";
+for (const b of document.querySelectorAll("#shaders button")) b.addEventListener("click", () => pickShaders(b.dataset.v));
+
+function buildRide() {
+  if (ride.group) return;
+  ride.group = new THREE.Group();
+  scene.add(ride.group);
+  // Trees are placed in the lab's world; the grass, as in the app, works
+  // in the terrain window's coordinates, which move as you ride.
+  ride.u = rideUniforms();
+  ride.gu = Object.assign({}, ride.u, {
+    u_vp: { value: new THREE.Matrix4() }, u_cam: { value: new THREE.Vector3() },
+    u_origin: { value: new THREE.Vector2() },
+  });
+  // Flat ground: height 0, distance to the road (along x at z = 0), no forest.
+  const half = 400, n = 513, cell = (2 * half) / (n - 1);
+  const data = new Float32Array(n * n * 4);
+  for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+    const z = half - j * cell, k = (j * n + i) * 4;
+    data[k] = 0; data[k + 1] = Math.abs(z); data[k + 2] = 0; data[k + 3] = 0;
+  }
+  const tex = new THREE.DataTexture(data, n, n, THREE.RGBAFormat, THREE.FloatType);
+  tex.minFilter = tex.magFilter = THREE.NearestFilter;
+  tex.needsUpdate = true;
+  ride.u.u_height.value = tex;
+  ride.u.u_hmap.value.set(half, cell, n);
+
+  // Grass: the app's four tuft variants and its share of 30 000 tufts (High).
+  const share = [0.46, 0.3, 0.14, 0.1], total = 30000;
+  let seed = 4242;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  for (let k = 0; k < 4; k++) {
+    const nf = wasm.grass(k);
+    const verts = new Float32Array(nf); verts.set(f32(wasm.model_ptr(), nf));
+    const g = new THREE.InstancedBufferGeometry();
+    const vb = new THREE.InterleavedBuffer(verts, 6);
+    g.setAttribute("a_pos", new THREE.InterleavedBufferAttribute(vb, 3, 0));
+    g.setAttribute("position", g.attributes.a_pos); // three.js draws nothing without one
+    g.setAttribute("a_col", new THREE.InterleavedBufferAttribute(vb, 3, 3));
+    const count = Math.floor(total * share[k]);
+    const seeds = new Float32Array(count * 4);
+    for (let i = 0; i < count; i++) {
+      seeds[i * 4] = rnd() * GRASS_PATCH; seeds[i * 4 + 1] = rnd() * GRASS_PATCH;
+      seeds[i * 4 + 2] = rnd() * Math.PI * 2; seeds[i * 4 + 3] = rnd();
+    }
+    g.setAttribute("i_seed", new THREE.InstancedBufferAttribute(seeds, 4));
+    g.instanceCount = count;
+    const mesh = rideMesh(g, "GRASS_VS", GRASS_FS, ride.gu);
+    ride.group.add(mesh);
+  }
+
+  // Trees along both sides, placed and sized as the app does.
+  const kinds = [{ m: 0, pine: true }, { m: 1, pine: false }];
+  for (const kind of kinds) {
+    const nf = wasm.model(kind.m);
+    const verts = new Float32Array(nf); verts.set(f32(wasm.model_ptr(), nf));
+    const g = new THREE.InstancedBufferGeometry();
+    const vb = new THREE.InterleavedBuffer(verts, 10);
+    g.setAttribute("a_pos", new THREE.InterleavedBufferAttribute(vb, 3, 0));
+    g.setAttribute("position", g.attributes.a_pos); // three.js draws nothing without one
+    g.setAttribute("a_nrm", new THREE.InterleavedBufferAttribute(vb, 3, 3));
+    g.setAttribute("a_col", new THREE.InterleavedBufferAttribute(vb, 3, 6));
+    g.setAttribute("a_mat", new THREE.InterleavedBufferAttribute(vb, 1, 9));
+    const inst = [];
+    seed = kind.pine ? 91 : 57;
+    for (let x = -60; x < RIDE_LEN + 200; x += 7) {
+      for (const side of [1, -1]) {
+        if (rnd() > 0.55) continue;
+        const z = side * (10 + Math.pow(rnd(), 1.6) * 70);
+        const tall = 0.7 + 0.6 * rnd();
+        const h = (kind.pine ? 14 : 10.5) * tall;
+        const w = h * (kind.pine ? 0.72 : 1.0) * (0.85 + 0.3 * rnd());
+        const t = 0.78 + 0.44 * rnd(), warm = Math.pow(rnd(), 2) * (kind.pine ? 0.25 : 0.7);
+        inst.push(x + rnd() * 6, -0.2, z, rnd() * Math.PI * 2, w, h, t * (1 + 0.25 * warm), t, t * (1 - 0.45 * warm));
+      }
+    }
+    const ib = new THREE.InstancedInterleavedBuffer(new Float32Array(inst), 9);
+    g.setAttribute("i_pos_rot", new THREE.InterleavedBufferAttribute(ib, 4, 0));
+    g.setAttribute("i_scale", new THREE.InterleavedBufferAttribute(ib, 2, 4));
+    g.setAttribute("i_tint", new THREE.InterleavedBufferAttribute(ib, 3, 6));
+    g.instanceCount = inst.length / 9;
+    const mesh = rideMesh(g, "OBJECT_VS", OBJECT_FS, ride.u);
+    ride.group.add(mesh);
+  }
+  // Roadside posts every 50 m, for a sense of speed.
+  const postGeo = new THREE.CylinderGeometry(0.06, 0.06, 1.0, 8);
+  const postMat = new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.6 });
+  for (let x = -50; x < RIDE_LEN + 200; x += 50) {
+    for (const z of [4.4, -4.4]) {
+      const p = new THREE.Mesh(postGeo, postMat);
+      p.position.set(x, 0.5, z); p.castShadow = true;
+      ride.group.add(p);
+    }
+  }
+}
+
+// The app's cameras (world.rs Camera::rig), along a straight road.
+const RIDE_CAMS = {
+  chase: (d) => [[d - 7, 2.5, LANE], [d + 16, 0.8, LANE]],
+  close: (d) => [[d - 3.8, 1.8, LANE], [d + 8, 0.45, LANE]],
+  side: (d) => [[d + 0.3, 1.25, LANE + 3.2], [d + 0.3, 0.85, LANE]],
+  top: (d) => [[d - 9, 7.5, LANE], [d + 5, 0, LANE]],
+  front: (d) => [[d + 6, 1.6, LANE - 1.5], [d, 1.0, LANE]],
+};
+let rideCam = "chase";
+
+function rideTick(dt) {
+  if (ride.on) {
+    ride.d += ride.kmh / 3.6 * dt;
+    if (ride.d > RIDE_LEN) { ride.d -= RIDE_LEN; ride.origin = null; }
+  }
+  rig.position.set(ride.d, 0, LANE);
+  sun.position.set(ride.d - 5, 10, 4); sun.target.position.set(ride.d, 0, 0); sun.target.updateMatrixWorld();
+  const [eye, at] = RIDE_CAMS[rideCam](ride.d);
+  const u = ride.u;
+  // For tests, lab.holdView keeps the picture still while the grass and
+  // trees go on riding: then only what they do as you ride shows.
+  if (!window.lab.holdView) {
+    camera.position.set(...eye);
+    camera.lookAt(new THREE.Vector3(...at));
+    camera.updateMatrixWorld();
+    u.u_vp.value.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+  }
+  u.u_cam.value.set(...eye);
+  u.u_time.value = u.u_obj_time.value = time;
+  u.u_wind.value = u.u_gust.value = windU.uWind.value;
+  const fwd = new THREE.Vector3(...at).sub(new THREE.Vector3(...eye)); fwd.y = 0; fwd.normalize();
+  // The app's terrain window, in its coordinates (x east, z north = -z here).
+  const camX = eye[0], camZ = -eye[2];
+  if (!ride.origin || Math.hypot(camX - ride.origin[0], camZ - ride.origin[1]) > WINDOW_MOVE) {
+    const snap = (v) => Math.round(v / WINDOW_CELL) * WINDOW_CELL;
+    if (ride.origin) ride.moved = time;
+    // Ahead along the road (east), whichever way the camera looks.
+    ride.origin = [snap(camX + WINDOW_AHEAD), snap(camZ)];
+  }
+  const [ox, oz] = ride.origin;
+  // The grass draws in the window's coordinates: [x - ox, y, -(z - oz)].
+  const gu = ride.gu;
+  gu.u_vp.value.copy(u.u_vp.value).multiply(new THREE.Matrix4().makeTranslation(ox, 0, -oz));
+  gu.u_cam.value.set(eye[0] - ox, eye[1], eye[2] + oz);
+  gu.u_origin.value.set(ox, oz);
+  // The grass patch sits a little ahead of the camera, as in the app.
+  u.u_centre.value.set(gu.u_cam.value.x + fwd.x * GRASS_PATCH * 0.3, gu.u_cam.value.z + fwd.z * GRASS_PATCH * 0.3);
+  // As the app pins the grass to the world (the released shaders ignore these).
+  const sx = ox, sz = -oz, lx = Math.floor(sx / GRASS_PATCH), lz = Math.floor(sz / GRASS_PATCH);
+  u.u_shift.value.set(sx - lx * GRASS_PATCH, sz - lz * GRASS_PATCH);
+  u.u_lap.value.set(lx, lz);
+  const next = ox + WINDOW_MOVE - camX;
+  const note = ride.moved !== undefined && time - ride.moved < 2 ? " · the land just moved on" : ` · land moves on in ${next.toFixed(0)} m`;
+  $("ride-stats").textContent = `${ride.d.toFixed(0)} m of ${RIDE_LEN} m · ${ride.kmh} km/h` + note;
+}
+// For tests: step the ride by hand (window.lab.manual = true stops the clock).
+window.lab = {
+  manual: false, holdView: false,
+  // still: the wind holds its breath, so only the ride moves the picture.
+  step(dt, still) { if (!still) time += dt; windU.uT.value = time; if (mode === "ride") rideTick(dt); else controls.update(); updateMeshes(); renderer.render(scene, camera); },
+  hideRider: () => { rig.visible = false; }, skipToMove: () => skipToMove(),
+  ride: () => ride, pickShaders: (v) => pickShaders(v), setMode: (m) => setMode(m), setCam: (c) => setCam(c),
+};
+
+$("ride-go").addEventListener("click", () => { ride.on = !ride.on; $("ride-go").textContent = ride.on ? "Pause" : "Ride"; $("ride-go").classList.toggle("on", ride.on); });
+$("ride-back").addEventListener("click", () => { ride.d = 0; ride.origin = null; });
+// Three seconds before the window moves on (the camera rides 7 m behind in Chase).
+function skipToMove() {
+  if (!ride.origin) return;
+  const eyeBack = ride.d - RIDE_CAMS[rideCam](ride.d)[0][0];
+  ride.d = Math.max(ride.d, ride.origin[0] + WINDOW_MOVE + eyeBack - 3 * ride.kmh / 3.6);
+}
+$("ride-skip").addEventListener("click", skipToMove);
+$("kmh").addEventListener("input", (e) => { ride.kmh = +e.target.value; $("kmh-o").textContent = ride.kmh + " km/h"; });
+$("kmh-o").textContent = "32 km/h";
+for (const b of document.querySelectorAll("#fps button")) {
+  b.addEventListener("click", () => {
+    ride.fps = +b.dataset.fps;
+    for (const o of document.querySelectorAll("#fps button")) o.classList.toggle("on", o === b);
+  });
+}
+
 // ---- wind controls -----------------------------------------------------
 const WIND_NOTES = {
   1: "Gusts drift across the land: trees and grass lean further and sway harder as one passes, then settle. Each tree's timing comes from where it stands, so nothing loops or jumps.",

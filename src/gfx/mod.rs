@@ -1432,6 +1432,18 @@ const SMALL_CULL: f32 = 600.0;
 const KEEP_AROUND: f32 = 150.0;
 /// Side of the square of grass that follows the camera, in metres.
 const GRASS_PATCH: f32 = 60.0;
+
+/// Where the grass patch's world grid sits relative to the terrain
+/// window's origin: the origin in the grass shader's (x, -z) frame, as
+/// whole patches and the remainder.
+fn grass_anchor(origin: (f64, f64), patch: f64) -> ((f32, f32), (f32, f32)) {
+    let s = (origin.0, -origin.1);
+    let lap = ((s.0 / patch).floor(), (s.1 / patch).floor());
+    (
+        ((s.0 - lap.0 * patch) as f32, (s.1 - lap.1 * patch) as f32),
+        (lap.0 as f32, lap.1 as f32),
+    )
+}
 const RAIN_DROPS: usize = 6000;
 /// Texture units.
 const UNIT_HEIGHT: u32 = 4;
@@ -2812,6 +2824,12 @@ impl GlState {
                 p.f1(gl, "u_water", f.water);
                 p.f1(gl, "u_snow", f.snow);
                 p.f1(gl, "u_gust", f.look.wind);
+                // Pin the meadow to the world: the window's origin, in the
+                // shader's (x, -z) frame, split into whole patches and the
+                // rest, so it stays exact in single precision.
+                let (shift, lap) = grass_anchor(f.origin, GRASS_PATCH as f64);
+                p.f2(gl, "u_shift", shift.0, shift.1);
+                p.f2(gl, "u_lap", lap.0, lap.1);
                 for b in &self.grass {
                     gl.bind_vertex_array(Some(b.vao));
                     gl.draw_arrays_instanced(glow::TRIANGLES, 0, b.count, b.instances);
@@ -3067,6 +3085,62 @@ impl GlState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The grass shader's layout, in f32 as on the GPU: a tuft's world
+    /// spot (x, -z) and its per-lap random value.
+    fn tuft(seed: (f32, f32), cam_world: (f64, f64), origin: (f64, f64)) -> (f64, f64, f32) {
+        let patch = GRASS_PATCH;
+        let fract = |v: f32| v - v.floor();
+        let hash12 = |x: f32, y: f32| {
+            let mut p = [fract(x * 0.1031), fract(y * 0.1031), fract(x * 0.1031)];
+            let d = p[0] * (p[1] + 33.33) + p[1] * (p[2] + 33.33) + p[2] * (p[0] + 33.33);
+            p = [p[0] + d, p[1] + d, p[2] + d];
+            fract((p[0] + p[1]) * p[2])
+        };
+        let md = |a: f32| a - patch * (a / patch).floor();
+        // The camera in window coordinates, as the app passes it.
+        let centre = (
+            (cam_world.0 - origin.0) as f32,
+            -(cam_world.1 - origin.1) as f32,
+        );
+        let (shift, lap) = grass_anchor(origin, patch as f64);
+        let c = (centre.0 + shift.0, centre.1 + shift.1);
+        let l = (
+            ((seed.0 - c.0) / patch).floor() - lap.0,
+            ((seed.1 - c.1) / patch).floor() - lap.1,
+        );
+        let again = hash12(l.0 * 1.618 + seed.0 * 0.37, l.1 * 1.618 + seed.1 * 0.37);
+        let rel = (
+            md(seed.0 - c.0) - patch * 0.5,
+            md(seed.1 - c.1) - patch * 0.5,
+        );
+        let xz = (centre.0 + rel.0, centre.1 + rel.1);
+        (xz.0 as f64 + origin.0, xz.1 as f64 - origin.1, again)
+    }
+
+    #[test]
+    fn grass_stays_put_when_the_terrain_window_moves() {
+        // Before and after the window recentres (by a multiple of its
+        // 7.8125 m cell, not of the patch), every tuft keeps its place and
+        // its look.
+        let cam = (12_345.6, -2_718.3);
+        for (i, seed) in [(0.5f32, 59.0f32), (17.3, 3.1), (44.0, 28.8), (59.9, 0.2)]
+            .into_iter()
+            .enumerate()
+        {
+            let a = tuft(seed, cam, (12_000.0, -2_500.0));
+            let b = tuft(
+                seed,
+                cam,
+                (12_000.0 + 7.8125 * 97.0, -2_500.0 - 7.8125 * 41.0),
+            );
+            assert!(
+                (a.0 - b.0).abs() < 0.01 && (a.1 - b.1).abs() < 0.01,
+                "tuft {i} moved: {a:?} {b:?}"
+            );
+            assert_eq!(a.2, b.2, "tuft {i} changed its look");
+        }
+    }
 
     /// Ride `secs` seconds in the same conditions.
     fn hold(s: &mut Stance, secs: f32, grade: f32, speed: f32, effort: f32, pedalling: bool) {
