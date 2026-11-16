@@ -201,12 +201,24 @@ float sm_pcf(sampler2DShadow sm, vec3 c, float r) {
     s += texture(sm, vec3(c.xy + vec2(-0.5, -0.8) * r, c.z));
     return s / 9.0;
 }
+// Five of the same nine taps, for far away where a shadow's soft edge is
+// only a pixel or two wide.
+float sm_pcf5(sampler2DShadow sm, vec3 c, float r) {
+    float s = texture(sm, c);
+    s += texture(sm, vec3(c.xy + vec2(-0.94, -0.4) * r, c.z));
+    s += texture(sm, vec3(c.xy + vec2(0.94, 0.34) * r, c.z));
+    s += texture(sm, vec3(c.xy + vec2(-0.3, 0.95) * r, c.z));
+    s += texture(sm, vec3(c.xy + vec2(0.34, -0.9) * r, c.z));
+    return s / 5.0;
+}
 float sm_far(vec3 p, vec3 n, float k) {
     vec4 c = u_lvp1 * vec4(p + n * u_sm.z * k, 1.0);
     float e = max(abs(c.x), abs(c.y));
     if (e >= 1.0) return 1.0;
     vec3 s = c.xyz * 0.5 + 0.5;
-    float v = sm_pcf(u_sm1, vec3(s.xy, clamp(s.z, 0.0, 1.0) - 0.00003), 1.2 * u_sm.w);
+    vec3 at = vec3(s.xy, clamp(s.z, 0.0, 1.0) - 0.00003);
+    float v = length(p - u_cam) > 110.0 ? sm_pcf5(u_sm1, at, 1.2 * u_sm.w)
+                                        : sm_pcf(u_sm1, at, 1.2 * u_sm.w);
     return mix(v, 1.0, smoothstep(0.85, 1.0, e));
 }
 // Sunlight reaching `p` (0 in shadow): two cascades around the camera.
@@ -540,14 +552,19 @@ void main() {
     float dcam = length(v_pos - u_cam);
     float detail = 1.0 - smoothstep(25.0, 140.0, dcam);
     float near = 1.0 - smoothstep(6.0, 45.0, dcam);
-    float g = fbm(vec2(u * 1.5, v * 0.4));
+    // The finest two octaves of the road's noise fade out with distance,
+    // where they are smaller than a pixel (see `fbm_fine`).
+    vec2 gq = vec2(u * 1.5, v * 0.4);
+    float g = (fbm3(gq) * 0.875 + (detail > 0.0 ? mix(0.046875, fbm_fine(gq), detail) : 0.046875)) / 0.96875;
     float fine = mix(0.5, vnoise(vec2(u, v) * 14.0), detail);
     // Stone chips in the tarmac.
     float chips = mix(0.5, vnoise(vec2(u, v) * 42.0), near);
     vec3 asphalt = vec3(0.03, 0.032, 0.036) * (0.76 + 0.3 * g + 0.16 * fine + 0.2 * (chips - 0.5));
     // Polished wheel tracks, darker repair patches and tar-filled cracks.
     asphalt *= 1.0 - 0.16 * exp(-pow((a - 1.6) / 0.4, 2.0));
-    asphalt = mix(asphalt, asphalt * 0.62, smoothstep(0.66, 0.7, fbm(vec2(u * 0.25, v * 0.04) + 3.0)));
+    vec2 pq = vec2(u * 0.25, v * 0.04) + 3.0;
+    float patches = (fbm3(pq) * 0.875 + (detail > 0.0 ? mix(0.046875, fbm_fine(pq), detail) : 0.046875)) / 0.96875;
+    asphalt = mix(asphalt, asphalt * 0.62, smoothstep(0.66, 0.7, patches));
     // Cracks only show close by, and only in stretches of worn road.
     if (detail > 0.0) {
         float worn = smoothstep(0.52, 0.7, fbm3(vec2(u * 0.1, v * 0.02)));
