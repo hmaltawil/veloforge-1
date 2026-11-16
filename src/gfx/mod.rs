@@ -1508,11 +1508,13 @@ const SMALL_CULL: f32 = 600.0;
 const KEEP_AROUND: f32 = 150.0;
 /// Side of the square of grass that follows the camera, in metres.
 const GRASS_PATCH: f32 = 60.0;
-/// The sparse ring of grass beyond the dense patch: the size of the patch
-/// it is spread over (centred with the dense one), and its tufts as a
-/// share of the dense patch's.
+/// The sparse grass that reaches beyond the dense patch (and grows under
+/// it): the size of the patch it is spread over (centred with the dense
+/// one), and its tufts as a share of the dense patch's. The dense patch
+/// gives up `GRASS_DENSE_SHARE` of its tufts to make room for it.
 const GRASS_RING: f32 = 104.0;
 const GRASS_RING_SHARE: f32 = 0.55;
+const GRASS_DENSE_SHARE: f32 = 0.87;
 
 /// Where the grass patch's world grid sits relative to the terrain
 /// window's origin: the origin in the grass shader's (x, -z) frame, as
@@ -1818,7 +1820,7 @@ impl GlState {
             ];
             let mut next = noise_stream(4242);
             for (verts, share) in variants {
-                let n = (total as f32 * share) as usize;
+                let n = (total as f32 * GRASS_DENSE_SHARE * share) as usize;
                 if n == 0 {
                     continue;
                 }
@@ -1841,8 +1843,8 @@ impl GlState {
                 Self::set_instances(gl, &mut b, &seeds, 4);
                 self.grass.push(b);
             }
-            // The ring: fewer tufts of fewer blades, spread over a patch
-            // twice the size, drawn only beyond the dense patch.
+            // The sparse grass: fewer tufts of fewer blades, spread over a
+            // patch nearly twice the size, under and beyond the dense one.
             let ring = (total as f32 * GRASS_RING_SHARE) as usize;
             for (verts, share) in [
                 (mesh::grass_tuft(4, 0, false, 5), 0.65),
@@ -3013,7 +3015,6 @@ impl GlState {
                 // Pin the meadow to the world: the window's origin, in the
                 // shader's (x, -z) frame, split into whole patches and the
                 // rest, so it stays exact in single precision.
-                p.f1(gl, "u_inner", GRASS_PATCH);
                 for (patch, outer, set) in [
                     (GRASS_PATCH, 0.0, &self.grass),
                     (GRASS_RING, 1.0, &self.grass_ring),

@@ -817,8 +817,7 @@ uniform float u_snow;
 uniform float u_gust;
 uniform vec2 u_shift;   // the terrain window's origin, modulo the patch
 uniform vec2 u_lap;     // ... and in whole patches
-uniform float u_outer;  // 0: the dense patch; 1: the sparse ring around it
-uniform float u_inner;  // the dense patch's size
+uniform float u_outer;  // 0: the dense patch; 1: the sparse grass around and under it
 out vec3 v_col;
 out vec3 v_pos;
 out vec3 v_base;
@@ -858,9 +857,10 @@ void main() {
     // No grass on the road, in water, on rock or snow, or far away.
     size *= smoothstep(u_patch * 0.5, u_patch * 0.34, length(rel));
     if (u_outer > 0.5) {
-        // The sparse ring of bigger tufts grows in just where the dense
-        // patch fades out, and reaches twice as far.
-        size *= smoothstep(u_inner * 0.34, u_inner * 0.5, length(rel)) * 1.5;
+        // Sparse, slightly bigger tufts reach twice as far. They grow under
+        // the dense patch too, so where it fades out the meadow just thins:
+        // nothing has to grow out of the ground there as you ride.
+        size *= 1.25;
     } else {
         // Further off, fewer but slightly bigger tufts look the same. A
         // tuft being thinned out shrinks away over several metres of
@@ -899,6 +899,11 @@ void main() {
     float bend = a_pos.y * a_pos.y * (0.07 + 0.09 * u_gust) * wave;
     p.x += bend;
     p.z += bend * 0.6;
+    // A blade leaning over keeps its length, so its tip comes down rather
+    // than reaching further out (which, seen from behind, made the meadow
+    // seem to rise and fall as gusts passed).
+    float lean = bend * 1.17;
+    p.y /= sqrt(1.0 + lean * lean / max(p.y * p.y, 0.0004));
     vec3 base = vec3(xz.x, y, xz.y);
     v_base = base + vec3(0.0, 0.08, 0.0);
     v_pos = base + (size > 0.01 ? p : vec3(0.0));

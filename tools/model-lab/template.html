@@ -624,8 +624,9 @@ function loop() {
 // ---- ride: a stretch of road with the app's own grass and trees ---------
 const APP = __APP_GLSL_JSON__;
 const RIDE_LEN = 1600, LANE = 1.8, GRASS_PATCH = 60;
-// The app's sparse ring of grass beyond the dense patch (GRASS_RING, GRASS_RING_SHARE).
-const GRASS_RING = 104, GRASS_RING_SHARE = 0.55;
+// The app's sparse grass under and beyond the dense patch (GRASS_RING,
+// GRASS_RING_SHARE, GRASS_DENSE_SHARE).
+const GRASS_RING = 104, GRASS_RING_SHARE = 0.55, GRASS_DENSE_SHARE = 0.87;
 // The app's terrain window: 2 km across in 256 cells, centred 450 m ahead,
 // built again once the camera is more than 320 m from its centre.
 const WINDOW_CELL = 2000 / 256, WINDOW_AHEAD = 450, WINDOW_MOVE = 320;
@@ -688,7 +689,7 @@ function rideUniforms() {
     u_water: { value: -1000 }, u_snow: { value: 100000 },
     u_shift: { value: new THREE.Vector2() }, u_lap: { value: new THREE.Vector2() },
     u_ground_half: { value: 0 },
-    u_outer: { value: 0 }, u_inner: { value: GRASS_PATCH },
+    u_outer: { value: 0 },
     u_sun: { value: new THREE.Vector3(-0.45, 0.8, 0.4).normalize() },
     u_sun_col: { value: new THREE.Vector3(1.9, 1.78, 1.55) },
   };
@@ -793,7 +794,7 @@ function buildRide() {
     g.setAttribute("a_pos", new THREE.InterleavedBufferAttribute(vb, 3, 0));
     g.setAttribute("position", g.attributes.a_pos); // three.js draws nothing without one
     g.setAttribute("a_col", new THREE.InterleavedBufferAttribute(vb, 3, 3));
-    const count = Math.floor(total * share[k]);
+    const count = Math.floor(total * GRASS_DENSE_SHARE * share[k]);
     const seeds = new Float32Array(count * 4);
     for (let i = 0; i < count; i++) {
       seeds[i * 4] = rnd() * GRASS_PATCH; seeds[i * 4 + 1] = rnd() * GRASS_PATCH;
@@ -804,7 +805,7 @@ function buildRide() {
     const mesh = rideMesh(g, "GRASS_VS", GRASS_FS, ride.gu);
     ride.group.add(mesh);
   }
-  // The sparse ring around it, as in the app (this build only).
+  // The sparse grass under and around it, as in the app (this build only).
   ride.gr = Object.assign({}, ride.gu, {
     u_patch: { value: GRASS_RING }, u_outer: { value: 1 },
     u_shift: { value: new THREE.Vector2() }, u_lap: { value: new THREE.Vector2() },
