@@ -8,6 +8,7 @@
 //! (see [`GpuWorld::error`]).
 
 mod body;
+mod impostor;
 mod math;
 mod mesh;
 mod shaders;
@@ -67,21 +68,23 @@ impl Quality {
             Quality::Low => 2.0 / 3.0,
         }
     }
-    /// Trees closer than this use the most detailed meshes; up to
-    /// `near_trees` they use the middle ones.
-    fn detailed_trees(self) -> f32 {
+    /// Where trees change from their full meshes to the middle ones, and
+    /// from those to cards (metres; every tree's own is shifted by up to
+    /// `LOD_JITTER` either way).
+    fn tree_lod(self) -> TreeLod {
         match self {
-            Quality::High => 60.0,
-            Quality::Medium => 45.0,
-            Quality::Low => 35.0,
-        }
-    }
-    /// Trees closer than this use the detailed meshes.
-    fn near_trees(self) -> f32 {
-        match self {
-            Quality::High => NEAR_TREES,
-            Quality::Medium => 140.0,
-            Quality::Low => 100.0,
+            Quality::High => TreeLod {
+                mid: 55.0,
+                card: 110.0,
+            },
+            Quality::Medium => TreeLod {
+                mid: 42.0,
+                card: 90.0,
+            },
+            Quality::Low => TreeLod {
+                mid: 31.0,
+                card: 72.0,
+            },
         }
     }
     /// Levels of the blur pyramid (bloom and the frosted glass).
@@ -523,6 +526,10 @@ impl Stance {
 /// a 3D view exists (it takes a moment), then handed to the graphics card.
 static SKIN: std::sync::OnceLock<body::Skin> = std::sync::OnceLock::new();
 
+/// Pictures of the pine, broadleaf and birch for distant trees' cards
+/// (`impostor.rs`), made on a background thread too.
+static CARDS: std::sync::OnceLock<Vec<impostor::Atlas>> = std::sync::OnceLock::new();
+
 fn start_sculpting() {
     static STARTED: std::sync::Once = std::sync::Once::new();
     STARTED.call_once(|| {
@@ -530,6 +537,15 @@ fn start_sculpting() {
             .name("sculpt-rider".into())
             .spawn(|| {
                 let _ = SKIN.set(body::build(0.01));
+            });
+        let _ = std::thread::Builder::new()
+            .name("bake-trees".into())
+            .spawn(|| {
+                let atlases = [mesh::pine(), mesh::broadleaf(), mesh::birch()]
+                    .iter()
+                    .map(|m| impostor::bake(&m.v))
+                    .collect();
+                let _ = CARDS.set(atlases);
             });
     });
 }
@@ -1369,6 +1385,16 @@ struct GlState {
     scattered: [Vec<f32>; KINDS],
     blobs: Option<Buffers>,
     rider_blob: Option<Buffers>,
+    /// Distant trees' cards (one per kind of tree) and their pictures
+    /// (colour and normals), once made.
+    cards: Vec<Buffers>,
+    card_tex: Option<[[glow::Texture; 3]; 3]>,
+    card_tex_failed: bool,
+    /// Each tree's level of detail, by where it stands in the world (in
+    /// tenths of a metre), and the frame count for forgetting trees no
+    /// longer in view.
+    tree_states: HashMap<(i64, i64), TreeState>,
+    lod_frame: u64,
     /// Grass tuft variants, each with its own share of the instances.
     grass: Vec<Buffers>,
     /// The sparse ring of grass around the dense patch.
@@ -1393,8 +1419,6 @@ struct GlState {
     ground_for: Option<(f64, f64)>,
     /// Its centre and half size in cloud-deck coordinates (0: no map).
     cloud_box: V3,
-    /// Scratch space for sorting nearby objects by distance.
-    order: [Vec<(f32, [f32; INSTANCE_STRIDE])>; KINDS],
     /// The terrain's tiles, to draw only those in view.
     tiles: Vec<terrain::Tile>,
     /// Timing the passes on the GPU (for `--bench`).
@@ -1508,8 +1532,107 @@ const OBJ_REFLECTOR: usize = 11;
 const OBJ_PINE_MID: usize = 12;
 const OBJ_BROAD_MID: usize = 13;
 const OBJ_BIRCH_MID: usize = 14;
-/// Trees closer than this use the detailed meshes.
-const NEAR_TREES: f32 = 190.0;
+/// The same meshes again, for trees dissolving from one level to the next.
+const OBJ_PINE_FADE: usize = 15;
+const OBJ_BROAD_FADE: usize = 16;
+const OBJ_BIRCH_FADE: usize = 17;
+const OBJ_PINE_MID_FADE: usize = 18;
+const OBJ_BROAD_MID_FADE: usize = 19;
+const OBJ_BIRCH_MID_FADE: usize = 20;
+/// Distances where trees change level of detail (`Quality::tree_lod`).
+#[derive(Clone, Copy)]
+struct TreeLod {
+    mid: f32,
+    card: f32,
+}
+/// How far each tree's own distances are shifted, at most, so trees
+/// change level one at a time rather than along a line.
+const LOD_JITTER: f32 = 6.0;
+/// A tree changes level only this far past its distance, and changes back
+/// only this far inside it, so it never flickers between the two.
+const LOD_SLACK: f32 = 2.5;
+/// Seconds a tree takes to dissolve from one level into the next.
+const LOD_FADE_SECS: f32 = 0.45;
+/// Floats per instance of a tree changing level, and of a card: an
+/// object's instance and the shares faded in and out (`LOD_FS`).
+const FADE_STRIDE: usize = INSTANCE_STRIDE + 2;
+const CARD_STRIDE: usize = FADE_STRIDE;
+
+/// Which level of detail a tree is drawn at (0 full, 1 middle, 2 card),
+/// the one it is leaving, and since when.
+struct TreeState {
+    level: u8,
+    from: u8,
+    since: f32,
+    seen: u64,
+}
+
+/// The level of detail for a tree first seen `d` metres away, with its own
+/// distances to the middle meshes and to cards.
+fn first_level(d: f32, to_mid: f32, to_card: f32) -> u8 {
+    if d < to_mid {
+        0
+    } else if d < to_card {
+        1
+    } else {
+        2
+    }
+}
+
+/// The level a tree at `level` moves to at `d` metres: it moves on only
+/// `LOD_SLACK` past its distance and back only as far inside it.
+fn next_level(level: u8, d: f32, to_mid: f32, to_card: f32) -> u8 {
+    let mut l = level;
+    loop {
+        l = match l {
+            0 if d > to_mid + LOD_SLACK => 1,
+            1 if d < to_mid - LOD_SLACK => 0,
+            1 if d > to_card + LOD_SLACK => 2,
+            2 if d < to_card - LOD_SLACK => 1,
+            _ => return l,
+        };
+    }
+}
+
+/// A number in 0..1 from where a tree stands.
+fn unit_hash(key: (i64, i64)) -> f32 {
+    let mut h = (key.0 as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ (key.1 as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+    h ^= h >> 29;
+    h = h.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    h ^= h >> 32;
+    (h >> 40) as f32 / (1u64 << 24) as f32
+}
+/// Texture units for the cards' pictures.
+const UNIT_CARD_ALBEDO: u32 = 9;
+const UNIT_CARD_NORMAL: u32 = 10;
+const UNIT_CARD_DEPTH: u32 = 11;
+
+/// The meshes of each kind of tree (pine, broadleaf, birch) besides its
+/// own: at a middle distance, and the full and middle ones again for trees
+/// dissolving between levels.
+struct TreeMeshes {
+    near_fade: usize,
+    mid: usize,
+    mid_fade: usize,
+}
+const TREES: [TreeMeshes; 3] = [
+    TreeMeshes {
+        near_fade: OBJ_PINE_FADE,
+        mid: OBJ_PINE_MID,
+        mid_fade: OBJ_PINE_MID_FADE,
+    },
+    TreeMeshes {
+        near_fade: OBJ_BROAD_FADE,
+        mid: OBJ_BROAD_MID,
+        mid_fade: OBJ_BROAD_MID_FADE,
+    },
+    TreeMeshes {
+        near_fade: OBJ_BIRCH_FADE,
+        mid: OBJ_BIRCH_MID,
+        mid_fade: OBJ_BIRCH_MID_FADE,
+    },
+];
 /// Objects further than this are hidden in the haze anyway.
 const FAR_CULL: f32 = 1600.0;
 /// Distant forest thins out from here on.
@@ -1675,6 +1798,30 @@ impl GlState {
                 &[NOISE, LIGHT, FOLIAGE, OBJECT_FS],
                 &object_attribs,
             )?;
+            let mut fade_attribs = object_attribs.to_vec();
+            fade_attribs.push("i_lod");
+            self.compile(
+                gl,
+                "object_fade",
+                &[LOD_FADE, NOISE, WIND, OBJECT_VS],
+                &[LOD_FADE, NOISE, LIGHT, FOLIAGE, LOD_FS, OBJECT_FS],
+                &fade_attribs,
+            )?;
+            let card_attribs = ["a_corner", "i_pos_rot", "i_scale", "i_tint", "i_lod"];
+            self.compile(
+                gl,
+                "card",
+                &[NOISE, WIND, IMPOSTOR_VS],
+                &[NOISE, LIGHT, FOLIAGE, LOD_FS, IMPOSTOR_SURFACE, IMPOSTOR_FS],
+                &card_attribs,
+            )?;
+            self.compile(
+                gl,
+                "sh_card",
+                &[NOISE, WIND, IMPOSTOR_VS],
+                &[IMPOSTOR_SURFACE, IMPOSTOR_DEPTH_FS],
+                &card_attribs,
+            )?;
             self.compile(
                 gl,
                 "blob",
@@ -1767,14 +1914,27 @@ impl GlState {
                 mesh::pine_mid(),
                 mesh::broadleaf_mid(),
                 mesh::birch_mid(),
+                mesh::pine(),
+                mesh::broadleaf(),
+                mesh::birch(),
+                mesh::pine_mid(),
+                mesh::broadleaf_mid(),
+                mesh::birch_mid(),
             ];
-            for m in meshes.iter() {
+            for (i, m) in meshes.iter().enumerate() {
+                // Trees changing level carry how far they are through it.
+                let fading = TREES.iter().any(|t| t.near_fade == i || t.mid_fade == i);
+                let instance: &[(i32, i32)] = if fading {
+                    &[(4, 0), (2, 4), (3, 6), (2, 9)]
+                } else {
+                    &[(4, 0), (2, 4), (3, 6)]
+                };
                 let mut b = Self::buffers(
                     gl,
                     &[(3, 0), (3, 3), (3, 6), (1, 9)],
                     mesh::VERTEX_STRIDE as i32,
                     &m.v,
-                    Some(&[(4, 0), (2, 4), (3, 6)]),
+                    Some(instance),
                 )?;
                 b.count = m.vertex_count();
                 self.objects.push(b);
@@ -1794,6 +1954,21 @@ impl GlState {
             let mut sh = Self::buffers(gl, &[(2, 0)], 2, &quad, Some(&[(4, 0)]))?;
             sh.count = 6;
             self.blobs = Some(sh);
+            // Cards: a quad from the foot of the tree up, one per tree.
+            let card = [
+                -1.0f32, 0.0, 1.0, 0.0, 1.0, 1.0, -1.0, 0.0, 1.0, 1.0, -1.0, 1.0,
+            ];
+            for _ in 0..TREES.len() {
+                let mut b = Self::buffers(
+                    gl,
+                    &[(2, 0)],
+                    2,
+                    &card,
+                    Some(&[(4, 0), (2, 4), (3, 6), (2, 9)]),
+                )?;
+                b.count = 6;
+                self.cards.push(b);
+            }
             let mut rs = Self::buffers(gl, &[(2, 0)], 2, &quad, Some(&[(4, 0)]))?;
             rs.count = 6;
             self.rider_blob = Some(rs);
@@ -1949,6 +2124,10 @@ impl GlState {
 
     /// Cull scattered objects behind the camera or lost in the haze, and use
     /// simplified meshes for distant trees.
+    /// Sort the scattered objects in and around the view into what is drawn
+    /// how: trees close by as full meshes, further off as middle ones, far
+    /// away as cards, and trees in the middle of changing level as both
+    /// (they dissolve, see `LOD_FS`); bushes, rocks and houses as they are.
     unsafe fn split_scattered(&mut self, gl: &glow::Context, f: &FrameData) {
         let fwd = f.fwd;
         // How far a world-space radius reaches in clip x and y, for keeping
@@ -1956,11 +2135,24 @@ impl GlState {
         let m = &f.vp;
         let reach_x = len([m[0], m[4], m[8]]);
         let reach_y = len([m[1], m[5], m[9]]);
+        let lod = f.quality.tree_lod();
+        let cards = self.card_tex.is_some();
+        self.lod_frame += 1;
+        let frame = self.lod_frame;
+        let mut states = std::mem::take(&mut self.tree_states);
         let mut near: [Vec<f32>; KINDS] = Default::default();
+        let mut near_fade: [Vec<f32>; 3] = Default::default();
         let mut mid: [Vec<f32>; 3] = Default::default();
+        let mut mid_fade: [Vec<f32>; 3] = Default::default();
         let mut far: [Vec<f32>; 2] = Default::default();
+        let mut card: [Vec<f32>; 3] = Default::default();
         for (kind, list) in self.scattered.iter().enumerate() {
-            let tree = matches!(kind, OBJ_PINE | OBJ_BROAD | OBJ_BIRCH);
+            let tree = match kind {
+                OBJ_PINE => Some(0),
+                OBJ_BROAD => Some(1),
+                OBJ_BIRCH => Some(2),
+                _ => None,
+            };
             let small = matches!(kind, OBJ_BUSH | OBJ_ROCK);
             for inst in list.as_chunks::<INSTANCE_STRIDE>().0 {
                 let rel = sub([inst[0], inst[1], inst[2]], f.cam);
@@ -1980,63 +2172,140 @@ impl GlState {
                         continue;
                     }
                 }
-                if tree && dist > f.quality.near_trees() {
-                    // Thin distant forest: in the haze fewer, slightly bigger
-                    // trees look the same, and masses of tiny trees are slow
-                    // to draw. Which trees stay depends only on where they
-                    // stand, so none flicker.
-                    let keep =
-                        1.0 - 0.6 * ((dist - THIN_FROM) / (FAR_CULL - THIN_FROM)).clamp(0.0, 1.0);
-                    let h = ((inst[0] * 12.9898 + inst[2] * 78.233).sin() * 43_758.547)
-                        .fract()
-                        .abs();
-                    if h > keep {
-                        continue;
-                    }
-                    let mut grown = *inst;
-                    let g = keep.sqrt().recip();
-                    for k in [4, 5] {
-                        grown[k] *= g;
-                    }
-                    far[if kind == OBJ_PINE { 0 } else { 1 }].extend_from_slice(&grown);
-                } else if tree && dist > f.quality.detailed_trees() {
-                    let k = match kind {
-                        OBJ_PINE => 0,
-                        OBJ_BROAD => 1,
-                        _ => 2,
-                    };
-                    mid[k].extend_from_slice(inst);
-                } else {
+                let Some(t) = tree else {
                     near[kind].extend_from_slice(inst);
+                    continue;
+                };
+                // Each tree's level, kept from frame to frame by where it
+                // stands in the world, with distances of its own.
+                let d = (rel[0] * rel[0] + rel[2] * rel[2]).sqrt();
+                let key = (
+                    ((inst[0] as f64 + f.origin.0) * 10.0).round() as i64,
+                    ((f.origin.1 - inst[2] as f64) * 10.0).round() as i64,
+                );
+                let shift = (unit_hash(key) - 0.5) * 2.0 * LOD_JITTER;
+                let (to_mid, to_card) = (lod.mid + shift, lod.card + shift);
+                let st = states.entry(key).or_insert_with(|| {
+                    let l = first_level(d, to_mid, to_card);
+                    TreeState {
+                        level: l,
+                        from: l,
+                        since: f32::NEG_INFINITY,
+                        seen: 0,
+                    }
+                });
+                st.seen = frame;
+                let l = next_level(st.level, d, to_mid, to_card);
+                if l != st.level {
+                    st.from = st.level;
+                    st.level = l;
+                    st.since = f.time;
+                }
+                let progress = ((f.time - st.since) / LOD_FADE_SECS).clamp(0.0, 1.0);
+                // Without cards, distant trees switch to the simple meshes.
+                let fading =
+                    progress < 1.0 && st.from != st.level && (cards || st.from.max(st.level) < 2);
+                // Thin distant forest: in the haze fewer, slightly bigger
+                // trees look the same, and masses of tiny trees are slow to
+                // draw. Which trees stay depends only on where they stand;
+                // each fades out over a little distance, and the forest fades
+                // away towards its far edge.
+                let keep =
+                    1.0 - 0.6 * ((dist - THIN_FROM) / (FAR_CULL - THIN_FROM)).clamp(0.0, 1.0);
+                let h = ((inst[0] * 12.9898 + inst[2] * 78.233).sin() * 43_758.547)
+                    .fract()
+                    .abs();
+                let thin = ((keep * 1.05 - h) / 0.05).clamp(0.0, 1.0)
+                    * (1.0 - smoothstep(FAR_CULL - 200.0, FAR_CULL, dist));
+                let mut grown = *inst;
+                let g = keep.sqrt().recip();
+                for k in [4, 5] {
+                    grown[k] *= g;
+                }
+                let mut place = |level: u8, fin: f32, fout: f32| {
+                    let solid = fin >= 1.0 && fout <= 0.0;
+                    match level {
+                        0 if solid => near[kind].extend_from_slice(inst),
+                        0 => {
+                            near_fade[t].extend_from_slice(inst);
+                            near_fade[t].extend_from_slice(&[fin, fout]);
+                        }
+                        1 if solid => mid[t].extend_from_slice(inst),
+                        1 => {
+                            mid_fade[t].extend_from_slice(inst);
+                            mid_fade[t].extend_from_slice(&[fin, fout]);
+                        }
+                        _ if cards => {
+                            if thin > 0.0 {
+                                card[t].extend_from_slice(&grown);
+                                card[t].extend_from_slice(&[fin, fout.max(1.0 - thin)]);
+                            }
+                        }
+                        _ => {
+                            if thin > 0.5 {
+                                far[if kind == OBJ_PINE { 0 } else { 1 }].extend_from_slice(&grown);
+                            }
+                        }
+                    }
+                };
+                if fading {
+                    place(st.from, 1.0, progress);
+                    place(st.level, progress, 0.0);
+                } else {
+                    place(st.level, 1.0, 0.0);
                 }
             }
         }
+        // Forget trees no longer in view: back in view, they start settled.
+        states.retain(|_, s| s.seen == frame);
+        self.tree_states = states;
         // Nearest first, so what they hide is not worked out at all.
-        for (kind, list) in near
-            .iter_mut()
-            .chain(mid.iter_mut())
-            .chain(far.iter_mut())
-            .enumerate()
-        {
-            let order = &mut self.order[kind % KINDS];
-            order.clear();
-            order.extend(list.as_chunks::<INSTANCE_STRIDE>().0.iter().map(|inst| {
-                let rel = sub([inst[0], inst[1], inst[2]], f.cam);
-                (dot(rel, rel), *inst)
-            }));
+        let by_distance = |list: &mut Vec<f32>, stride: usize| {
+            let mut order: Vec<(f32, usize)> = (0..list.len() / stride)
+                .map(|i| {
+                    let rel = sub(
+                        [list[i * stride], list[i * stride + 1], list[i * stride + 2]],
+                        f.cam,
+                    );
+                    (dot(rel, rel), i)
+                })
+                .collect();
             order.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
-            list.clear();
-            list.extend(order.iter().flat_map(|(_, inst)| *inst));
+            let sorted: Vec<f32> = order
+                .iter()
+                .flat_map(|&(_, i)| list[i * stride..(i + 1) * stride].iter().copied())
+                .collect();
+            *list = sorted;
+        };
+        for list in near.iter_mut().chain(mid.iter_mut()).chain(far.iter_mut()) {
+            by_distance(list, INSTANCE_STRIDE);
+        }
+        for list in near_fade
+            .iter_mut()
+            .chain(mid_fade.iter_mut())
+            .chain(card.iter_mut())
+        {
+            by_distance(list, FADE_STRIDE);
         }
         unsafe {
             for (kind, list) in near.iter().enumerate() {
                 Self::set_instances(gl, &mut self.objects[kind], list, INSTANCE_STRIDE);
             }
-            for (kind, list) in [OBJ_PINE_MID, OBJ_BROAD_MID, OBJ_BIRCH_MID]
-                .into_iter()
-                .zip(&mid)
-            {
-                Self::set_instances(gl, &mut self.objects[kind], list, INSTANCE_STRIDE);
+            for (t, meshes) in TREES.iter().enumerate() {
+                Self::set_instances(
+                    gl,
+                    &mut self.objects[meshes.near_fade],
+                    &near_fade[t],
+                    FADE_STRIDE,
+                );
+                Self::set_instances(gl, &mut self.objects[meshes.mid], &mid[t], INSTANCE_STRIDE);
+                Self::set_instances(
+                    gl,
+                    &mut self.objects[meshes.mid_fade],
+                    &mid_fade[t],
+                    FADE_STRIDE,
+                );
+                Self::set_instances(gl, &mut self.cards[t], &card[t], CARD_STRIDE);
             }
             Self::set_instances(
                 gl,
@@ -2050,6 +2319,100 @@ impl GlState {
                 &far[1],
                 INSTANCE_STRIDE,
             );
+        }
+    }
+
+    /// Hand the cards' pictures to the graphics card once they are made,
+    /// with all their mipmap levels.
+    unsafe fn ensure_card_textures(&mut self, gl: &glow::Context) {
+        if self.card_tex.is_some() || self.card_tex_failed {
+            return;
+        }
+        let Some(atlases) = CARDS.get() else {
+            return;
+        };
+        unsafe {
+            Self::drain_errors(gl);
+            let mut made = Vec::new();
+            for a in atlases {
+                let mut set = [None, None, None];
+                for (k, slot) in set.iter_mut().enumerate() {
+                    let tex = match gl.create_texture() {
+                        Ok(t) => t,
+                        Err(_) => {
+                            self.card_tex_failed = true;
+                            return;
+                        }
+                    };
+                    gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+                    gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+                    for (level, l) in a.levels.iter().enumerate() {
+                        let (data, internal, format) = match k {
+                            0 => (&l.albedo, glow::RGBA8, glow::RGBA),
+                            1 => (&l.normal, glow::RGBA8, glow::RGBA),
+                            _ => (&l.depth, glow::R8, glow::RED),
+                        };
+                        gl.tex_image_2d(
+                            glow::TEXTURE_2D,
+                            level as i32,
+                            internal as i32,
+                            l.size as i32,
+                            l.size as i32,
+                            0,
+                            format,
+                            glow::UNSIGNED_BYTE,
+                            glow::PixelUnpackData::Slice(Some(data)),
+                        );
+                    }
+                    gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 4);
+                    for (p, v) in [
+                        (glow::TEXTURE_MIN_FILTER, glow::LINEAR_MIPMAP_LINEAR),
+                        (glow::TEXTURE_MAG_FILTER, glow::LINEAR),
+                        (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE),
+                        (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE),
+                    ] {
+                        gl.tex_parameter_i32(glow::TEXTURE_2D, p, v as i32);
+                    }
+                    *slot = Some(tex);
+                }
+                made.push([set[0].unwrap(), set[1].unwrap(), set[2].unwrap()]);
+            }
+            gl.bind_texture(glow::TEXTURE_2D, None);
+            if gl.get_error() != glow::NO_ERROR || made.len() != 3 {
+                self.card_tex_failed = true;
+                return;
+            }
+            self.card_tex = Some([made[0], made[1], made[2]]);
+        }
+    }
+
+    /// Draw the cards of distant trees, with `program` ("card", or
+    /// "sh_card" facing the sun for shadows).
+    unsafe fn draw_cards(&mut self, gl: &glow::Context, program: &'static str, face: V3) {
+        let Some(tex) = self.card_tex else {
+            return;
+        };
+        unsafe {
+            let p = self.programs.get_mut(program).unwrap();
+            p.v3(gl, "u_face", face);
+            p.i1(gl, "u_imp_albedo", UNIT_CARD_ALBEDO as i32);
+            p.i1(gl, "u_imp_normal", UNIT_CARD_NORMAL as i32);
+            p.i1(gl, "u_imp_depth", UNIT_CARD_DEPTH as i32);
+            for (b, set) in self.cards.iter().zip(tex) {
+                if b.instances == 0 {
+                    continue;
+                }
+                for (unit, t) in [UNIT_CARD_ALBEDO, UNIT_CARD_NORMAL, UNIT_CARD_DEPTH]
+                    .into_iter()
+                    .zip(set)
+                {
+                    gl.active_texture(glow::TEXTURE0 + unit);
+                    gl.bind_texture(glow::TEXTURE_2D, Some(t));
+                }
+                gl.bind_vertex_array(Some(b.vao));
+                gl.draw_arrays_instanced(glow::TRIANGLES, 0, b.count, b.instances);
+            }
+            gl.active_texture(glow::TEXTURE0);
         }
     }
 
@@ -2465,6 +2828,7 @@ impl GlState {
             gl.use_program(Some(p.id));
             p.m4(gl, "u_vp", &f.vp);
             p.v3(gl, "u_cam", f.cam);
+            p.v3(gl, "u_eye", f.cam);
             p.v3(gl, "u_sun", f.sun);
             let l = &f.look;
             for (name, v) in [
@@ -2688,6 +3052,8 @@ impl GlState {
                 p.f2(gl, "u_origin", f.origin.0 as f32, f.origin.1 as f32);
                 p.f1(gl, "u_obj_time", f.time);
                 p.f1(gl, "u_wind", f.look.wind);
+                // Trees dissolving between levels cast their shadow with
+                // both: the shapes are alike, so it hardly shows.
                 self.draw_instanced(
                     gl,
                     &[
@@ -2695,13 +3061,28 @@ impl GlState {
                         OBJ_BROAD,
                         OBJ_BIRCH,
                         OBJ_BUSH,
+                        OBJ_PINE_FADE,
+                        OBJ_BROAD_FADE,
+                        OBJ_BIRCH_FADE,
                         OBJ_PINE_MID,
                         OBJ_BROAD_MID,
                         OBJ_BIRCH_MID,
+                        OBJ_PINE_MID_FADE,
+                        OBJ_BROAD_MID_FADE,
+                        OBJ_BIRCH_MID_FADE,
                     ],
                 );
                 if k == 1 {
                     self.draw_instanced(gl, &[OBJ_PINE_FAR, OBJ_BROAD_FAR]);
+                    // Cards cast their shadow turned towards the sun.
+                    let p = self.programs.get_mut("sh_card").unwrap();
+                    gl.use_program(Some(p.id));
+                    p.m4(gl, "u_vp", &f.light_vp[k]);
+                    p.f2(gl, "u_origin", f.origin.0 as f32, f.origin.1 as f32);
+                    p.f1(gl, "u_obj_time", f.time);
+                    p.f1(gl, "u_wind", f.look.wind);
+                    p.v3(gl, "u_eye", f.cam);
+                    self.draw_cards(gl, "sh_card", f.sun);
                 }
                 let p = self.programs.get_mut("sh_object").unwrap();
                 p.f1(gl, "u_wind", 0.0);
@@ -2940,6 +3321,7 @@ impl GlState {
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(rider.vbo));
             gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes(&f.rider), glow::STREAM_DRAW);
             rider.count = (f.rider.len() / mesh::VERTEX_STRIDE) as i32;
+            self.ensure_card_textures(gl);
             self.split_scattered(gl, f);
             Self::set_instances(gl, &mut self.objects[OBJ_POST], &f.posts, INSTANCE_STRIDE);
             Self::set_instances(
@@ -3026,7 +3408,39 @@ impl GlState {
                     OBJ_BROAD_FAR,
                 ],
             );
+            // Trees changing level: each level in its share of the pixels.
+            self.common(gl, "object_fade", f);
+            let p = self.programs.get_mut("object_fade").unwrap();
+            p.f1(gl, "u_obj_time", f.time);
+            p.f1(gl, "u_wind", f.look.wind);
+            self.draw_instanced(
+                gl,
+                &[
+                    OBJ_PINE_FADE,
+                    OBJ_BROAD_FADE,
+                    OBJ_BIRCH_FADE,
+                    OBJ_PINE_MID_FADE,
+                    OBJ_BROAD_MID_FADE,
+                    OBJ_BIRCH_MID_FADE,
+                ],
+            );
+            // Distant trees as cards, with edges smoothed by the
+            // multisampling where there is some.
+            if self.card_tex.is_some() {
+                let soft = self.targets.as_ref().is_some_and(|t| t.samples > 1);
+                self.common(gl, "card", f);
+                let p = self.programs.get_mut("card").unwrap();
+                p.f1(gl, "u_obj_time", f.time);
+                p.f1(gl, "u_wind", f.look.wind);
+                p.f1(gl, "u_a2c", if soft { 1.0 } else { 0.0 });
+                if soft {
+                    gl.enable(glow::SAMPLE_ALPHA_TO_COVERAGE);
+                }
+                self.draw_cards(gl, "card", [0.0; 3]);
+                gl.disable(glow::SAMPLE_ALPHA_TO_COVERAGE);
+            }
             let p = self.programs.get_mut("object").unwrap();
+            gl.use_program(Some(p.id));
             p.f1(gl, "u_wind", 0.0);
             self.draw_instanced(
                 gl,
@@ -3372,6 +3786,53 @@ impl GlState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trees_change_level_with_slack_and_never_flicker() {
+        let (m, c) = (55.0, 110.0);
+        assert_eq!(first_level(30.0, m, c), 0);
+        assert_eq!(first_level(80.0, m, c), 1);
+        assert_eq!(first_level(200.0, m, c), 2);
+        // Riding away: the tree moves on only past its distance and the slack...
+        assert_eq!(next_level(0, 56.0, m, c), 0);
+        assert_eq!(next_level(0, 58.0, m, c), 1);
+        // ...and back only well inside it, so hovering at 55 m changes nothing.
+        assert_eq!(next_level(1, 54.0, m, c), 1);
+        assert_eq!(next_level(1, 52.0, m, c), 0);
+        // A jump (the view turned, a new window) settles in one go.
+        assert_eq!(next_level(0, 300.0, m, c), 2);
+        assert_eq!(next_level(2, 10.0, m, c), 0);
+        // Distances are shifted per tree, evenly.
+        let shifts: Vec<f32> = (0..1000)
+            .map(|i| unit_hash((i * 37, i * 11 - 500)))
+            .collect();
+        assert!(shifts.iter().all(|&h| (0.0..1.0).contains(&h)));
+        let mean = shifts.iter().sum::<f32>() / shifts.len() as f32;
+        assert!((mean - 0.5).abs() < 0.05, "mean {mean}");
+    }
+
+    #[test]
+    fn cards_and_their_pictures_agree() {
+        // The card shader places and picks views as `impostor.rs` drew them.
+        for (name, v) in [
+            ("IMP_FRAMES", impostor::FRAMES as f32),
+            ("IMP_GRID", impostor::GRID as f32),
+            ("IMP_HALF", impostor::HALF_WIDTH),
+            ("IMP_BOTTOM", impostor::BOTTOM),
+            ("IMP_TOP", impostor::TOP),
+        ] {
+            let decl = format!("const float {name} = {v:?};");
+            assert!(
+                shaders::IMPOSTOR_VS.contains(&decl),
+                "IMPOSTOR_VS should declare {decl}"
+            );
+        }
+        let decl = format!("const float IMP_DEPTH_HALF = {:?};", impostor::HALF_WIDTH);
+        assert!(
+            shaders::IMPOSTOR_SURFACE.contains(&decl),
+            "IMPOSTOR_SURFACE: {decl}"
+        );
+    }
 
     /// The grass shader's layout, in f32 as on the GPU: a tuft's world
     /// spot (x, -z) and its per-lap random value.

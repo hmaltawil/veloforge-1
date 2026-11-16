@@ -616,6 +616,164 @@ void main() {
 }
 "#;
 
+/// Trees' levels of detail dissolve into one another instead of switching
+/// from one frame to the next: when a tree crosses its own distance to the
+/// next level, both are drawn for a moment, each in a share of the pixels
+/// that slides from one to the other (`split_scattered` keeps track of each
+/// tree's progress). `LOD_FADE` turns it on in the object shaders (only
+/// trees in the middle of a change need it: it costs the early depth test).
+pub const LOD_FADE: &str = "#define LOD_FADE\n";
+
+/// Whether this pixel belongs to this level, given (share faded in, share
+/// faded out). Every level uses the same fine pattern, so two levels
+/// changing places share the pixels out exactly, without gaps or overlaps.
+pub const LOD_FS: &str = r#"
+// A 4 x 4 ordered pattern: an even, fine screen with no grain to it.
+const float LOD_ORDER[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0,
+                                      3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
+bool lod_keep(vec2 fade) {
+    ivec2 q = ivec2(gl_FragCoord.xy) & 3;
+    float t = (LOD_ORDER[q.y * 4 + q.x] + 0.5) / 16.0;
+    return t >= 1.0 - fade.x && t < 1.0 - fade.y;
+}
+"#;
+
+/// Distant trees as cards (after `NOISE` and `WIND`): a picture
+/// of the tree (`impostor.rs`) that turns about its trunk to face the
+/// camera, or for its shadow the sun, showing the two views baked nearest
+/// to that direction. It sways like the tree's mesh. The constants match
+/// `impostor.rs`.
+pub const IMPOSTOR_VS: &str = r#"
+const float IMP_FRAMES = 16.0;
+const float IMP_GRID = 4.0;
+const float IMP_HALF = 0.6;
+const float IMP_BOTTOM = -0.05;
+const float IMP_TOP = 1.15;
+in vec2 a_corner;     // -1..1 across, 0..1 up
+in vec4 i_pos_rot;
+in vec2 i_scale;
+in vec3 i_tint;
+in vec2 i_lod;        // share faded in and out (as distant forest thins too)
+uniform mat4 u_vp;
+uniform vec3 u_eye;
+uniform float u_obj_time;
+uniform float u_wind;
+uniform vec3 u_face;  // the sun's direction to face it (shadows); 0 to face the camera
+out vec3 v_pos;
+out vec2 v_uv0;
+out vec2 v_uv1;
+out float v_blend;
+out vec3 v_tint;
+out vec2 v_lod;
+out vec3 v_rot;       // cos and sin of the tree's turn, and its height over width
+out vec3 v_toward;    // towards the viewer across the ground, times the tree's width
+void main() {
+    vec3 base = i_pos_rot.xyz;
+    vec2 wp = vec2(base.x + u_origin.x, u_origin.y - base.z);
+    vec2 to = length(u_face) > 0.0 ? u_face.xz : u_eye.xz - base.xz;
+    to = normalize(to + vec2(1.0e-6, 0.0));
+    float phi = atan(to.x, to.y);
+    // The direction it is seen from, in the tree's own frame, in views.
+    float f = mod((phi - i_pos_rot.w) / 6.2831853 * IMP_FRAMES, IMP_FRAMES);
+    float f0 = floor(f);
+    float f1 = mod(f0 + 1.0, IMP_FRAMES);
+    v_blend = f - f0;
+    vec2 uv = vec2(a_corner.x * 0.5 + 0.5, a_corner.y);
+    v_uv0 = (vec2(mod(f0, IMP_GRID), floor(f0 / IMP_GRID)) + uv) / IMP_GRID;
+    v_uv1 = (vec2(mod(f1, IMP_GRID), floor(f1 / IMP_GRID)) + uv) / IMP_GRID;
+    float y = mix(IMP_BOTTOM, IMP_TOP, a_corner.y);
+    vec3 right = vec3(to.y, 0.0, -to.x);
+    vec3 p = right * a_corner.x * IMP_HALF * i_scale.x + vec3(0.0, y * i_scale.y, 0.0);
+    // Sway as the tree's mesh does (OBJECT_VS).
+    float ph = hash12(floor(wp * 0.5)) * 6.2832;
+    float gust = gust_at(wp, u_obj_time);
+    float sway = u_wind * y * y * ((0.35 + 0.9 * gust) * sway_at(u_obj_time, ph) + 1.1 * gust);
+    p.x += sway * i_scale.y * 0.0066;
+    p.z += sway * i_scale.y * 0.0042;
+    v_pos = base + p;
+    v_tint = i_tint;
+    v_lod = i_lod;
+    v_rot = vec3(cos(i_pos_rot.w), sin(i_pos_rot.w), i_scale.y / i_scale.x);
+    v_toward = vec3(to.x, 0.0, to.y) * i_scale.x;
+    gl_Position = u_vp * vec4(v_pos, 1.0);
+}
+"#;
+
+/// A card's picture: colour, coverage, normal and foliage, decoded from
+/// the premultiplied atlases (`impostor.rs`), the two views blended.
+pub const IMPOSTOR_SURFACE: &str = r#"
+const float IMP_DEPTH_HALF = 0.6;  // as IMP_HALF: depth is stored across the same span
+uniform sampler2D u_imp_albedo;
+uniform sampler2D u_imp_normal;
+uniform sampler2D u_imp_depth;
+in vec2 v_uv0;
+in vec2 v_uv1;
+in float v_blend;
+in vec3 v_rot;
+in vec3 v_toward;
+// Coverage (alpha), colour, normal in render space, foliage (0..1), and
+// how far in front of the card the surface stands (render space).
+float imp_surface(out vec3 col, out vec3 n, out float leaf, out vec3 front) {
+    vec4 a = mix(texture(u_imp_albedo, v_uv0), texture(u_imp_albedo, v_uv1), v_blend);
+    vec4 b = mix(texture(u_imp_normal, v_uv0), texture(u_imp_normal, v_uv1), v_blend);
+    float d = mix(texture(u_imp_depth, v_uv0).r, texture(u_imp_depth, v_uv1).r, v_blend);
+    float inv = 1.0 / max(a.a, 1.0e-3);
+    front = v_toward * (d * inv - 0.5) * 2.0 * IMP_DEPTH_HALF;
+    col = a.rgb * inv;
+    col *= col;
+    vec3 m = b.rgb * inv * 2.0 - 1.0;
+    leaf = clamp(b.a * inv, 0.0, 1.0);
+    // Turned with the tree, and corrected for its height over width.
+    m = vec3(v_rot.x * m.x + v_rot.y * m.z, m.y / v_rot.z, -v_rot.y * m.x + v_rot.x * m.z);
+    n = normalize(m);
+    return a.a;
+}
+"#;
+
+pub const IMPOSTOR_FS: &str = r#"
+uniform float u_a2c;  // 1: soft edges by coverage (multisampled); 0: cut out
+in vec3 v_pos;
+in vec3 v_tint;
+in vec2 v_lod;
+out vec4 frag;
+void main() {
+    if (!lod_keep(v_lod)) discard;
+    vec3 col;
+    vec3 n;
+    float leaf;
+    vec3 front;
+    float cov = imp_surface(col, n, leaf, front);
+    if (u_a2c > 0.5) {
+        // Sharp, smooth edges at any size: coverage turned into samples.
+        cov = (cov - 0.5) / max(fwidth(cov), 1.0e-4) + 0.5;
+        if (cov <= 0.0) discard;
+    } else if (cov < 0.5) {
+        discard;
+    }
+    col *= mix(vec3(1.0), v_tint, leaf);
+    // Lit, shadowed and fogged where the leaves really are.
+    vec3 p = v_pos + front;
+    vec3 view = normalize(u_cam - p);
+    float vis = sun_vis(p, n);
+    vec3 lamp = lamp_light(p, n);
+    vec3 lit = mix(shade(col, n, 1.0, vis) + col * lamp,
+                   foliage(col, n, view, vis, ambient(n), lamp), leaf);
+    frag = out_col(apply_fog(lit, p));
+    frag.a = clamp(cov, 0.0, 1.0);
+}
+"#;
+
+/// A card's shadow: its outline, facing the sun.
+pub const IMPOSTOR_DEPTH_FS: &str = r#"
+void main() {
+    vec3 col;
+    vec3 n;
+    float leaf;
+    vec3 front;
+    if (imp_surface(col, n, leaf, front) < 0.5) discard;
+}
+"#;
+
 /// Wind for trees and grass (after `NOISE`): it comes in gusts, a field of
 /// stronger and calmer air drifting across the land, and sways at speeds
 /// that drift too, so nothing settles into a loop.
@@ -650,6 +808,10 @@ out vec3 v_nrm;
 out vec3 v_col;
 out float v_mat;
 out float v_h;
+#ifdef LOD_FADE
+in vec2 i_lod;
+out vec2 v_lod;
+#endif
 void main() {
     float c = cos(i_pos_rot.w);
     float s = sin(i_pos_rot.w);
@@ -677,6 +839,9 @@ void main() {
     v_col = a_col.r < 0.0 ? -a_col * i_tint : a_col;
     v_mat = a_mat;
     v_h = a_pos.y;
+#ifdef LOD_FADE
+    v_lod = i_lod;
+#endif
     gl_Position = u_vp * vec4(v_pos, 1.0);
 }
 "#;
@@ -689,8 +854,14 @@ in vec3 v_nrm;
 in vec3 v_col;
 in float v_mat;
 in float v_h;
+#ifdef LOD_FADE
+in vec2 v_lod;
+#endif
 out vec4 frag;
 void main() {
+#ifdef LOD_FADE
+    if (!lod_keep(v_lod)) discard;
+#endif
     vec3 n = normalize(v_nrm);
     vec3 view = normalize(u_cam - v_pos);
     float vis = sun_vis(v_pos, n);
