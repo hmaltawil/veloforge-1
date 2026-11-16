@@ -1189,7 +1189,7 @@ impl App {
     fn bench_frame(
         &mut self,
         ctx: &egui::Context,
-        gpu_ms: Option<[f32; 3]>,
+        gpu_ms: Option<[f32; crate::gfx::STAGES]>,
         size: (f32, f32),
         scale: f32,
     ) {
@@ -6210,8 +6210,8 @@ struct Bench {
     secs: f64,
     /// Time between frames, in milliseconds.
     frames: Vec<f32>,
-    /// GPU milliseconds per frame: shadows, scene, finishing.
-    gpu: Vec<[f32; 3]>,
+    /// GPU milliseconds per frame for each stage (see `gfx::STAGES`).
+    gpu: Vec<[f32; crate::gfx::STAGES]>,
 }
 
 impl Bench {
@@ -6263,11 +6263,19 @@ impl Bench {
         } else {
             let k = self.gpu.len() as f32;
             let avg = |i: usize| self.gpu.iter().map(|g| g[i]).sum::<f32>() / k;
-            let (sh, sc, fi) = (avg(0), avg(1), avg(2));
-            let all = sh + sc + fi;
+            let st: Vec<f32> = (0..crate::gfx::STAGES).map(avg).collect();
+            let all: f32 = st.iter().sum();
+            let scene = st[1] + st[2] + st[3] + st[4];
             out += &format!(
-                "Graphics card time per frame: {all:.1} ms (shadows {sh:.1}, scene {sc:.1}, finishing {fi:.1})\n\
+                "Graphics card time per frame: {all:.1} ms (shadows {:.1}, scene {scene:.1}, finishing {:.1})\n\
+                 The scene: trees and objects {:.1}, ground and road {:.1}, grass {:.1}, sky, water and the rest {:.1}\n\
                  Graphics card busy: {:.0}% at 30 fps, {:.0}% at 60 fps\n",
+                st[0],
+                st[5],
+                st[1],
+                st[2],
+                st[3],
+                st[4],
                 all * 30.0 / 10.0,
                 all * 60.0 / 10.0,
             );

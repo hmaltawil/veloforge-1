@@ -1104,8 +1104,53 @@ uniform float u_time;
 uniform int u_glass_n;
 uniform vec4 u_glass[16];   // x, y, width, height in pixels from the top left
 uniform float u_glass_r[16];
+uniform vec2 u_scene_texel; // 1 / the scene's size in pixels
+uniform float u_upscale;    // 1 when the scene was drawn smaller than the screen
 in vec2 v_uv;
 out vec4 frag;
+
+// The scene enlarged with a Catmull-Rom filter (sharper than bilinear),
+// from five bilinear taps.
+vec3 catmull_rom(vec2 uv) {
+    vec2 px = uv / u_scene_texel;
+    vec2 p = floor(px - 0.5) + 0.5;
+    vec2 f = px - p;
+    vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    vec2 w3 = f * f * (-0.5 + 0.5 * f);
+    vec2 w12 = w1 + w2;
+    vec2 t0 = (p - 1.0) * u_scene_texel;
+    vec2 t3 = (p + 2.0) * u_scene_texel;
+    vec2 t12 = (p + w2 / w12) * u_scene_texel;
+    float a = w12.x * w0.y, b = w0.x * w12.y, c = w12.x * w12.y, d = w3.x * w12.y, e = w12.x * w3.y;
+    vec3 s = texture(u_scene, vec2(t12.x, t0.y)).rgb * a
+           + texture(u_scene, vec2(t0.x, t12.y)).rgb * b
+           + texture(u_scene, t12).rgb * c
+           + texture(u_scene, vec2(t3.x, t12.y)).rgb * d
+           + texture(u_scene, vec2(t12.x, t3.y)).rgb * e;
+    return max(s / (a + b + c + d + e), vec3(0.0));
+}
+
+// Enlarge, then sharpen edges in proportion to how much contrast is
+// already there (like AMD's contrast adaptive sharpening), never beyond
+// the neighbours' range, so there are no halos.
+vec3 upscaled(vec2 uv) {
+    vec3 c = catmull_rom(uv);
+    vec3 n = texture(u_scene, uv + vec2(0.0, u_scene_texel.y)).rgb;
+    vec3 s = texture(u_scene, uv - vec2(0.0, u_scene_texel.y)).rgb;
+    vec3 e = texture(u_scene, uv + vec2(u_scene_texel.x, 0.0)).rgb;
+    vec3 w = texture(u_scene, uv - vec2(u_scene_texel.x, 0.0)).rgb;
+    vec3 lo = min(c, min(min(n, s), min(e, w)));
+    vec3 hi = max(c, max(max(n, s), max(e, w)));
+    // Judged on brightness squeezed into 0..1, as the screen will show it.
+    float l = dot(lo / (1.0 + lo), vec3(0.3, 0.6, 0.1));
+    float h = dot(hi / (1.0 + hi), vec3(0.3, 0.6, 0.1));
+    float amp = sqrt(clamp(min(l, 1.0 - h) / max(h, 1e-4), 0.0, 1.0));
+    float k = -amp * 0.16;
+    vec3 sharp = (c + k * (n + s + e + w)) / (1.0 + 4.0 * k);
+    return clamp(sharp, lo, hi);
+}
 
 float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
 
@@ -1114,7 +1159,7 @@ vec3 aces(vec3 c) {
 }
 
 void main() {
-    vec3 c = texture(u_scene, v_uv).rgb;
+    vec3 c = u_upscale > 0.5 ? upscaled(v_uv) : texture(u_scene, v_uv).rgb;
     vec3 bloom = texture(u_bloom, v_uv).rgb;
     // Frosted glass under the HUD panels.
     vec2 px = vec2(v_uv.x, 1.0 - v_uv.y) * u_res;

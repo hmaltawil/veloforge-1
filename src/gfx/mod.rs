@@ -565,9 +565,9 @@ impl GpuWorld {
         }
     }
 
-    /// Milliseconds the GPU spent on the last timed frame: shadows, the
-    /// scene, and the finishing pass (None if it cannot be measured here).
-    pub fn gpu_ms(&self) -> Option<[f32; 3]> {
+    /// Milliseconds the GPU spent on each stage of the last timed frame (see
+    /// [`STAGES`]; None if it cannot be measured here).
+    pub fn gpu_ms(&self) -> Option<[f32; STAGES]> {
         self.gl.lock().ok().and_then(|g| g.gpu_ms)
     }
 
@@ -1340,13 +1340,19 @@ struct GlState {
     timers: Option<Timers>,
     timers_failed: bool,
     /// Milliseconds the GPU last spent on shadows, the scene and finishing.
-    gpu_ms: Option<[f32; 3]>,
+    gpu_ms: Option<[f32; STAGES]>,
 }
 
-/// GPU timer queries for the three stages of a frame, a few frames deep so
+/// Stages of a frame timed on the GPU: shadows, trees and objects, ground
+/// and road (with the mountains), grass, the rest of the scene (shadow
+/// blobs, sky, water, rain), and the finishing pass.
+pub const STAGES: usize = 6;
+const STAGE_FINISHING: usize = 5;
+
+/// GPU timer queries for the stages of a frame, a few frames deep so
 /// results are read without waiting for the GPU.
 struct Timers {
-    q: Vec<[glow::Query; 3]>,
+    q: Vec<[glow::Query; STAGES]>,
     used: Vec<bool>,
     frame: usize,
 }
@@ -1417,6 +1423,8 @@ const OBJ_REFLECTOR: usize = 11;
 const NEAR_TREES: f32 = 190.0;
 /// Objects further than this are hidden in the haze anyway.
 const FAR_CULL: f32 = 1600.0;
+/// Distant forest thins out from here on.
+const THIN_FROM: f32 = 400.0;
 /// Bushes and rocks are too small to see beyond this.
 const SMALL_CULL: f32 = 600.0;
 /// Things this close are kept even behind the camera: their shadows may
@@ -1791,6 +1799,11 @@ impl GlState {
     /// simplified meshes for distant trees.
     unsafe fn split_scattered(&mut self, gl: &glow::Context, f: &FrameData) {
         let fwd = f.fwd;
+        // How far a world-space radius reaches in clip x and y, for keeping
+        // objects that overlap the edge of the view.
+        let m = &f.vp;
+        let reach_x = len([m[0], m[4], m[8]]);
+        let reach_y = len([m[1], m[5], m[9]]);
         let mut near: [Vec<f32>; KINDS] = Default::default();
         let mut far: [Vec<f32>; 2] = Default::default();
         for (kind, list) in self.scattered.iter().enumerate() {
@@ -1805,16 +1818,42 @@ impl GlState {
                 {
                     continue;
                 }
+                // Off to the side of the view (or above or below it). Close
+                // ones stay: their shadows may fall into view.
+                if dist > KEEP_AROUND {
+                    let r = inst[5];
+                    let q = transform(m, [inst[0], inst[1] + 0.5 * r, inst[2], 1.0]);
+                    if q[0].abs() > q[3] + r * reach_x || q[1].abs() > q[3] + r * reach_y {
+                        continue;
+                    }
+                }
                 if tree && dist > f.quality.near_trees() {
-                    far[if kind == OBJ_PINE { 0 } else { 1 }].extend_from_slice(inst);
+                    // Thin distant forest: in the haze fewer, slightly bigger
+                    // trees look the same, and masses of tiny trees are slow
+                    // to draw. Which trees stay depends only on where they
+                    // stand, so none flicker.
+                    let keep =
+                        1.0 - 0.6 * ((dist - THIN_FROM) / (FAR_CULL - THIN_FROM)).clamp(0.0, 1.0);
+                    let h = ((inst[0] * 12.9898 + inst[2] * 78.233).sin() * 43_758.547)
+                        .fract()
+                        .abs();
+                    if h > keep {
+                        continue;
+                    }
+                    let mut grown = *inst;
+                    let g = keep.sqrt().recip();
+                    for k in [4, 5] {
+                        grown[k] *= g;
+                    }
+                    far[if kind == OBJ_PINE { 0 } else { 1 }].extend_from_slice(&grown);
                 } else {
                     near[kind].extend_from_slice(inst);
                 }
             }
         }
         // Nearest first, so what they hide is not worked out at all.
-        for (kind, list) in near.iter_mut().enumerate() {
-            let order = &mut self.order[kind];
+        for (kind, list) in near.iter_mut().chain(far.iter_mut()).enumerate() {
+            let order = &mut self.order[kind % KINDS];
             order.clear();
             order.extend(list.as_chunks::<INSTANCE_STRIDE>().0.iter().map(|inst| {
                 let rel = sub([inst[0], inst[1], inst[2]], f.cam);
@@ -2363,8 +2402,8 @@ impl GlState {
         }
     }
 
-    /// Start timing stage `k` of this frame (0 shadows, 1 scene, 2
-    /// finishing); `k == 0` also collects the results from a few frames ago.
+    /// Start timing stage `k` of this frame (see [`STAGES`]); `k == 0` also
+    /// collects the results from a few frames ago.
     unsafe fn time_stage(&mut self, gl: &glow::Context, k: usize) {
         if !self.timing || self.timers_failed {
             return;
@@ -2379,7 +2418,7 @@ impl GlState {
                 let mut q = Vec::new();
                 for _ in 0..4 {
                     let mut set = Vec::new();
-                    for _ in 0..3 {
+                    for _ in 0..STAGES {
                         match gl.create_query() {
                             Ok(x) => set.push(x),
                             Err(_) => {
@@ -2388,7 +2427,7 @@ impl GlState {
                             }
                         }
                     }
-                    q.push([set[0], set[1], set[2]]);
+                    q.push(std::array::from_fn(|i| set[i]));
                 }
                 self.timers = Some(Timers {
                     used: vec![false; q.len()],
@@ -2404,7 +2443,9 @@ impl GlState {
                 let slot = t.frame;
                 if t.used[slot] {
                     let set = t.q[slot];
-                    if gl.get_query_parameter_u32(set[2], glow::QUERY_RESULT_AVAILABLE) != 0 {
+                    if gl.get_query_parameter_u32(set[STAGES - 1], glow::QUERY_RESULT_AVAILABLE)
+                        != 0
+                    {
                         let ms = set.map(|q| {
                             gl.get_query_parameter_u64(q, glow::QUERY_RESULT) as f32 / 1.0e6
                         });
@@ -2703,6 +2744,7 @@ impl GlState {
             self.draw_skins(gl, f, "skinned");
 
             // Distant mountains, far to near.
+            self.time_stage(gl, 2);
             if let Some((b, rings)) = self.mountains.as_ref().filter(|_| f.look.mountains) {
                 let (vao, rings) = (b.vao, rings.clone());
                 self.common(gl, "mountain", f);
@@ -2745,6 +2787,7 @@ impl GlState {
             gl.disable(glow::POLYGON_OFFSET_FILL);
 
             // Grass around the camera.
+            self.time_stage(gl, 3);
             if !self.grass.is_empty() && self.height_tex.is_some() {
                 self.common(gl, "grass", f);
                 let p = self.programs.get_mut("grass").unwrap();
@@ -2769,6 +2812,7 @@ impl GlState {
             }
 
             // Soft darkening under trees and riders.
+            self.time_stage(gl, 4);
             gl.enable(glow::BLEND);
             gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
             gl.depth_mask(false);
@@ -2848,7 +2892,7 @@ impl GlState {
             }
 
             // --- finishing ---------------------------------------------------
-            self.time_stage(gl, 2);
+            self.time_stage(gl, STAGE_FINISHING);
             gl.disable(glow::DEPTH_TEST);
             gl.depth_mask(false);
             if let Some(t) = self.targets.take() {
@@ -3004,6 +3048,9 @@ impl GlState {
                 radii[i] = radius * ppp;
             }
             p.i1(gl, "u_glass_n", n as i32);
+            p.f2(gl, "u_scene_texel", 1.0 / t.w as f32, 1.0 / t.h as f32);
+            let smaller = t.w + 1 < screen[0] || t.h + 1 < screen[1];
+            p.f1(gl, "u_upscale", if smaller { 1.0 } else { 0.0 });
             gl.uniform_4_f32_slice(p.loc(gl, "u_glass[0]"), &rects);
             gl.uniform_1_f32_slice(p.loc(gl, "u_glass_r[0]"), &radii);
         }
