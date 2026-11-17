@@ -617,6 +617,11 @@ impl GpuWorld {
         self.gl.lock().is_ok_and(|g| !g.direct && g.error.is_none())
     }
 
+    /// How many times the land has been uploaded so far (for `--bench`).
+    pub fn land_uploads(&self) -> u32 {
+        self.gl.lock().map(|g| g.land_uploads).unwrap_or(0)
+    }
+
     /// Milliseconds the computer spent on the last frame: preparing it, and
     /// issuing its drawing commands (for `--bench`).
     pub fn cpu_ms(&self) -> (f32, f32) {
@@ -1420,6 +1425,8 @@ struct GlState {
     gpu_ms: Option<[f32; STAGES]>,
     /// Milliseconds the last frame's drawing commands took to issue.
     paint_ms: f32,
+    /// How many times the land has been uploaded (for `--bench`).
+    land_uploads: u32,
     /// GPU timestamps around egui's drawing and the 3D view (for `--bench`).
     marks: Option<Marks>,
     marks_failed: bool,
@@ -3227,6 +3234,7 @@ impl GlState {
                 }
             }
             if let Some(t) = &f.terrain {
+                self.land_uploads += 1;
                 if let Err(e) = self.upload_terrain(gl, t) {
                     self.error = Some(e);
                     return;

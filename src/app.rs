@@ -1211,15 +1211,24 @@ impl App {
             return;
         }
         b.measuring = true;
-        b.frames
-            .push(now.duration_since(b.last).as_secs_f32() * 1000.0);
+        let ms = now.duration_since(b.last).as_secs_f32() * 1000.0;
+        b.frames.push(ms);
         b.last = now;
         if let Some(g) = gpu_ms {
             b.gpu.push(g);
         }
-        if let Some(o) = self.gpu.other_ms() {
+        let other = self.gpu.other_ms();
+        if let Some(o) = other {
             b.other.push(o);
         }
+        b.rows.push(BenchRow {
+            t: (elapsed - Bench::WARM_UP) as f32,
+            ms,
+            cpu: b.last_cpu,
+            gpu: gpu_ms.map_or(0.0, |g| g.iter().sum()),
+            show: other.map_or(0.0, |o| o[1]),
+            land: self.gpu.land_uploads(),
+        });
         if elapsed < Bench::WARM_UP + b.secs {
             return;
         }
@@ -1232,11 +1241,13 @@ impl App {
             size,
             &self.graphics,
         );
+        let csv = b.frames_csv();
         println!("{report}");
         for line in report.lines() {
             self.log_line(line.to_string());
         }
         let _ = std::fs::write(self.paths.data.join("bench.txt"), &report);
+        let _ = std::fs::write(self.paths.data.join("bench-frames.csv"), csv);
         self.bench = None;
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
@@ -6276,7 +6287,30 @@ struct Bench {
     /// GPU milliseconds outside the 3D view: the rest of the screen, and
     /// showing the frame.
     other: Vec<[f32; 2]>,
+    /// Every measured frame, in order, to see what the slow ones have in
+    /// common.
+    rows: Vec<BenchRow>,
+    /// The computer's latest timings (as in `cpu`).
+    last_cpu: [f32; 4],
     measuring: bool,
+}
+
+/// One measured frame.
+#[derive(Clone, Copy, Default)]
+struct BenchRow {
+    /// Seconds since measuring began.
+    t: f32,
+    /// Milliseconds since the frame before.
+    ms: f32,
+    /// The computer's latest timings: the app, preparing the 3D view,
+    /// issuing its drawing commands, the rest of the screen and showing it.
+    cpu: [f32; 4],
+    /// The graphics card's latest time for the 3D view (its timings arrive
+    /// a few frames late), and for showing the frame.
+    gpu: f32,
+    show: f32,
+    /// How many times the land had been uploaded by then.
+    land: u32,
 }
 
 impl Bench {
@@ -6293,14 +6327,16 @@ impl Bench {
             gpu: Vec::new(),
             cpu: Vec::new(),
             other: Vec::new(),
+            rows: Vec::new(),
+            last_cpu: [0.0; 4],
             measuring: false,
         }
     }
 
     fn cpu_frame(&mut self, app: f32, present: f32, prep: f32, paint: f32) {
+        self.last_cpu = [app, prep, paint, (present - paint).max(0.0)];
         if self.measuring {
-            self.cpu
-                .push([app, prep, paint, (present - paint).max(0.0)]);
+            self.cpu.push(self.last_cpu);
         }
     }
 
@@ -6376,6 +6412,81 @@ impl Bench {
                 avg(3),
             );
         }
+        out += &self.slow_frames();
+        out
+    }
+
+    /// What the frames that missed the screen's pace had around them.
+    fn slow_frames(&self) -> String {
+        let rows = &self.rows;
+        if rows.len() < 10 {
+            return String::new();
+        }
+        let mut ms: Vec<f32> = rows.iter().map(|r| r.ms).collect();
+        ms.sort_by(f32::total_cmp);
+        let usual = ms[ms.len() / 2];
+        // Slow: at least one more refresh of the screen than usual.
+        let limit = usual * 1.4;
+        let slow: Vec<usize> = (0..rows.len()).filter(|&i| rows[i].ms > limit).collect();
+        if slow.is_empty() {
+            return format!("Slow frames: none (usual frame {usual:.1} ms)\n");
+        }
+        let near = |i: usize, back: usize, ahead: usize| {
+            rows[i.saturating_sub(back)..(i + ahead + 1).min(rows.len())].iter()
+        };
+        let mut land = 0;
+        let mut card = 0;
+        let mut computer = 0;
+        let mut worst_app = 0.0f32;
+        let mut worst_card = 0.0f32;
+        for &i in &slow {
+            let first = rows[i.saturating_sub(3)].land;
+            if near(i, 3, 1).any(|r| r.land != first) {
+                land += 1;
+            }
+            // The graphics card's time for a frame arrives a few frames on.
+            let g = near(i, 0, 4).map(|r| r.gpu).fold(0.0, f32::max);
+            worst_card = worst_card.max(g);
+            if g > usual {
+                card += 1;
+            }
+            let c = near(i, 0, 1)
+                .map(|r| r.cpu[0] + r.cpu[2])
+                .fold(0.0, f32::max);
+            worst_app = worst_app.max(c);
+            if c > usual * 0.5 {
+                computer += 1;
+            }
+        }
+        let gaps: Vec<f32> = slow
+            .windows(2)
+            .map(|w| rows[w[1]].t - rows[w[0]].t)
+            .collect();
+        let mut sorted_gaps = gaps.clone();
+        sorted_gaps.sort_by(f32::total_cmp);
+        let gap = sorted_gaps
+            .get(sorted_gaps.len() / 2)
+            .copied()
+            .unwrap_or(0.0);
+        format!(
+            "Slow frames: {} over {limit:.0} ms (usual frame {usual:.1} ms), typically {gap:.1} s apart\n\
+             Around them: land uploaded {land}, graphics card over {usual:.0} ms {card} (worst {worst_card:.1}), \
+             computer over {:.0} ms {computer} (worst {worst_app:.1}), land uploads in the run {}\n",
+            slow.len(),
+            usual * 0.5,
+            rows.last().map_or(0, |r| r.land) - rows[0].land,
+        )
+    }
+
+    /// Every measured frame, for a closer look in a spreadsheet.
+    fn frames_csv(&self) -> String {
+        let mut out = String::from("seconds,frame_ms,app_ms,prepare_ms,commands_ms,rest_and_show_ms,gpu_3d_ms,gpu_show_ms,land_uploads\n");
+        for r in &self.rows {
+            out += &format!(
+                "{:.3},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{}\n",
+                r.t, r.ms, r.cpu[0], r.cpu[1], r.cpu[2], r.cpu[3], r.gpu, r.show, r.land
+            );
+        }
         out
     }
 }
@@ -6383,6 +6494,36 @@ impl Bench {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_bench_finds_what_slow_frames_have_around_them() {
+        let mut b = Bench::new(60.0);
+        for i in 0..300 {
+            let mut r = BenchRow {
+                t: i as f32 / 30.0,
+                ms: 33.3,
+                gpu: 25.0,
+                land: if i < 150 { 3 } else { 4 },
+                ..Default::default()
+            };
+            // One frame right after the land is uploaded, one where the
+            // computer was busy.
+            if i == 151 {
+                r.ms = 50.0;
+            }
+            if i == 40 {
+                r.ms = 50.0;
+                r.cpu[0] = 30.0;
+            }
+            b.rows.push(r);
+        }
+        let s = b.slow_frames();
+        assert!(s.starts_with("Slow frames: 2 over 47 ms"), "{s}");
+        assert!(s.contains("land uploaded 1,"), "{s}");
+        assert!(s.contains("computer over 17 ms 1 (worst 30.0)"), "{s}");
+        assert!(s.contains("land uploads in the run 1"), "{s}");
+        assert_eq!(b.frames_csv().lines().count(), 301);
+    }
 
     #[test]
     fn the_simulator_takes_over_only_while_it_is_on() {
