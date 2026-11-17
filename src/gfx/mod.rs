@@ -70,7 +70,18 @@ impl Quality {
     }
     /// Where trees change from their full meshes to cards (metres; every
     /// tree's own is shifted by up to `LOD_JITTER` either way).
+    /// `VELOFORGE_CARD_AT=metres` overrides it, for trying distances.
     fn tree_lod(self) -> TreeLod {
+        static CARD_AT: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+        let card_at = *CARD_AT.get_or_init(|| {
+            std::env::var("VELOFORGE_CARD_AT")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok())
+                .filter(|m| (20.0..1500.0).contains(m))
+        });
+        if let Some(card) = card_at {
+            return TreeLod { card };
+        }
         match self {
             Quality::High => TreeLod { card: 100.0 },
             Quality::Medium => TreeLod { card: 80.0 },
