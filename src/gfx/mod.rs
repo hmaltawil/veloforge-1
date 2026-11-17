@@ -1333,6 +1333,9 @@ struct Buffers {
     ebo: Option<glow::Buffer>,
     count: i32,
     instances: i32,
+    /// How many of the instances (nearest first) cast a shadow into each
+    /// cascade, for trees (see `split_scattered`).
+    shadowed: [i32; 2],
 }
 
 /// A texture that can be drawn into.
@@ -1369,6 +1372,13 @@ struct ShadowMaps {
     res: i32,
     fbo: [glow::Framebuffer; 2],
     tex: [glow::Texture; 2],
+}
+
+/// How far a tree's shadow can reach along the ground with the sun at
+/// `sun_y` (the sine of its height): the tallest trees are about 30 m.
+fn shadow_reach(sun_y: f32) -> f32 {
+    let s = sun_y.clamp(0.05, 1.0);
+    (30.0 * (1.0 - s * s).sqrt() / s).min(400.0)
 }
 
 /// Where the land window is centred: well ahead of the camera, so the
@@ -1408,6 +1418,8 @@ struct GlState {
     /// Distant trees' cards (one per kind of tree) and their pictures
     /// (colour and normals), once made.
     cards: Vec<Buffers>,
+    /// Card shadows of trees drawn in full beyond `MESH_SHADOWS`.
+    shadow_cards: Vec<Buffers>,
     card_tex: Option<[[glow::Texture; 3]; 3]>,
     card_tex_failed: bool,
     /// Each tree's level of detail, by where it stands in the world (in
@@ -1663,6 +1675,11 @@ const SMALL_CULL: f32 = 600.0;
 /// Things this close are kept even behind the camera: their shadows may
 /// fall into view.
 const KEEP_AROUND: f32 = 150.0;
+/// Trees drawn in full further away than this cast a card's shadow instead:
+/// out there the shadow is a few texels and looks the same.
+const MESH_SHADOWS: f32 = 150.0;
+/// The near shadow cascade's reach from the camera (see `shadow_cascades`).
+const NEAR_CASCADE_REACH: f32 = 26.0 + 40.0 * std::f32::consts::SQRT_2;
 /// Side of the square of grass that follows the camera, in metres.
 const GRASS_PATCH: f32 = 60.0;
 /// The sparse grass that reaches beyond the dense patch (and grows under
@@ -1983,6 +2000,15 @@ impl GlState {
                 )?;
                 b.count = 6;
                 self.cards.push(b);
+                let mut b = Self::buffers(
+                    gl,
+                    &[(2, 0)],
+                    2,
+                    &card,
+                    Some(&[(4, 0), (2, 4), (3, 6), (2, 9)]),
+                )?;
+                b.count = 6;
+                self.shadow_cards.push(b);
             }
             let mut rs = Self::buffers(gl, &[(2, 0)], 2, &quad, Some(&[(4, 0)]))?;
             rs.count = 6;
@@ -2125,6 +2151,7 @@ impl GlState {
                 ebo: None,
                 count: (data.len() as i32) / stride,
                 instances: 0,
+                shadowed: [0; 2],
             })
         }
     }
@@ -2165,6 +2192,7 @@ impl GlState {
         let mut near_fade: [Vec<f32>; 3] = Default::default();
         let mut far: [Vec<f32>; 2] = Default::default();
         let mut card: [Vec<f32>; 3] = Default::default();
+        let mut shadow_card: [Vec<f32>; 3] = Default::default();
         for (kind, list) in self.scattered.iter().enumerate() {
             let tree = match kind {
                 OBJ_PINE => Some(0),
@@ -2240,6 +2268,10 @@ impl GlState {
                 }
                 let mut place = |level: u8, fin: f32, fout: f32| {
                     let solid = fin >= 1.0 && fout <= 0.0;
+                    if level == FULL && dist > MESH_SHADOWS && cards {
+                        shadow_card[t].extend_from_slice(inst);
+                        shadow_card[t].extend_from_slice(&[1.0, 0.0]);
+                    }
                     match level {
                         FULL if solid => near[kind].extend_from_slice(inst),
                         FULL => {
@@ -2290,13 +2322,29 @@ impl GlState {
         for list in near_fade.iter_mut().chain(card.iter_mut()) {
             by_distance(list, FADE_STRIDE);
         }
+        // Which of them (nearest first) cast a shadow into each cascade: the
+        // near one only those close enough for their shadow to reach it
+        // (further with the sun low), the far one those within
+        // `MESH_SHADOWS` (the rest cast a card's, see above).
+        let reach = shadow_reach(f.sun[1]);
+        let limits = [NEAR_CASCADE_REACH + reach, MESH_SHADOWS];
+        let within = |list: &[f32], stride: usize| -> [i32; 2] {
+            limits.map(|lim| {
+                list.chunks_exact(stride)
+                    .take_while(|i| len(sub([i[0], i[1], i[2]], f.cam)) <= lim)
+                    .count() as i32
+            })
+        };
         unsafe {
             for (kind, list) in near.iter().enumerate() {
                 Self::set_instances(gl, &mut self.objects[kind], list, INSTANCE_STRIDE);
+                self.objects[kind].shadowed = within(list, INSTANCE_STRIDE);
             }
             for (t, &obj) in TREE_FADES.iter().enumerate() {
                 Self::set_instances(gl, &mut self.objects[obj], &near_fade[t], FADE_STRIDE);
+                self.objects[obj].shadowed = within(&near_fade[t], FADE_STRIDE);
                 Self::set_instances(gl, &mut self.cards[t], &card[t], CARD_STRIDE);
+                Self::set_instances(gl, &mut self.shadow_cards[t], &shadow_card[t], CARD_STRIDE);
             }
             Self::set_instances(
                 gl,
@@ -3011,6 +3059,20 @@ impl GlState {
         }
     }
 
+    /// Draw the instances that cast a shadow into cascade `k`.
+    unsafe fn draw_shadowed(&self, gl: &glow::Context, which: &[usize], k: usize) {
+        unsafe {
+            for &i in which {
+                let b = &self.objects[i];
+                let n = b.shadowed[k].min(b.instances);
+                if n > 0 && b.count > 0 {
+                    gl.bind_vertex_array(Some(b.vao));
+                    gl.draw_arrays_instanced(glow::TRIANGLES, 0, b.count, n);
+                }
+            }
+        }
+    }
+
     /// Render the two shadow cascades from the sun's point of view.
     unsafe fn shadow_pass(&mut self, gl: &glow::Context, f: &FrameData) {
         let Some(maps) = &self.shadow_maps else {
@@ -3044,19 +3106,21 @@ impl GlState {
                 p.f1(gl, "u_obj_time", f.time);
                 p.f1(gl, "u_wind", f.look.wind);
                 // Trees dissolving between levels cast their shadow with
-                // both: the shapes are alike, so it hardly shows.
-                self.draw_instanced(
+                // both: the shapes are alike, so it hardly shows. Only the
+                // trees whose shadow can fall into this cascade.
+                self.draw_shadowed(
                     gl,
                     &[
                         OBJ_PINE,
                         OBJ_BROAD,
                         OBJ_BIRCH,
-                        OBJ_BUSH,
                         OBJ_PINE_FADE,
                         OBJ_BROAD_FADE,
                         OBJ_BIRCH_FADE,
                     ],
+                    k,
                 );
+                self.draw_instanced(gl, &[OBJ_BUSH]);
                 if k == 1 {
                     self.draw_instanced(gl, &[OBJ_PINE_FAR, OBJ_BROAD_FAR]);
                     // Cards cast their shadow turned towards the sun.
@@ -3068,6 +3132,9 @@ impl GlState {
                     p.f1(gl, "u_wind", f.look.wind);
                     p.v3(gl, "u_eye", f.cam);
                     self.draw_cards(gl, "sh_card", f.sun);
+                    std::mem::swap(&mut self.cards, &mut self.shadow_cards);
+                    self.draw_cards(gl, "sh_card", f.sun);
+                    std::mem::swap(&mut self.cards, &mut self.shadow_cards);
                 }
                 let p = self.programs.get_mut("sh_object").unwrap();
                 p.f1(gl, "u_wind", 0.0);
@@ -3759,6 +3826,17 @@ impl GlState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tree_shadows_reach_further_with_the_sun_low() {
+        // Overhead, a shadow falls at the tree's foot.
+        assert!(shadow_reach(1.0) < 1.0);
+        // At 45 degrees, as long as the tree is tall.
+        assert!((shadow_reach(std::f32::consts::FRAC_1_SQRT_2) - 30.0).abs() < 0.1);
+        // Low in the sky, much longer, but never without end.
+        assert!(shadow_reach(0.2) > 140.0);
+        assert_eq!(shadow_reach(0.0), 400.0);
+    }
 
     #[test]
     fn the_land_is_rebuilt_once_every_few_hundred_metres() {
