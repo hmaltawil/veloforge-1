@@ -1374,6 +1374,18 @@ struct ShadowMaps {
     tex: [glow::Texture; 2],
 }
 
+/// `VELOFORGE_BEHIND=metres`: for trying it, drop everything further than
+/// this behind the camera, even what still casts a shadow into view.
+fn behind_cut() -> Option<f32> {
+    static CUT: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *CUT.get_or_init(|| {
+        std::env::var("VELOFORGE_BEHIND")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .filter(|m| *m >= 0.0)
+    })
+}
+
 /// How far a tree's shadow can reach along the ground with the sun at
 /// `sun_y` (the sine of its height): the tallest trees are about 30 m.
 fn shadow_reach(sun_y: f32) -> f32 {
@@ -1567,6 +1579,10 @@ const OBJ_REFLECTOR: usize = 11;
 const OBJ_PINE_FADE: usize = 12;
 const OBJ_BROAD_FADE: usize = 13;
 const OBJ_BIRCH_FADE: usize = 14;
+// Trees out of view whose shadow falls into it: drawn only into the shadows.
+const OBJ_PINE_SHADOW: usize = 15;
+const OBJ_BROAD_SHADOW: usize = 16;
+const OBJ_BIRCH_SHADOW: usize = 17;
 /// Distances where trees change level of detail (`Quality::tree_lod`).
 #[derive(Clone, Copy)]
 struct TreeLod {
@@ -1666,6 +1682,7 @@ const UNIT_CARD_DEPTH: u32 = 11;
 /// Each kind of tree's mesh again (pine, broadleaf, birch), for trees
 /// dissolving into or out of cards.
 const TREE_FADES: [usize; 3] = [OBJ_PINE_FADE, OBJ_BROAD_FADE, OBJ_BIRCH_FADE];
+const TREE_SHADOWS: [usize; 3] = [OBJ_PINE_SHADOW, OBJ_BROAD_SHADOW, OBJ_BIRCH_SHADOW];
 /// Objects further than this are hidden in the haze anyway.
 const FAR_CULL: f32 = 1600.0;
 /// Distant forest thins out from here on.
@@ -1952,6 +1969,9 @@ impl GlState {
                 mesh::pine(),
                 mesh::broadleaf(),
                 mesh::birch(),
+                mesh::pine(),
+                mesh::broadleaf(),
+                mesh::birch(),
             ];
             for (i, m) in meshes.iter().enumerate() {
                 // Trees changing level carry how far they are through it.
@@ -2193,6 +2213,28 @@ impl GlState {
         let mut far: [Vec<f32>; 2] = Default::default();
         let mut card: [Vec<f32>; 3] = Default::default();
         let mut shadow_card: [Vec<f32>; 3] = Default::default();
+        let mut shadow_mesh: [Vec<f32>; 3] = Default::default();
+        // Whether something of radius `r` at `p` is in view (or partly).
+        let in_view = |p: V3, r: f32| {
+            if dot(sub(p, f.cam), fwd) < -r {
+                return false;
+            }
+            let q = transform(m, [p[0], p[1], p[2], 1.0]);
+            q[0].abs() <= q[3] + r * reach_x && q[1].abs() <= q[3] + r * reach_y
+        };
+        // Which way and how far shadows fall along the ground, per metre of
+        // height.
+        let sun_flat = norm([f.sun[0], 0.0, f.sun[2]]);
+        let per_metre = shadow_reach(f.sun[1]) / 30.0;
+        // Whether the shadow of something `h` tall standing at `p` can fall
+        // into view: its foot, middle or tip.
+        let shadow_in_view = |p: V3, h: f32, r: f32| {
+            let s = scale(sun_flat, -(h * per_metre).min(400.0));
+            [0.0, 0.5, 1.0]
+                .into_iter()
+                .any(|k| in_view(add(p, scale(s, k)), r))
+        };
+        let behind_cut = behind_cut();
         for (kind, list) in self.scattered.iter().enumerate() {
             let tree = match kind {
                 OBJ_PINE => Some(0),
@@ -2204,20 +2246,37 @@ impl GlState {
             for inst in list.as_chunks::<INSTANCE_STRIDE>().0 {
                 let rel = sub([inst[0], inst[1], inst[2]], f.cam);
                 let dist = len(rel);
-                if dist > FAR_CULL
-                    || (small && dist > SMALL_CULL)
-                    || (dot(rel, fwd) < -inst[5] && dist > KEEP_AROUND)
-                {
+                if dist > FAR_CULL || (small && dist > SMALL_CULL) {
                     continue;
                 }
-                // Off to the side of the view (or above or below it). Close
-                // ones stay: their shadows may fall into view.
-                if dist > KEEP_AROUND {
-                    let r = inst[5];
-                    let q = transform(m, [inst[0], inst[1] + 0.5 * r, inst[2], 1.0]);
-                    if q[0].abs() > q[3] + r * reach_x || q[1].abs() > q[3] + r * reach_y {
+                let r = inst[5];
+                let foot = [inst[0], inst[1], inst[2]];
+                if !in_view([inst[0], inst[1] + 0.5 * r, inst[2]], r) {
+                    // Out of view, only its shadow can show: close by, and
+                    // only if it falls into view.
+                    let behind = dot(rel, fwd) < 0.0;
+                    if dist > KEEP_AROUND
+                        || behind_cut.is_some_and(|c| behind && dist > c)
+                        || !shadow_in_view(foot, r * 1.15, inst[4].max(1.0))
+                    {
                         continue;
                     }
+                    // Trees cast it without being drawn in the view: the same
+                    // shadow as if they were (full trees close by, a card's
+                    // further out), so none changes as it comes into view.
+                    let full = (inst[0] - f.cam[0]).hypot(inst[2] - f.cam[2]) < lod.card;
+                    match tree {
+                        Some(t) if (full && dist <= MESH_SHADOWS) || !cards => {
+                            shadow_mesh[t].extend_from_slice(inst)
+                        }
+                        Some(t) => {
+                            shadow_card[t].extend_from_slice(inst);
+                            shadow_card[t].extend_from_slice(&[1.0, 0.0]);
+                        }
+                        // The few houses and rocks as they are.
+                        None => near[kind].extend_from_slice(inst),
+                    }
+                    continue;
                 }
                 let Some(t) = tree else {
                     near[kind].extend_from_slice(inst);
@@ -2316,7 +2375,11 @@ impl GlState {
                 .collect();
             *list = sorted;
         };
-        for list in near.iter_mut().chain(far.iter_mut()) {
+        for list in near
+            .iter_mut()
+            .chain(far.iter_mut())
+            .chain(shadow_mesh.iter_mut())
+        {
             by_distance(list, INSTANCE_STRIDE);
         }
         for list in near_fade.iter_mut().chain(card.iter_mut()) {
@@ -2345,6 +2408,9 @@ impl GlState {
                 self.objects[obj].shadowed = within(&near_fade[t], FADE_STRIDE);
                 Self::set_instances(gl, &mut self.cards[t], &card[t], CARD_STRIDE);
                 Self::set_instances(gl, &mut self.shadow_cards[t], &shadow_card[t], CARD_STRIDE);
+                let obj = TREE_SHADOWS[t];
+                Self::set_instances(gl, &mut self.objects[obj], &shadow_mesh[t], INSTANCE_STRIDE);
+                self.objects[obj].shadowed = within(&shadow_mesh[t], INSTANCE_STRIDE);
             }
             Self::set_instances(
                 gl,
@@ -3117,6 +3183,9 @@ impl GlState {
                         OBJ_PINE_FADE,
                         OBJ_BROAD_FADE,
                         OBJ_BIRCH_FADE,
+                        OBJ_PINE_SHADOW,
+                        OBJ_BROAD_SHADOW,
+                        OBJ_BIRCH_SHADOW,
                     ],
                     k,
                 );
