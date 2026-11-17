@@ -697,10 +697,10 @@ impl GpuWorld {
         }
 
         // --- terrain windows --------------------------------------------
-        let ahead = (cx + self.yaw.sin() * 450.0, cz + self.yaw.cos() * 450.0);
+        let ahead = look_ahead(cx, cz, self.yaw);
         let needs = match &self.terrain {
             None => true,
-            Some(t) => ((cx - t.ox).powi(2) + (cz - t.oz).powi(2)).sqrt() > 320.0,
+            Some(t) => needs_new_window(ahead, (t.ox, t.oz)),
         };
         if needs && !self.pending {
             self.worker.request(route_arc.clone(), ahead.0, ahead.1);
@@ -1358,6 +1358,20 @@ struct ShadowMaps {
     res: i32,
     fbo: [glow::Framebuffer; 2],
     tex: [glow::Texture; 2],
+}
+
+/// Where the land window is centred: well ahead of the camera, so the
+/// road is built far into the distance.
+fn look_ahead(cx: f64, cz: f64, yaw: f64) -> (f64, f64) {
+    (cx + yaw.sin() * 450.0, cz + yaw.cos() * 450.0)
+}
+
+/// Whether the land window centred at `origin` should be rebuilt around
+/// `ahead`: once the point it was centred on has moved 320 m away. (The
+/// camera itself is 450 m from a fresh window's centre, so measuring from it
+/// rebuilt the land as soon as each window arrived.)
+fn needs_new_window(ahead: (f64, f64), origin: (f64, f64)) -> bool {
+    ((ahead.0 - origin.0).powi(2) + (ahead.1 - origin.1).powi(2)).sqrt() > 320.0
 }
 
 #[derive(Default)]
@@ -3734,6 +3748,29 @@ impl GlState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_land_is_rebuilt_once_every_few_hundred_metres() {
+        // Riding 2 km north, a new window is asked for each time the
+        // previous one arrives (as the worker does, centred ahead).
+        let mut origin: Option<(f64, f64)> = None;
+        let mut builds = 0;
+        for step in 0..=2000 {
+            let ahead = look_ahead(0.0, step as f64, 0.0);
+            if origin.is_none_or(|o| needs_new_window(ahead, o)) {
+                origin = Some(ahead);
+                builds += 1;
+            }
+            // The camera always stays well inside the 2 km window.
+            let o = origin.unwrap();
+            assert!((step as f64 - o.1).abs() < 800.0);
+        }
+        // The first window, then one every 320 m.
+        assert_eq!(builds, 7);
+        // A window that has just arrived is never out of date at once.
+        let a = look_ahead(100.0, 200.0, 0.7);
+        assert!(!needs_new_window(a, a));
+    }
 
     #[test]
     fn trees_change_level_with_slack_and_never_flicker() {
