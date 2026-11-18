@@ -449,6 +449,7 @@ impl Mesh {
         r: V3,
         clumps: usize,
         size: (f32, f32),
+        spread: (f32, f32),
         leaf: V3,
         seed: u32,
         whole: Crown,
@@ -466,7 +467,7 @@ impl Mesh {
                 let y = 1.0 - (k as f32 + 0.5) / (clumps - 1) as f32 * 1.6;
                 let ring = (1.0 - y * y).max(0.0).sqrt();
                 let a = k as f32 * golden + q(1) * 6.3;
-                let reach = 0.55 + 0.3 * q(2);
+                let reach = spread.0 + (spread.1 - spread.0) * q(2);
                 (
                     [a.cos() * ring * reach, y * reach, a.sin() * ring * reach],
                     size.0 + (size.1 - size.0) * q(4),
@@ -536,7 +537,7 @@ impl Mesh {
             let a = (i as f32 + 0.35 * (q(2) - 0.5)) / sides as f32 * std::f32::consts::TAU + turn;
             let tip = i & 1 == 0;
             let k = if tip {
-                0.85 + 0.35 * q(1)
+                0.9 + 0.2 * q(1)
             } else {
                 0.62 + 0.16 * q(1)
             };
@@ -615,7 +616,7 @@ impl Mesh {}
 /// Unit-height conifer: tiers of drooping branches, ragged at the tips and
 /// uneven from tier to tier, with paler new growth at the tips.
 pub fn pine() -> Mesh {
-    pine_with(12, 15, 7)
+    pine_with(12, 14, 7)
 }
 
 fn pine_with(tiers: usize, tips: usize, bark_sides: usize) -> Mesh {
@@ -638,8 +639,11 @@ fn pine_with(tiers: usize, tips: usize, bark_sides: usize) -> Mesh {
         let t = k as f32 / (tiers - 1) as f32;
         let q = |n: u32| rnd(61, k as u32, n);
         let y0 = 0.18 + 0.69 * t + 0.015 * (q(1) - 0.5);
-        let full = if q(5) < 0.2 { 0.86 } else { 1.0 };
-        let r = (0.41 * (1.0 - t).powf(0.9) + 0.06) * (0.9 + 0.2 * q(2)) * full;
+        // The wide lower tiers set the outline: they vary only a little,
+        // so none sticks out; higher up, some are thinner.
+        let full = if k >= 3 && q(5) < 0.2 { 0.86 } else { 1.0 };
+        let vary = 1.0 + (0.03 + 0.12 * t) * (2.0 * q(2) - 1.0);
+        let r = (0.41 * (1.0 - t).powf(0.9) + 0.06) * vary * full;
         // Fewer tiers stand further apart, so the tree keeps its height.
         let gap = 0.16 * 12.0 / tiers as f32;
         let y1 = if k + 1 == tiers {
@@ -651,7 +655,10 @@ fn pine_with(tiers: usize, tips: usize, bark_sides: usize) -> Mesh {
         let off = 0.012 * (1.0 - t) * q(7);
         let at = [lean.cos() * off, lean.sin() * off];
         let col = hued(PINE_GREEN, 0.3 * (q(3) - 0.5), 0.75 + 0.5 * t);
-        m.whorl(y0, y1, r, tips, tinted(col), 40 + k as u32, q(4) * 6.3, at);
+        // Each tier turned by the golden angle from the last, so the long
+        // tips of neighbouring tiers fill each other's gaps.
+        let turn = k as f32 * 2.399_963 + 0.3 * q(4);
+        m.whorl(y0, y1, r, tips, tinted(col), 40 + k as u32, turn, at);
     }
     m
 }
@@ -714,11 +721,11 @@ pub fn broadleaf() -> Mesh {
 /// end, and the centre and half sizes of the leaves each carries.
 fn broadleaf_limbs() -> Vec<(f32, V3, V3, V3, V3, V3)> {
     [
-        (0.2, 0.24, 0.6, 0.19, 0.19),
-        (1.5, 0.22, 0.63, 0.18, 0.2),
-        (2.65, 0.2, 0.67, 0.19, 0.2),
-        (3.8, 0.24, 0.57, 0.17, 0.18),
-        (5.0, 0.21, 0.64, 0.18, 0.19),
+        (0.2, 0.22, 0.6, 0.19, 0.19),
+        (1.5, 0.21, 0.63, 0.18, 0.2),
+        (2.65, 0.19, 0.67, 0.19, 0.2),
+        (3.8, 0.22, 0.57, 0.17, 0.18),
+        (5.0, 0.2, 0.64, 0.18, 0.19),
     ]
     .iter()
     .enumerate()
@@ -745,11 +752,13 @@ fn broadleaf_crown_masses(
     detail: (usize, usize),
 ) {
     for (k, &(_, _, _, _, c, r)) in limbs.iter().enumerate() {
+        // Five clumps spread well apart, covering a mass as six did.
         m.leaf_mass(
             c,
             r,
-            6,
+            5,
             (0.09, 0.14),
+            (0.68, 0.98),
             LEAF_GREEN,
             11 + k as u32,
             whole,
@@ -761,6 +770,7 @@ fn broadleaf_crown_masses(
         [0.2, 0.14, 0.19],
         5,
         (0.09, 0.14),
+        (0.68, 0.98),
         LEAF_GREEN,
         19,
         whole,
@@ -812,25 +822,41 @@ pub fn birch() -> Mesh {
         1 => [0.4, 0.38, 0.34],
         _ => white,
     });
-    // Short dark dashes across the bark.
+    // Short dark dashes across the bark, each lying on one of the trunk's
+    // six flat faces (as `sweep` makes them on an upright trunk).
+    let at_height = |y: f32| -> (V3, f32) {
+        let i = trunk
+            .iter()
+            .rposition(|p| p.0[1] <= y)
+            .unwrap_or(0)
+            .min(trunk.len() - 2);
+        let (a, b) = (trunk[i], trunk[i + 1]);
+        let t = ((y - a.0[1]) / (b.0[1] - a.0[1])).clamp(0.0, 1.0);
+        (add(a.0, scale(sub(b.0, a.0), t)), a.1 + (b.1 - a.1) * t)
+    };
+    let sixth = std::f32::consts::TAU / 6.0;
     for k in 0..14u32 {
         let q = |n: u32| rnd(73, k, n);
         let y = 0.1 + 0.6 * q(1);
-        let a = q(2) * std::f32::consts::TAU;
-        let r = (0.026 - 0.022 * y) * 1.06;
-        let (w, h) = (0.012 + 0.014 * q(3), 0.004 + 0.004 * q(4));
-        let d = [a.cos(), 0.0, a.sin()];
-        let side = [-a.sin(), 0.0, a.cos()];
-        let at = add([0.01 * y.min(0.5), y, 0.0], scale(d, r));
+        let face = (q(2) * 6.0) as usize % 6;
+        let a = (face as f32 + 0.5) * sixth;
+        let out = [-a.sin(), 0.0, -a.cos()];
+        let side = [-a.cos(), 0.0, a.sin()];
+        let (centre, r) = at_height(y);
+        // A face's middle is nearer the axis than its edges; its width is r.
+        let at = add(centre, scale(out, r * (sixth / 2.0).cos() + 0.0006));
+        let (w, h) = (r * (0.55 + 0.35 * q(3)), 0.004 + 0.004 * q(4));
         let c = [0.04, 0.035, 0.03];
         let p = |s: f32, t: f32| add(at, add(scale(side, s * w * 0.5), [0.0, t * h * 0.5, 0.0]));
-        for (a0, a1, a2) in [
-            ((-1.0, -1.0), (1.0, -1.0), (1.0, 1.0)),
-            ((-1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)),
+        for (s0, t0) in [
+            (-1.0, -1.0),
+            (1.0, -1.0),
+            (1.0, 1.0),
+            (-1.0, -1.0),
+            (1.0, 1.0),
+            (-1.0, 1.0),
         ] {
-            for (s0, t0) in [a0, a2, a1] {
-                m.push(p(s0, t0), d, c);
-            }
+            m.push(p(s0, t0), out, c);
         }
     }
     let whole = Crown {
@@ -886,6 +912,7 @@ fn birch_crown_masses(
             [0.1, 0.13, 0.095],
             3,
             (0.06, 0.09),
+            (0.55, 0.85),
             leaf,
             31 + k as u32,
             whole,
@@ -898,6 +925,7 @@ fn birch_crown_masses(
         [0.07, 0.09, 0.07],
         3,
         (0.05, 0.075),
+        (0.55, 0.85),
         leaf,
         47,
         whole,
@@ -1806,6 +1834,34 @@ mod tests {
         assert!((len(sub(k, [0.0, 1.0, 0.0])) - 0.44).abs() < 1e-3);
         assert!((len(sub(k, [0.1, 0.2, 0.0])) - 0.45).abs() < 1e-3);
         assert!(k[0] > 0.1, "knee bends forward");
+    }
+
+    #[test]
+    fn pines_are_round_from_above() {
+        // The farthest the pine reaches in each of 48 directions...
+        let m = pine();
+        let mut reach = [0f32; 48];
+        for v in m.v.chunks(VERTEX_STRIDE) {
+            let a = v[2].atan2(v[0]).rem_euclid(std::f32::consts::TAU);
+            let k = (a / std::f32::consts::TAU * 48.0) as usize % 48;
+            reach[k] = reach[k].max((v[0] * v[0] + v[2] * v[2]).sqrt());
+        }
+        // ...averaged over each eighth of the way round: the branch tips
+        // are ragged, but no side may reach out further than the others.
+        let mean = reach.iter().sum::<f32>() / 48.0;
+        for side in 0..8 {
+            let r = reach[side * 6..side * 6 + 6].iter().sum::<f32>() / 6.0;
+            assert!(
+                r < mean * 1.08,
+                "side at {} deg sticks out: {r} (mean {mean})",
+                side * 45
+            );
+            assert!(
+                r > mean * 0.85,
+                "side at {} deg dented: {r} (mean {mean})",
+                side * 45
+            );
+        }
     }
 
     #[test]
