@@ -3430,6 +3430,10 @@ impl GlState {
             };
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
             gl.viewport(0, 0, GROUND_MAP_SIZE, GROUND_MAP_SIZE);
+            // The scissor box is egui's for the 3D view, which drawing it to
+            // the screen uses later: put it back afterwards.
+            let mut egui_box = [0i32; 4];
+            gl.get_parameter_i32_slice(glow::SCISSOR_BOX, &mut egui_box);
             gl.enable(glow::SCISSOR_TEST);
             gl.scissor(x, y, w, h);
             gl.disable(glow::DEPTH_TEST);
@@ -3439,6 +3443,8 @@ impl GlState {
             gl.bind_vertex_array(self.sky_vao);
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
             gl.disable(glow::SCISSOR_TEST);
+            let [bx, by, bw, bh] = egui_box;
+            gl.scissor(bx, by, bw, bh);
         }
     }
 
