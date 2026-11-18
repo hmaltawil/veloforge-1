@@ -388,6 +388,134 @@ impl Mesh {
         }
     }
 
+    /// A trunk or limb: one tube swept along `path` (points and radii), its
+    /// rings shared at every bend so it never gaps, with each vertex's
+    /// colour from `col(ring, side)`.
+    fn sweep(&mut self, path: &[(V3, f32)], sides: usize, col: impl Fn(usize, usize) -> V3) {
+        if path.len() < 2 {
+            return;
+        }
+        // Directions along the path at each point.
+        let n = path.len();
+        let tangent = |i: usize| {
+            let a = path[i.saturating_sub(1)].0;
+            let b = path[(i + 1).min(n - 1)].0;
+            norm(sub(b, a))
+        };
+        // A frame carried along the path without twisting.
+        let mut frames = Vec::with_capacity(n);
+        let t0 = tangent(0);
+        let helper = if t0[1].abs() < 0.9 {
+            [0.0, 1.0, 0.0]
+        } else {
+            [1.0, 0.0, 0.0]
+        };
+        let mut u = norm(cross(t0, helper));
+        for i in 0..n {
+            let t = tangent(i);
+            u = norm(sub(u, scale(t, dot(u, t))));
+            frames.push((u, cross(t, u)));
+        }
+        let ring = |i: usize, j: usize| -> (V3, V3, V3) {
+            let (u, v) = frames[i];
+            let a = (j % sides) as f32 / sides as f32 * std::f32::consts::TAU;
+            let d = add(scale(u, a.cos()), scale(v, a.sin()));
+            (add(path[i].0, scale(d, path[i].1)), d, col(i, j % sides))
+        };
+        for i in 0..n - 1 {
+            for j in 0..sides {
+                let quad = [
+                    ring(i, j),
+                    ring(i, j + 1),
+                    ring(i + 1, j + 1),
+                    ring(i + 1, j),
+                ];
+                for idx in [0, 2, 1, 0, 3, 2] {
+                    let (p, nn, c) = quad[idx];
+                    self.push(p, nn, c);
+                }
+            }
+        }
+    }
+
+    /// One mass of leaves in a crown: `clumps` clumps over a ball around `c`
+    /// (half sizes `r`), one more filling it. Each clump is shaped by its
+    /// own mass, so the masses read as separate volumes, and shaded by its
+    /// place in the `whole` crown, darker inside and below.
+    #[allow(clippy::too_many_arguments)]
+    fn leaf_mass(
+        &mut self,
+        c: V3,
+        r: V3,
+        clumps: usize,
+        size: (f32, f32),
+        leaf: V3,
+        seed: u32,
+        whole: Crown,
+        (rings, segs): (usize, usize),
+    ) {
+        let mass = Crown {
+            c,
+            r: r[0].max(r[1]).max(r[2]),
+        };
+        let golden = std::f32::consts::PI * (3.0 - 5f32.sqrt());
+        for k in 0..clumps {
+            let q = |n: u32| rnd(seed, k as u32, n);
+            let (pos, rr) = if k + 1 < clumps {
+                // Over the outline, leaving out the bottom.
+                let y = 1.0 - (k as f32 + 0.5) / (clumps - 1) as f32 * 1.6;
+                let ring = (1.0 - y * y).max(0.0).sqrt();
+                let a = k as f32 * golden + q(1) * 6.3;
+                let reach = 0.55 + 0.3 * q(2);
+                (
+                    [a.cos() * ring * reach, y * reach, a.sin() * ring * reach],
+                    size.0 + (size.1 - size.0) * q(4),
+                )
+            } else {
+                ([0.0, 0.1, 0.0], size.1 * 1.15)
+            };
+            let at = add(c, [pos[0] * r[0], pos[1] * r[1], pos[2] * r[2]]);
+            let col = tinted(hued(leaf, 0.35 * (q(5) * 2.0 - 1.0), 0.94 + 0.12 * q(6)));
+            let half = [rr * (0.9 + 0.2 * q(7)), rr * 0.8, rr * (0.9 + 0.2 * q(8))];
+            let cseed = seed * 97 + k as u32;
+            let pt = |i: usize, j: usize| -> (V3, V3, V3) {
+                let j = if i == 0 || i == rings { 0 } else { j % segs };
+                let th = i as f32 / rings as f32 * std::f32::consts::PI;
+                let ph = (j as f32 + 0.5 * (i % 2) as f32) / segs as f32 * std::f32::consts::TAU;
+                let d = [th.sin() * ph.cos(), th.cos(), th.sin() * ph.sin()];
+                let kk = 1.0 + 0.3 * (rnd(cseed, i as u32, j as u32) - 0.5) * 2.0;
+                let p = add(
+                    at,
+                    [
+                        d[0] * half[0] * kk,
+                        d[1] * half[1] * kk,
+                        d[2] * half[2] * kk,
+                    ],
+                );
+                let local = norm([d[0] / half[0], d[1] / half[1], d[2] / half[2]]);
+                let n = norm(add(
+                    add(scale(local, 0.35), scale(norm(sub(p, mass.c)), 0.4)),
+                    scale(norm(sub(p, whole.c)), 0.25),
+                ));
+                let height = ((p[1] - (whole.c[1] - whole.r)) / (2.0 * whole.r)).clamp(0.0, 1.0);
+                let outer = (len(sub(p, whole.c)) / whole.r).clamp(0.0, 1.2);
+                let shade = (0.45 + 0.6 * height)
+                    * (0.55 + 0.45 * outer)
+                    * (1.0 + 0.2 * (rnd(cseed + 7, i as u32, j as u32) - 0.5));
+                (p, n, scale(col, shade))
+            };
+            for i in 0..rings {
+                for j in 0..segs {
+                    let quad = [pt(i, j), pt(i + 1, j), pt(i + 1, j + 1), pt(i, j + 1)];
+                    for idx in [0, 1, 2, 0, 2, 3] {
+                        let (p, n, c) = quad[idx];
+                        self.push(p, n, c);
+                    }
+                }
+            }
+        }
+    }
+
     /// One whorl of conifer branches: a cone with a ragged, drooping rim.
     #[allow(clippy::too_many_arguments)]
     fn whorl(&mut self, y0: f32, y1: f32, r: f32, sides: usize, col: V3, seed: u32, turn: f32) {
@@ -472,65 +600,7 @@ fn hued(col: V3, h: f32, b: f32) -> V3 {
     ]
 }
 
-impl Mesh {
-    /// A leafy crown: many small clumps scattered over a lopsided outline
-    /// around `centre` (half sizes `r`), a few more filling its inside, so
-    /// its silhouette is ragged rather than a few smooth balls. Each clump
-    /// has its own shade, between yellower and bluer greens.
-    #[allow(clippy::too_many_arguments)]
-    fn canopy(
-        &mut self,
-        centre: V3,
-        r: V3,
-        clumps: usize,
-        size: (f32, f32),
-        leaf: V3,
-        seed: u32,
-        lump: f32,
-        (rings, segs): (usize, usize),
-    ) {
-        let crown = Crown {
-            c: centre,
-            r: r[0].max(r[1]).max(r[2]),
-        };
-        let golden = std::f32::consts::PI * (3.0 - 5f32.sqrt());
-        let inner = clumps / 6;
-        for k in 0..clumps + inner {
-            let q = |n: u32| rnd(seed, k as u32, n);
-            let (dir, reach) = if k < clumps {
-                // Spread evenly over the outline, leaving out the very bottom.
-                let y = 1.0 - (k as f32 + 0.5) / clumps as f32 * 1.7;
-                let ring = (1.0 - y * y).max(0.0).sqrt();
-                let a = k as f32 * golden + q(1) * 0.6;
-                ([a.cos() * ring, y, a.sin() * ring], 0.62 + 0.3 * q(2))
-            } else {
-                let a = q(1) * std::f32::consts::TAU;
-                ([a.cos(), 0.3 * q(3) - 0.1, a.sin()], 0.25 * q(2))
-            };
-            let c = add(
-                centre,
-                [
-                    dir[0] * r[0] * reach,
-                    dir[1] * r[1] * reach,
-                    dir[2] * r[2] * reach,
-                ],
-            );
-            let rr = size.0 + (size.1 - size.0) * q(4);
-            let col = hued(leaf, 0.35 * (q(5) * 2.0 - 1.0), 0.94 + 0.12 * q(6));
-            self.clump_lit(
-                c,
-                [rr * (0.9 + 0.2 * q(7)), rr * 0.78, rr * (0.9 + 0.2 * q(8))],
-                rings,
-                segs,
-                tinted(col),
-                seed * 97 + k as u32,
-                lump,
-                crown,
-                0.62,
-            );
-        }
-    }
-}
+impl Mesh {}
 
 /// Unit-height conifer: tiers of drooping branches, ragged at the tips and
 /// uneven from tier to tier, with paler new growth at the tips.
@@ -591,58 +661,90 @@ pub fn pine_far() -> Mesh {
     m
 }
 
-/// Unit-height broadleaf tree: a spreading, uneven crown of many clumps on
-/// a stout trunk whose limbs show through the gaps below.
+/// Unit-height broadleaf tree: a stout trunk forking into five limbs, each
+/// carrying its own mass of leaves, with one more on top, so the crown is
+/// lumpy and uneven, with gaps between the masses.
 pub fn broadleaf() -> Mesh {
     let mut m = Mesh::default();
-    m.tube([0.0, 0.0, 0.0], [0.0, 0.06, 0.0], 0.08, 0.048, 8, BARK);
-    m.tube([0.0, 0.06, 0.0], [0.02, 0.3, 0.005], 0.048, 0.04, 8, BARK);
-    m.tube([0.02, 0.3, 0.005], [0.01, 0.46, 0.0], 0.04, 0.032, 8, BARK);
-    let fork = [0.01, 0.42, 0.0];
-    for (k, end) in [
-        [0.26, 0.62, 0.1],
-        [-0.24, 0.6, -0.12],
-        [0.04, 0.63, -0.27],
-        [-0.07, 0.66, 0.24],
-        [0.14, 0.76, -0.08],
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        m.tube(fork, end, 0.025, 0.011, 5, BARK);
-        // A twig off each limb.
-        let mid = scale(add(fork, end), 0.5);
-        let twig = add(end, [0.0, 0.1, 0.0]);
-        let twig = add(twig, [0.08 * (k as f32 - 2.0), 0.0, 0.06]);
-        m.tube(mid, twig, 0.012, 0.005, 4, BARK);
+    // A trunk flaring at the foot and leaning a little, in one piece.
+    m.sweep(
+        &[
+            ([0.0, 0.0, 0.0], 0.085),
+            ([0.004, 0.035, 0.0], 0.056),
+            ([0.018, 0.17, 0.006], 0.046),
+            ([0.016, 0.3, 0.0], 0.04),
+            ([0.004, 0.43, -0.004], 0.032),
+        ],
+        8,
+        |_, _| BARK,
+    );
+    let whole = Crown {
+        c: [0.0, 0.7, 0.0],
+        r: 0.5,
+    };
+    let limbs = broadleaf_limbs();
+    for &(_, from, mid, end, _, _) in &limbs {
+        m.sweep(&[(from, 0.028), (mid, 0.018), (end, 0.009)], 5, |_, _| BARK);
     }
     m.mat = MAT_LEAF;
-    broadleaf_crown(&mut m, (4, 6));
+    broadleaf_crown_masses(&mut m, &limbs, whole, (4, 6));
     m
 }
 
-fn broadleaf_crown(m: &mut Mesh, detail: (usize, usize)) {
-    m.canopy(
-        [0.0, 0.69, 0.0],
-        [0.42, 0.29, 0.39],
-        26,
-        (0.1, 0.16),
-        LEAF_GREEN,
-        11,
-        0.3,
-        detail,
-    );
+/// The broadleaf's limbs: direction, start (inside the trunk), middle and
+/// end, and the centre and half sizes of the leaves each carries.
+fn broadleaf_limbs() -> Vec<(f32, V3, V3, V3, V3, V3)> {
+    [
+        (0.2, 0.24, 0.63, 0.19, 0.15),
+        (1.5, 0.22, 0.67, 0.18, 0.16),
+        (2.65, 0.2, 0.71, 0.19, 0.17),
+        (3.8, 0.24, 0.6, 0.17, 0.14),
+        (5.0, 0.21, 0.68, 0.18, 0.16),
+    ]
+    .iter()
+    .enumerate()
+    .map(
+        |(k, &(a, reach, h, rh, rv)): (usize, &(f32, f32, f32, f32, f32))| {
+            let dir = [a.cos(), 0.0, a.sin()];
+            let from = [0.004, 0.37 + 0.018 * k as f32, -0.004];
+            let end = [dir[0] * reach, h, dir[2] * reach];
+            let mid = add(
+                from,
+                add(scale(dir, reach * 0.45), [0.0, (h - from[1]) * 0.62, 0.0]),
+            );
+            let c = add(end, add(scale(dir, 0.04), [0.0, 0.07, 0.0]));
+            (a, from, mid, end, c, [rh, rv, rh * 0.92])
+        },
+    )
+    .collect()
 }
 
-fn birch_crown(m: &mut Mesh, detail: (usize, usize)) {
-    m.canopy(
-        [0.0, 0.69, 0.0],
-        [0.27, 0.27, 0.25],
-        18,
-        (0.075, 0.115),
-        [0.1, 0.18, 0.036],
-        31,
-        0.35,
+fn broadleaf_crown_masses(
+    m: &mut Mesh,
+    limbs: &[(f32, V3, V3, V3, V3, V3)],
+    whole: Crown,
+    detail: (usize, usize),
+) {
+    for (k, &(_, _, _, _, c, r)) in limbs.iter().enumerate() {
+        m.leaf_mass(
+            c,
+            r,
+            5,
+            (0.09, 0.14),
+            LEAF_GREEN,
+            11 + k as u32,
+            whole,
+            detail,
+        );
+    }
+    m.leaf_mass(
+        [0.02, 0.86, -0.01],
+        [0.2, 0.14, 0.19],
+        5,
+        (0.09, 0.14),
+        LEAF_GREEN,
+        19,
+        whole,
         detail,
     );
 }
@@ -672,36 +774,116 @@ pub fn broadleaf_far() -> Mesh {
     m
 }
 
-/// Unit-height birch: a slim pale trunk and a light, airy crown of small
-/// clumps hanging from thin branches.
+/// Unit-height birch: a slim, slightly bent white trunk with dark marks,
+/// thin branches rising and then hanging at their tips, each with a small
+/// drooping mass of leaves: a tall, narrow, airy crown.
 pub fn birch() -> Mesh {
     let mut m = Mesh::default();
-    let pale = [0.6, 0.58, 0.52];
-    m.tube([0.0, 0.0, 0.0], [0.006, 0.4, 0.0], 0.026, 0.017, 6, pale);
-    m.tube([0.006, 0.4, 0.0], [0.0, 0.8, 0.004], 0.017, 0.008, 6, pale);
-    for (k, y) in [0.08, 0.2, 0.27, 0.41, 0.52].into_iter().enumerate() {
-        let r = 0.027 - 0.018 * y;
-        let h = 0.012 + 0.006 * (k % 2) as f32;
-        m.tube(
-            [0.0, y, 0.0],
-            [0.0, y + h, 0.0],
-            r,
-            r,
-            6,
-            [0.05, 0.045, 0.04],
-        );
+    let white = [0.62, 0.6, 0.55];
+    // Rough and darker at the foot.
+    let trunk = [
+        ([0.0, 0.0, 0.0], 0.03),
+        ([0.006, 0.12, 0.0], 0.024),
+        ([0.012, 0.35, 0.004], 0.02),
+        ([0.008, 0.6, 0.0], 0.014),
+        ([0.0, 0.9, 0.002], 0.006),
+    ];
+    m.sweep(&trunk, 6, |ring, _| match ring {
+        0 => [0.17, 0.16, 0.145],
+        1 => [0.4, 0.38, 0.34],
+        _ => white,
+    });
+    // Short dark dashes across the bark.
+    for k in 0..14u32 {
+        let q = |n: u32| rnd(73, k, n);
+        let y = 0.1 + 0.6 * q(1);
+        let a = q(2) * std::f32::consts::TAU;
+        let r = (0.026 - 0.022 * y) * 1.06;
+        let (w, h) = (0.012 + 0.014 * q(3), 0.004 + 0.004 * q(4));
+        let d = [a.cos(), 0.0, a.sin()];
+        let side = [-a.sin(), 0.0, a.cos()];
+        let at = add([0.01 * y.min(0.5), y, 0.0], scale(d, r));
+        let c = [0.04, 0.035, 0.03];
+        let p = |s: f32, t: f32| add(at, add(scale(side, s * w * 0.5), [0.0, t * h * 0.5, 0.0]));
+        for (a0, a1, a2) in [
+            ((-1.0, -1.0), (1.0, -1.0), (1.0, 1.0)),
+            ((-1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)),
+        ] {
+            for (s0, t0) in [a0, a2, a1] {
+                m.push(p(s0, t0), d, c);
+            }
+        }
     }
-    for end in [
-        [0.14, 0.66, 0.05],
-        [-0.13, 0.6, -0.06],
-        [0.02, 0.72, -0.14],
-        [-0.05, 0.55, 0.12],
-    ] {
-        m.tube([0.006, 0.47, 0.0], end, 0.011, 0.005, 4, pale);
+    let whole = Crown {
+        c: [0.0, 0.62, 0.0],
+        r: 0.34,
+    };
+    let branches = birch_branches();
+    for &(from, mid, end, _) in &branches {
+        m.sweep(&[(from, 0.009), (mid, 0.006), (end, 0.003)], 3, |_, _| {
+            white
+        });
     }
     m.mat = MAT_LEAF;
-    birch_crown(&mut m, (4, 6));
+    // Lighter clumps than the broadleaf's: more, smaller and airier.
+    birch_crown_masses(&mut m, &branches, whole, (3, 6));
     m
+}
+
+/// The birch's branches: start (inside the trunk), middle and end, and the
+/// centre of the leaves hanging from each; shorter towards the top.
+fn birch_branches() -> Vec<(V3, V3, V3, V3)> {
+    let golden = std::f32::consts::PI * (3.0 - 5f32.sqrt());
+    let n = 9;
+    (0..n)
+        .map(|k| {
+            let q = |i: u32| rnd(83, k as u32, i);
+            let t = k as f32 / (n - 1) as f32;
+            let y = 0.3 + 0.56 * t + 0.025 * q(1);
+            let a = k as f32 * golden * 2.0 + q(2);
+            let dir = [a.cos(), 0.0, a.sin()];
+            let reach = 0.17 - 0.08 * t + 0.03 * q(3);
+            let from = [0.008, y, 0.0];
+            let mid = add(from, add(scale(dir, reach * 0.55), [0.0, 0.06, 0.0]));
+            // Rising, then hanging at the tip.
+            let end = add(from, add(scale(dir, reach), [0.0, 0.04, 0.0]));
+            let c = add(end, add(scale(dir, -0.01), [0.0, -0.025, 0.0]));
+            (from, mid, end, c)
+        })
+        .collect()
+}
+
+fn birch_crown_masses(
+    m: &mut Mesh,
+    branches: &[(V3, V3, V3, V3)],
+    whole: Crown,
+    detail: (usize, usize),
+) {
+    let leaf = [0.1, 0.18, 0.036];
+    for (k, &(_, _, _, c)) in branches.iter().enumerate() {
+        // Loose and hanging: longer than wide.
+        m.leaf_mass(
+            c,
+            [0.1, 0.13, 0.095],
+            3,
+            (0.06, 0.09),
+            leaf,
+            31 + k as u32,
+            whole,
+            detail,
+        );
+    }
+    // The top of the trunk, in leaves.
+    m.leaf_mass(
+        [0.0, 0.92, 0.0],
+        [0.07, 0.09, 0.07],
+        3,
+        (0.05, 0.075),
+        leaf,
+        47,
+        whole,
+        detail,
+    );
 }
 
 /// Unit-height bush.
