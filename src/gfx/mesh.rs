@@ -638,8 +638,8 @@ fn pine_with(tiers: usize, tips: usize, bark_sides: usize) -> Mesh {
         let t = k as f32 / (tiers - 1) as f32;
         let q = |n: u32| rnd(61, k as u32, n);
         let y0 = 0.18 + 0.69 * t + 0.015 * (q(1) - 0.5);
-        let full = if q(5) < 0.2 { 0.78 } else { 1.0 };
-        let r = (0.41 * (1.0 - t).powf(0.9) + 0.06) * (0.82 + 0.34 * q(2)) * full;
+        let full = if q(5) < 0.2 { 0.86 } else { 1.0 };
+        let r = (0.41 * (1.0 - t).powf(0.9) + 0.06) * (0.9 + 0.2 * q(2)) * full;
         // Fewer tiers stand further apart, so the tree keeps its height.
         let gap = 0.16 * 12.0 / tiers as f32;
         let y1 = if k + 1 == tiers {
@@ -648,7 +648,7 @@ fn pine_with(tiers: usize, tips: usize, bark_sides: usize) -> Mesh {
             y0 + gap - 0.05 * t
         };
         let lean = q(6) * std::f32::consts::TAU;
-        let off = 0.035 * (1.0 - t) * q(7);
+        let off = 0.012 * (1.0 - t) * q(7);
         let at = [lean.cos() * off, lean.sin() * off];
         let col = hued(PINE_GREEN, 0.3 * (q(3) - 0.5), 0.75 + 0.5 * t);
         m.whorl(y0, y1, r, tips, tinted(col), 40 + k as u32, q(4) * 6.3, at);
@@ -714,11 +714,11 @@ pub fn broadleaf() -> Mesh {
 /// end, and the centre and half sizes of the leaves each carries.
 fn broadleaf_limbs() -> Vec<(f32, V3, V3, V3, V3, V3)> {
     [
-        (0.2, 0.24, 0.63, 0.19, 0.15),
-        (1.5, 0.22, 0.67, 0.18, 0.16),
-        (2.65, 0.2, 0.71, 0.19, 0.17),
-        (3.8, 0.24, 0.6, 0.17, 0.14),
-        (5.0, 0.21, 0.68, 0.18, 0.16),
+        (0.2, 0.24, 0.6, 0.19, 0.19),
+        (1.5, 0.22, 0.63, 0.18, 0.2),
+        (2.65, 0.2, 0.67, 0.19, 0.2),
+        (3.8, 0.24, 0.57, 0.17, 0.18),
+        (5.0, 0.21, 0.64, 0.18, 0.19),
     ]
     .iter()
     .enumerate()
@@ -731,7 +731,7 @@ fn broadleaf_limbs() -> Vec<(f32, V3, V3, V3, V3, V3)> {
                 from,
                 add(scale(dir, reach * 0.45), [0.0, (h - from[1]) * 0.62, 0.0]),
             );
-            let c = add(end, add(scale(dir, 0.04), [0.0, 0.07, 0.0]));
+            let c = add(end, add(scale(dir, 0.04), [0.0, 0.05, 0.0]));
             (a, from, mid, end, c, [rh, rv, rh * 0.92])
         },
     )
@@ -748,7 +748,7 @@ fn broadleaf_crown_masses(
         m.leaf_mass(
             c,
             r,
-            5,
+            6,
             (0.09, 0.14),
             LEAF_GREEN,
             11 + k as u32,
