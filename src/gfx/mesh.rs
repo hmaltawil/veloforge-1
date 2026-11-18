@@ -518,7 +518,17 @@ impl Mesh {
 
     /// One whorl of conifer branches: a cone with a ragged, drooping rim.
     #[allow(clippy::too_many_arguments)]
-    fn whorl(&mut self, y0: f32, y1: f32, r: f32, sides: usize, col: V3, seed: u32, turn: f32) {
+    fn whorl(
+        &mut self,
+        y0: f32,
+        y1: f32,
+        r: f32,
+        sides: usize,
+        col: V3,
+        seed: u32,
+        turn: f32,
+        at: [f32; 2],
+    ) {
         let rim = |i: usize| -> (V3, V3, V3) {
             let i = i % sides;
             let q = |n: u32| rnd(seed, i as u32, n);
@@ -531,7 +541,7 @@ impl Mesh {
                 0.62 + 0.16 * q(1)
             };
             let droop = (y1 - y0) * if tip { 0.12 + 0.2 * q(3) } else { 0.04 };
-            let p = [a.cos() * r * k, y0 - droop, a.sin() * r * k];
+            let p = [at[0] + a.cos() * r * k, y0 - droop, at[1] + a.sin() * r * k];
             let n = norm([a.cos() * 0.8, 0.6, a.sin() * 0.8]);
             // Paler, yellower new growth at the tips.
             let c = if tip {
@@ -541,8 +551,8 @@ impl Mesh {
             };
             (p, n, c)
         };
-        let apex = [0.0, y1, 0.0];
-        let under = [0.0, y0 + (y1 - y0) * 0.22, 0.0];
+        let apex = [at[0] * 0.5, y1, at[1] * 0.5];
+        let under = [at[0], y0 + (y1 - y0) * 0.22, at[1]];
         for i in 0..sides {
             let (a, na, ca) = rim(i);
             let (b, nb, cb) = rim(i + 1);
@@ -610,38 +620,38 @@ pub fn pine() -> Mesh {
 
 fn pine_with(tiers: usize, tips: usize, bark_sides: usize) -> Mesh {
     let mut m = Mesh::default();
-    m.tube(
-        [0.0, 0.0, 0.0],
-        [0.0, 0.07, 0.0],
-        0.05,
-        0.034,
+    // A bare foot below the lowest branches, the trunk in one piece.
+    m.sweep(
+        &[
+            ([0.0, 0.0, 0.0], 0.05),
+            ([0.0, 0.07, 0.0], 0.034),
+            ([0.006, 0.3, 0.002], 0.026),
+            ([0.004, 0.5, 0.0], 0.018),
+        ],
         bark_sides,
-        BARK,
-    );
-    m.tube(
-        [0.0, 0.07, 0.0],
-        [0.004, 0.5, 0.0],
-        0.034,
-        0.018,
-        bark_sides,
-        BARK,
+        |_, _| BARK,
     );
     m.mat = MAT_LEAF;
-    // Many overlapping tiers: the branches of each hang over the next.
+    // Many overlapping tiers: the branches of each hang over the next. Each
+    // a little off centre and uneven, some fuller than others.
     for k in 0..tiers {
         let t = k as f32 / (tiers - 1) as f32;
         let q = |n: u32| rnd(61, k as u32, n);
-        let y0 = 0.13 + 0.74 * t + 0.015 * (q(1) - 0.5);
-        let r = (0.41 * (1.0 - t).powf(0.9) + 0.06) * (0.88 + 0.24 * q(2));
+        let y0 = 0.18 + 0.69 * t + 0.015 * (q(1) - 0.5);
+        let full = if q(5) < 0.2 { 0.78 } else { 1.0 };
+        let r = (0.41 * (1.0 - t).powf(0.9) + 0.06) * (0.82 + 0.34 * q(2)) * full;
         // Fewer tiers stand further apart, so the tree keeps its height.
-        let gap = 0.17 * 12.0 / tiers as f32;
+        let gap = 0.16 * 12.0 / tiers as f32;
         let y1 = if k + 1 == tiers {
             1.0
         } else {
             y0 + gap - 0.05 * t
         };
+        let lean = q(6) * std::f32::consts::TAU;
+        let off = 0.035 * (1.0 - t) * q(7);
+        let at = [lean.cos() * off, lean.sin() * off];
         let col = hued(PINE_GREEN, 0.3 * (q(3) - 0.5), 0.75 + 0.5 * t);
-        m.whorl(y0, y1, r, tips, tinted(col), 40 + k as u32, q(4) * 6.3);
+        m.whorl(y0, y1, r, tips, tinted(col), 40 + k as u32, q(4) * 6.3, at);
     }
     m
 }
@@ -656,7 +666,16 @@ pub fn pine_far() -> Mesh {
         .enumerate()
     {
         let col = scale(PINE_GREEN, 0.85 + 0.2 * k as f32);
-        m.whorl(y0, y1, r, 7, tinted(col), 70 + k as u32, k as f32);
+        m.whorl(
+            y0,
+            y1,
+            r,
+            7,
+            tinted(col),
+            70 + k as u32,
+            k as f32,
+            [0.0, 0.0],
+        );
     }
     m
 }
