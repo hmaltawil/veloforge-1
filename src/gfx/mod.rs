@@ -1399,6 +1399,19 @@ fn shadow_reach(sun_y: f32) -> f32 {
     (30.0 * (1.0 - s * s).sqrt() / s).min(400.0)
 }
 
+/// The noise texture's values: random, evenly spread, one byte per texel.
+fn noise_values() -> Vec<u8> {
+    (0..NOISE_SIZE * NOISE_SIZE)
+        .map(|i| {
+            // A well-mixed hash of the texel's index (splitmix64).
+            let mut z = (i as u64).wrapping_add(0x9e37_79b9_7f4a_7c15);
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            ((z ^ (z >> 31)) >> 56) as u8
+        })
+        .collect()
+}
+
 /// Where the land window is centred: well ahead of the camera, so the
 /// road is built far into the distance.
 fn look_ahead(cx: f64, cz: f64, yaw: f64) -> (f64, f64) {
@@ -1436,6 +1449,8 @@ struct GlState {
     /// Distant trees' cards (one per kind of tree) and their pictures
     /// (colour and normals), once made.
     cards: Vec<Buffers>,
+    /// Random values for the ground's and road's noise (see `NOISE_TEX`).
+    noise_tex: Option<glow::Texture>,
     /// Card shadows of trees out of view that would be cards in it.
     shadow_cards: Vec<Buffers>,
     card_tex: Option<[[glow::Texture; 3]; 3]>,
@@ -1684,6 +1699,10 @@ fn unit_hash(key: (i64, i64)) -> f32 {
 const UNIT_CARD_ALBEDO: u32 = 9;
 const UNIT_CARD_NORMAL: u32 = 10;
 const UNIT_CARD_DEPTH: u32 = 11;
+const UNIT_NOISE: u32 = 12;
+/// Width and height of the noise texture (texels): its pattern repeats
+/// every this many cells of the finest noise, 24 m of tarmac grain.
+const NOISE_SIZE: usize = 1024;
 
 /// Each kind of tree's mesh again (pine, broadleaf, birch), for trees
 /// dissolving into or out of cards.
@@ -1834,20 +1853,23 @@ impl GlState {
                 &[],
             )?;
             self.compile(gl, "ground_map", &[SCREEN_VS], &[NOISE, GROUND_MAP_FS], &[])?;
+            // The ground and road read their noise from a texture.
+            let noise_tex = format!("#define NOISE_TEX\n#define NOISE_SIZE {NOISE_SIZE}.0\n");
             self.compile(
                 gl,
                 "terrain",
                 &[TERRAIN_VS],
-                &[NOISE, LIGHT, GROUND_MAP, TERRAIN_FS],
+                &[&noise_tex, NOISE, LIGHT, GROUND_MAP, TERRAIN_FS],
                 &terrain_attribs,
             )?;
             self.compile(
                 gl,
                 "road",
                 &[ROAD_VS],
-                &[NOISE, LIGHT, GROUND_MAP, ROAD_FS],
+                &[&noise_tex, NOISE, LIGHT, GROUND_MAP, ROAD_FS],
                 &["a_pos", "a_uv"],
             )?;
+            self.noise_tex = Some(Self::noise_texture(gl)?);
             self.compile(
                 gl,
                 "object",
@@ -2516,6 +2538,38 @@ impl GlState {
         }
     }
 
+    /// The noise texture: a random value per texel, repeating at its edges.
+    unsafe fn noise_texture(gl: &glow::Context) -> Result<glow::Texture, String> {
+        unsafe {
+            let tex = gl.create_texture()?;
+            gl.active_texture(glow::TEXTURE0 + UNIT_NOISE);
+            gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+            gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+            gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                glow::R8 as i32,
+                NOISE_SIZE as i32,
+                NOISE_SIZE as i32,
+                0,
+                glow::RED,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(Some(&noise_values())),
+            );
+            for (k, v) in [
+                (glow::TEXTURE_MIN_FILTER, glow::LINEAR),
+                (glow::TEXTURE_MAG_FILTER, glow::LINEAR),
+                (glow::TEXTURE_WRAP_S, glow::REPEAT),
+                (glow::TEXTURE_WRAP_T, glow::REPEAT),
+            ] {
+                gl.tex_parameter_i32(glow::TEXTURE_2D, k, v as i32);
+            }
+            gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 4);
+            gl.active_texture(glow::TEXTURE0);
+            Ok(tex)
+        }
+    }
+
     unsafe fn upload_terrain(&mut self, gl: &glow::Context, t: &TerrainData) -> Result<(), String> {
         unsafe {
             if self.terrain.is_none() {
@@ -2972,6 +3026,7 @@ impl GlState {
             p.i1(gl, "u_cloud_map", UNIT_CLOUD as i32);
             p.v3(gl, "u_cloud_box", self.cloud_box);
             p.i1(gl, "u_ground", UNIT_GROUND as i32);
+            p.i1(gl, "u_noise", UNIT_NOISE as i32);
             let ground = self.ground_map.is_some() && self.ground_for == Some(f.origin);
             p.f1(
                 gl,
@@ -3473,6 +3528,8 @@ impl GlState {
             gl.bind_texture(glow::TEXTURE_2D, self.cloud_map.as_ref().map(|m| m.tex));
             gl.active_texture(glow::TEXTURE0 + UNIT_GROUND);
             gl.bind_texture(glow::TEXTURE_2D, self.ground_map.as_ref().map(|m| m.tex));
+            gl.active_texture(glow::TEXTURE0 + UNIT_NOISE);
+            gl.bind_texture(glow::TEXTURE_2D, self.noise_tex);
             gl.active_texture(glow::TEXTURE0);
 
             // --- the scene ---------------------------------------------------
@@ -3890,6 +3947,28 @@ impl GlState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_noise_texture_is_evenly_random() {
+        let v = noise_values();
+        assert_eq!(v.len(), NOISE_SIZE * NOISE_SIZE);
+        let mut counts = [0usize; 256];
+        for &b in &v {
+            counts[b as usize] += 1;
+        }
+        // Every value turns up about equally often...
+        let even = v.len() / 256;
+        assert!(counts
+            .iter()
+            .all(|&c| c > even * 9 / 10 && c < even * 11 / 10));
+        // ...and neighbours are unrelated.
+        let corr: f64 = v
+            .windows(2)
+            .map(|w| (w[0] as f64 - 127.5) * (w[1] as f64 - 127.5))
+            .sum::<f64>()
+            / (v.len() as f64 * 127.5 * 127.5 / 3.0);
+        assert!(corr.abs() < 0.01, "{corr}");
+    }
 
     #[test]
     fn trees_cast_into_the_near_cascade_only_where_their_shadow_falls_in_it() {

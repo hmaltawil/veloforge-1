@@ -19,13 +19,30 @@ float hash12(vec2 p) {
     p3 += dot(p3, p3.yzx + 33.33);
     return fract((p3.x + p3.y) * p3.z);
 }
-float vnoise(vec2 p) {
+// Smooth value noise, hashed exactly at the four corners.
+float vnoise_hash(vec2 p) {
     vec2 i = floor(p);
     vec2 f = fract(p);
     vec2 u = f * f * (3.0 - 2.0 * f);
     return mix(mix(hash12(i), hash12(i + vec2(1.0, 0.0)), u.x),
                mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), u.x), u.y);
 }
+#ifdef NOISE_TEX
+// The same noise, read from a texture of random values made once
+// (`noise_texture`): one filtered read, the hardware blending the four
+// corners, instead of hashing them, for every pixel of the ground. The
+// blend is only so precise, so where an exact value is traced (the road's
+// cracks) `vnoise_hash` is used instead.
+uniform sampler2D u_noise;
+float vnoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = p - i;
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return textureLod(u_noise, (mod(i, NOISE_SIZE) + u + 0.5) / NOISE_SIZE, 0.0).r;
+}
+#else
+float vnoise(vec2 p) { return vnoise_hash(p); }
+#endif
 float fbm(vec2 p) {
     float s = 0.0;
     float a = 0.5;
@@ -41,6 +58,16 @@ float fbm3(vec2 p) {
     float a = 0.5;
     for (int i = 0; i < 3; i++) {
         s += a * vnoise(p);
+        p = p * 2.03 + vec2(17.1, 9.2);
+        a *= 0.5;
+    }
+    return s / 0.875;
+}
+float fbm3_hash(vec2 p) {
+    float s = 0.0;
+    float a = 0.5;
+    for (int i = 0; i < 3; i++) {
+        s += a * vnoise_hash(p);
         p = p * 2.03 + vec2(17.1, 9.2);
         a *= 0.5;
     }
@@ -563,7 +590,7 @@ void main() {
     if (detail > 0.0) {
         float worn = smoothstep(0.52, 0.7, fbm3(vec2(u * 0.1, v * 0.02)));
         if (worn > 0.0) {
-            float crack = abs(fbm3(vec2(u * 0.9, v * 0.22) + 21.0) - 0.5);
+            float crack = abs(fbm3_hash(vec2(u * 0.9, v * 0.22) + 21.0) - 0.5);
             asphalt *= 1.0 - 0.45 * (1.0 - smoothstep(0.0, 0.0045, crack)) * detail * worn;
         }
     }
