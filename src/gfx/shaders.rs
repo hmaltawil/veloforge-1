@@ -531,6 +531,14 @@ uniform float u_snow;
 in vec3 v_pos;
 in vec2 v_uv;
 out vec4 frag;
+// How much of the stretch x - h .. x + h lies between lo and hi.
+float band(float x, float lo, float hi, float h) {
+    return max(min(x + h, hi) - max(x - h, lo), 0.0) / (2.0 * h);
+}
+// Painted length up to x, in dash periods, for dashes 0.42 of a period long.
+float dashes(float x) {
+    return floor(x) * 0.42 + min(fract(x), 0.42);
+}
 void main() {
     float u = v_uv.x;
     float a = abs(u);
@@ -560,10 +568,16 @@ void main() {
         }
     }
     vec3 col = asphalt;
-    float aa = fwidth(u) * 1.5;
-    float edge = smoothstep(2.86 - aa, 2.86, a) * (1.0 - smoothstep(3.0, 3.0 + aa, a));
-    float dash = step(fract(v / 12.0), 0.42);
-    float centre = (1.0 - smoothstep(0.065, 0.065 + aa, a)) * dash;
+    // The lines, as the share of each pixel they cover: far ahead a pixel
+    // spans metres of road, and a line or dash that is simply on or off
+    // there flickers as you ride. Across the road, over the pixel's width;
+    // along it, the dashes (5 m of every 12) over its length, fading to
+    // their average where a pixel spans a whole dash and gap.
+    float hu = max(fwidth(u) * 0.75, 0.002);
+    float edge = band(a, 2.86, 3.0, hu);
+    float hv = max(fwidth(v) * 0.75, 0.002) / 12.0;
+    float dash = (dashes(v / 12.0 + hv) - dashes(v / 12.0 - hv)) / (2.0 * hv);
+    float centre = band(u, -0.065, 0.065, hu) * dash;
     // Paint wears thin where tyres run over it.
     float painted = max(edge, centre);
     if (painted > 0.0) painted *= 0.75 + 0.25 * smoothstep(0.3, 0.6, fbm3(vec2(u * 3.0, v * 0.5) + 2.0));
