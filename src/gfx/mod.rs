@@ -352,6 +352,24 @@ fn look(s: Scenery, sky: Sky) -> Look {
     l
 }
 
+/// The shadow cascades: how far ahead of the camera each is centred, and its
+/// half-width (metres).
+const CASCADES: [(f32, f32); 2] = [(26.0, 40.0), (185.0, 230.0)];
+
+/// Whether something standing at `foot`, `h` tall and `r` across, casts its
+/// shadow into the cascade drawn with `light_vp`: whether, seen from the sun,
+/// any of it lies inside the cascade's square (`r_unit`: one metre across in
+/// the cascade's units).
+fn casts_into(light_vp: &M4, foot: V3, h: f32, r: f32, r_unit: f32) -> bool {
+    let a = transform(light_vp, [foot[0], foot[1], foot[2], 1.0]);
+    let b = transform(light_vp, [foot[0], foot[1] + h, foot[2], 1.0]);
+    let pad = 1.0 + r * r_unit;
+    a[0].min(b[0]) <= pad
+        && a[0].max(b[0]) >= -pad
+        && a[1].min(b[1]) <= pad
+        && a[1].max(b[1]) >= -pad
+}
+
 /// View-projection matrices of the two shadow cascades around the camera,
 /// and the world size of one shadow texel in each.
 fn shadow_cascades(eye: V3, fwd: V3, sun: V3, res: f32) -> ([M4; 2], [f32; 2]) {
@@ -365,7 +383,7 @@ fn shadow_cascades(eye: V3, fwd: V3, sun: V3, res: f32) -> ([M4; 2], [f32; 2]) {
     let view = look_at(sun, [0.0; 3], up);
     let mut vps = [[0.0; 16]; 2];
     let mut texels = [0.0; 2];
-    for (k, (ahead, radius)) in [(26.0f32, 40.0f32), (185.0, 230.0)].into_iter().enumerate() {
+    for (k, (ahead, radius)) in CASCADES.into_iter().enumerate() {
         let c = add(eye, scale(flat, ahead));
         let lc = transform(&view, [c[0], c[1], c[2], 1.0]);
         // Move in whole texels so shadow edges do not crawl as you ride.
@@ -1430,7 +1448,7 @@ struct GlState {
     /// Distant trees' cards (one per kind of tree) and their pictures
     /// (colour and normals), once made.
     cards: Vec<Buffers>,
-    /// Card shadows of trees drawn in full beyond `MESH_SHADOWS`.
+    /// Card shadows of trees out of view that would be cards in it.
     shadow_cards: Vec<Buffers>,
     card_tex: Option<[[glow::Texture; 3]; 3]>,
     card_tex_failed: bool,
@@ -1692,11 +1710,7 @@ const SMALL_CULL: f32 = 600.0;
 /// Things this close are kept even behind the camera: their shadows may
 /// fall into view.
 const KEEP_AROUND: f32 = 150.0;
-/// Trees drawn in full further away than this cast a card's shadow instead:
-/// out there the shadow is a few texels and looks the same.
-const MESH_SHADOWS: f32 = 150.0;
-/// The near shadow cascade's reach from the camera (see `shadow_cascades`).
-const NEAR_CASCADE_REACH: f32 = 26.0 + 40.0 * std::f32::consts::SQRT_2;
+
 /// Side of the square of grass that follows the camera, in metres.
 const GRASS_PATCH: f32 = 60.0;
 /// The sparse grass that reaches beyond the dense patch (and grows under
@@ -2266,9 +2280,7 @@ impl GlState {
                     // further out), so none changes as it comes into view.
                     let full = (inst[0] - f.cam[0]).hypot(inst[2] - f.cam[2]) < lod.card;
                     match tree {
-                        Some(t) if (full && dist <= MESH_SHADOWS) || !cards => {
-                            shadow_mesh[t].extend_from_slice(inst)
-                        }
+                        Some(t) if full || !cards => shadow_mesh[t].extend_from_slice(inst),
                         Some(t) => {
                             shadow_card[t].extend_from_slice(inst);
                             shadow_card[t].extend_from_slice(&[1.0, 0.0]);
@@ -2327,10 +2339,6 @@ impl GlState {
                 }
                 let mut place = |level: u8, fin: f32, fout: f32| {
                     let solid = fin >= 1.0 && fout <= 0.0;
-                    if level == FULL && dist > MESH_SHADOWS && cards {
-                        shadow_card[t].extend_from_slice(inst);
-                        shadow_card[t].extend_from_slice(&[1.0, 0.0]);
-                    }
                     match level {
                         FULL if solid => near[kind].extend_from_slice(inst),
                         FULL => {
@@ -2357,60 +2365,64 @@ impl GlState {
         // Forget trees no longer in view: back in view, they start settled.
         states.retain(|_, s| s.seen == frame);
         self.tree_states = states;
-        // Nearest first, so what they hide is not worked out at all.
-        let by_distance = |list: &mut Vec<f32>, stride: usize| {
-            let mut order: Vec<(f32, usize)> = (0..list.len() / stride)
-                .map(|i| {
-                    let rel = sub(
-                        [list[i * stride], list[i * stride + 1], list[i * stride + 2]],
-                        f.cam,
-                    );
-                    (dot(rel, rel), i)
+        // Nearest first, so what they hide is not worked out at all. Trees
+        // go in two runs, each nearest first: those that cast a shadow into
+        // the near cascade, then the rest, so that cascade draws only the
+        // first run (see `shadowed`).
+        let near_vp = f.light_vp[0];
+        let r_unit = 1.0 / CASCADES[0].1;
+        let order = |list: &mut Vec<f32>, stride: usize, split: bool| -> [i32; 2] {
+            let mut order: Vec<(bool, f32, usize)> = list
+                .chunks_exact(stride)
+                .enumerate()
+                .map(|(i, inst)| {
+                    let foot = [inst[0], inst[1], inst[2]];
+                    let rel = sub(foot, f.cam);
+                    let far = split && !casts_into(&near_vp, foot, inst[5] * 1.15, inst[4], r_unit);
+                    (far, dot(rel, rel), i)
                 })
                 .collect();
-            order.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+            order.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+            let casters = order.iter().take_while(|o| !o.0).count() as i32;
             let sorted: Vec<f32> = order
                 .iter()
-                .flat_map(|&(_, i)| list[i * stride..(i + 1) * stride].iter().copied())
+                .flat_map(|&(_, _, i)| list[i * stride..(i + 1) * stride].iter().copied())
                 .collect();
             *list = sorted;
+            [casters, (list.len() / stride) as i32]
         };
-        for list in near
+        let mut shadowed = [[0i32; 2]; KINDS];
+        for (kind, list) in near.iter_mut().enumerate() {
+            let tree = matches!(kind, OBJ_PINE | OBJ_BROAD | OBJ_BIRCH);
+            shadowed[kind] = order(list, INSTANCE_STRIDE, tree);
+        }
+        for list in far.iter_mut() {
+            order(list, INSTANCE_STRIDE, false);
+        }
+        let fade_shadowed: Vec<[i32; 2]> = near_fade
             .iter_mut()
-            .chain(far.iter_mut())
-            .chain(shadow_mesh.iter_mut())
-        {
-            by_distance(list, INSTANCE_STRIDE);
+            .map(|list| order(list, FADE_STRIDE, true))
+            .collect();
+        let mesh_shadowed: Vec<[i32; 2]> = shadow_mesh
+            .iter_mut()
+            .map(|list| order(list, INSTANCE_STRIDE, true))
+            .collect();
+        for list in card.iter_mut() {
+            order(list, FADE_STRIDE, false);
         }
-        for list in near_fade.iter_mut().chain(card.iter_mut()) {
-            by_distance(list, FADE_STRIDE);
-        }
-        // Which of them (nearest first) cast a shadow into each cascade: the
-        // near one only those close enough for their shadow to reach it
-        // (further with the sun low), the far one those within
-        // `MESH_SHADOWS` (the rest cast a card's, see above).
-        let reach = shadow_reach(f.sun[1]);
-        let limits = [NEAR_CASCADE_REACH + reach, MESH_SHADOWS];
-        let within = |list: &[f32], stride: usize| -> [i32; 2] {
-            limits.map(|lim| {
-                list.chunks_exact(stride)
-                    .take_while(|i| len(sub([i[0], i[1], i[2]], f.cam)) <= lim)
-                    .count() as i32
-            })
-        };
         unsafe {
             for (kind, list) in near.iter().enumerate() {
                 Self::set_instances(gl, &mut self.objects[kind], list, INSTANCE_STRIDE);
-                self.objects[kind].shadowed = within(list, INSTANCE_STRIDE);
+                self.objects[kind].shadowed = shadowed[kind];
             }
             for (t, &obj) in TREE_FADES.iter().enumerate() {
                 Self::set_instances(gl, &mut self.objects[obj], &near_fade[t], FADE_STRIDE);
-                self.objects[obj].shadowed = within(&near_fade[t], FADE_STRIDE);
+                self.objects[obj].shadowed = fade_shadowed[t];
                 Self::set_instances(gl, &mut self.cards[t], &card[t], CARD_STRIDE);
                 Self::set_instances(gl, &mut self.shadow_cards[t], &shadow_card[t], CARD_STRIDE);
                 let obj = TREE_SHADOWS[t];
                 Self::set_instances(gl, &mut self.objects[obj], &shadow_mesh[t], INSTANCE_STRIDE);
-                self.objects[obj].shadowed = within(&shadow_mesh[t], INSTANCE_STRIDE);
+                self.objects[obj].shadowed = mesh_shadowed[t];
             }
             Self::set_instances(
                 gl,
@@ -3895,6 +3907,33 @@ impl GlState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trees_cast_into_the_near_cascade_only_where_their_shadow_falls_in_it() {
+        let eye = [0.0, 1.6, 0.0];
+        let fwd = [0.0, 0.0, 1.0];
+        let r_unit = 1.0 / CASCADES[0].1;
+        let tree = |sun: V3, at: V3| {
+            let (vps, _) = shadow_cascades(eye, fwd, norm(sun), 2048.0);
+            casts_into(&vps[0], at, 26.0, 8.0, r_unit)
+        };
+        // Overhead sun: only trees around the rider.
+        let noon = [0.1, 1.0, 0.05];
+        assert!(tree(noon, [0.0, 0.0, 26.0]));
+        assert!(tree(noon, [-30.0, 0.0, 40.0]));
+        assert!(!tree(noon, [0.0, 0.0, 150.0]));
+        assert!(!tree(noon, [200.0, 0.0, 0.0]));
+        // The sun 30 degrees up, ahead: a tree 150 m up the road throws its
+        // shadow back towards the rider, into the near cascade's stretch of
+        // ground. (Measuring from the camera, as before, missed it.)
+        let ahead = [0.0, 0.5, 0.866];
+        assert!(tree(ahead, [0.0, 0.0, 150.0]));
+        // With the sun behind, that shadow falls away, out of it.
+        let behind = [0.0, 0.5, -0.866];
+        assert!(!tree(behind, [0.0, 0.0, 150.0]));
+        // Far off to the side it never reaches.
+        assert!(!tree(ahead, [400.0, 0.0, 100.0]));
+    }
 
     #[test]
     fn tree_shadows_reach_further_with_the_sun_low() {
