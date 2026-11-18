@@ -1412,6 +1412,65 @@ fn noise_values() -> Vec<u8> {
         .collect()
 }
 
+/// The parts of the ground map to work out when the square it holds moves
+/// from corner `old` to `new` (world metres; see `ground_pass`): the ground
+/// newly inside, as texel rectangles (x, y, width, height) of at most
+/// `GROUND_MAP_PIECE` texels each, wrapped round the map. None when it has
+/// moved so far that all of it is new.
+fn ground_map_todo(old: [i64; 2], new: [i64; 2]) -> Option<Vec<[i32; 4]>> {
+    let size = GROUND_MAP_SIZE as i64;
+    let (dx, dy) = (new[0] - old[0], new[1] - old[1]);
+    if dx.abs() >= size || dy.abs() >= size {
+        return None;
+    }
+    // World spans along one axis newly inside: [start, end).
+    let band = |d: i64, old: i64, new: i64| {
+        if d > 0 {
+            Some((old + size, new + size))
+        } else if d < 0 {
+            Some((new, old))
+        } else {
+            None
+        }
+    };
+    let mut world = Vec::new();
+    if let Some(xs) = band(dx, old[0], new[0]) {
+        world.push((xs, (new[1], new[1] + size)));
+    }
+    if let Some(ys) = band(dy, old[1], new[1]) {
+        world.push(((new[0], new[0] + size), ys));
+    }
+    // A world span as one or two texel spans, wrapped round the map.
+    let wrap = |(a, b): (i64, i64)| -> Vec<(i32, i32)> {
+        let start = a.rem_euclid(size);
+        let len = b - a;
+        if start + len <= size {
+            vec![(start as i32, len as i32)]
+        } else {
+            vec![
+                (start as i32, (size - start) as i32),
+                (0, (start + len - size) as i32),
+            ]
+        }
+    };
+    let mut out = Vec::new();
+    for (xs, ys) in world {
+        for (x, w) in wrap(xs) {
+            for (y, h) in wrap(ys) {
+                // In strips small enough to work out in a frame.
+                let rows = (GROUND_MAP_PIECE / w as i64).clamp(1, h as i64) as i32;
+                let mut y0 = y;
+                while y0 < y + h {
+                    let hh = rows.min(y + h - y0);
+                    out.push([x, y0, w, hh]);
+                    y0 += hh;
+                }
+            }
+        }
+    }
+    Some(out)
+}
+
 /// Where the land window is centred: well ahead of the camera, so the
 /// road is built far into the distance.
 fn look_ahead(cx: f64, cz: f64, yaw: f64) -> (f64, f64) {
@@ -1482,7 +1541,12 @@ struct GlState {
     /// and the window origin it was worked out for.
     ground_map: Option<Target>,
     ground_map_failed: bool,
-    ground_for: Option<(f64, f64)>,
+    /// The world corner of the square the ground map holds (whole metres),
+    /// once it has been filled.
+    ground_min: Option<[i64; 2]>,
+    /// Parts of the ground map still to work out (texel rectangles: x, y,
+    /// width, height), one a frame.
+    ground_todo: Vec<[i32; 4]>,
     /// Its centre and half size in cloud-deck coordinates (0: no map).
     cloud_box: V3,
     /// The terrain's tiles, to draw only those in view.
@@ -1749,6 +1813,8 @@ const UNIT_GROUND: u32 = 8;
 /// The ground map's texels per side: about a metre each across the 2 km
 /// terrain window, finer than the smallest noise it holds (2.2 m).
 const GROUND_MAP_SIZE: i32 = 2048;
+/// The most of the ground map worked out in one frame (texels).
+const GROUND_MAP_PIECE: i64 = 256 * 1024;
 /// The cloud shadow map: texels per side, and the half size of the patch of
 /// cloud deck it covers, in metres. The finest cloud detail is about 65 m
 /// across, several texels.
@@ -2591,12 +2657,15 @@ impl GlState {
             gl.bind_vertex_array(Some(b.vao));
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(b.vbo));
             gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes(&t.verts), glow::STATIC_DRAW);
-            gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, b.ebo);
-            gl.buffer_data_u8_slice(
-                glow::ELEMENT_ARRAY_BUFFER,
-                bytes_u32(&t.indices),
-                glow::STATIC_DRAW,
-            );
+            // Every window has the same triangles: send them once.
+            if b.count != t.indices.len() as i32 {
+                gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, b.ebo);
+                gl.buffer_data_u8_slice(
+                    glow::ELEMENT_ARRAY_BUFFER,
+                    bytes_u32(&t.indices),
+                    glow::STATIC_DRAW,
+                );
+            }
             gl.bind_vertex_array(None);
             b.count = t.indices.len() as i32;
             self.tiles = t.tiles.clone();
@@ -3027,7 +3096,7 @@ impl GlState {
             p.v3(gl, "u_cloud_box", self.cloud_box);
             p.i1(gl, "u_ground", UNIT_GROUND as i32);
             p.i1(gl, "u_noise", UNIT_NOISE as i32);
-            let ground = self.ground_map.is_some() && self.ground_for == Some(f.origin);
+            let ground = self.ground_map.is_some() && self.ground_min.is_some();
             p.f1(
                 gl,
                 "u_ground_half",
@@ -3302,12 +3371,15 @@ impl GlState {
         }
     }
 
-    /// Work out the ground's large-scale noise once for each terrain window
-    /// (`GROUND_MAP_FS`), instead of in every ground pixel, every frame.
-    /// Without the map, each pixel works it out itself.
+    /// Work out the ground's large-scale noise once (`GROUND_MAP_FS`),
+    /// instead of in every ground pixel, every frame. The map is pinned to
+    /// the world and wraps round, so as the terrain window moves only the
+    /// ground newly inside it is worked out, a piece a frame (it lies at the
+    /// far edge of the window, deep in the haze). Without the map, each pixel
+    /// works it out itself.
     unsafe fn ground_pass(&mut self, gl: &glow::Context, f: &FrameData) {
         unsafe {
-            if self.height_tex.is_none() || self.ground_for == Some(f.origin) {
+            if self.height_tex.is_none() {
                 return;
             }
             if self.ground_map.is_none() && !self.ground_map_failed {
@@ -3316,7 +3388,14 @@ impl GlState {
                 let made = Self::target(gl, GROUND_MAP_SIZE, GROUND_MAP_SIZE, true)
                     .or_else(|_| Self::target(gl, GROUND_MAP_SIZE, GROUND_MAP_SIZE, false));
                 match made {
-                    Ok(t) => self.ground_map = Some(t),
+                    Ok(t) => {
+                        gl.bind_texture(glow::TEXTURE_2D, Some(t.tex));
+                        for k in [glow::TEXTURE_WRAP_S, glow::TEXTURE_WRAP_T] {
+                            gl.tex_parameter_i32(glow::TEXTURE_2D, k, glow::REPEAT as i32);
+                        }
+                        gl.bind_texture(glow::TEXTURE_2D, None);
+                        self.ground_map = Some(t);
+                    }
                     Err(_) => self.ground_map_failed = true,
                 }
                 Self::drain_errors(gl);
@@ -3324,16 +3403,42 @@ impl GlState {
             let Some(fbo) = self.ground_map.as_ref().map(|m| m.fbo) else {
                 return;
             };
+            let half = (GROUND_MAP_SIZE / 2) as i64;
+            let min = [
+                f.origin.0.floor() as i64 - half,
+                f.origin.1.floor() as i64 - half,
+            ];
+            let mut all = false;
+            if self.ground_min != Some(min) {
+                match self.ground_min.and_then(|old| ground_map_todo(old, min)) {
+                    Some(parts) => self.ground_todo.extend(parts),
+                    // The first map, or a jump beyond it: all of it, now.
+                    None => {
+                        self.ground_todo.clear();
+                        all = true;
+                    }
+                }
+                self.ground_min = Some(min);
+            }
+            let part = if all {
+                Some([0, 0, GROUND_MAP_SIZE, GROUND_MAP_SIZE])
+            } else {
+                self.ground_todo.pop()
+            };
+            let Some([x, y, w, h]) = part else {
+                return;
+            };
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
             gl.viewport(0, 0, GROUND_MAP_SIZE, GROUND_MAP_SIZE);
+            gl.enable(glow::SCISSOR_TEST);
+            gl.scissor(x, y, w, h);
             gl.disable(glow::DEPTH_TEST);
             self.common(gl, "ground_map", f);
-            let half = self.height_map[0];
             let p = self.programs.get_mut("ground_map").unwrap();
-            p.f1(gl, "u_ground_half", half);
+            p.f2(gl, "u_map_min", min[0] as f32, min[1] as f32);
             gl.bind_vertex_array(self.sky_vao);
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
-            self.ground_for = Some(f.origin);
+            gl.disable(glow::SCISSOR_TEST);
         }
     }
 
@@ -3947,6 +4052,50 @@ impl GlState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ground_map_works_out_only_the_ground_newly_in_it() {
+        let size = GROUND_MAP_SIZE as i64;
+        // Which world place each texel holds for the square at `min`.
+        let place = |min: [i64; 2], tx: i64, ty: i64| {
+            [
+                min[0] + (tx - min[0]).rem_euclid(size),
+                min[1] + (ty - min[1]).rem_euclid(size),
+            ]
+        };
+        let old = [-1000, 3000];
+        for new in [
+            [-680, 3000],
+            [-1000, 2600],
+            [-1300, 3330],
+            [700, 1500],
+            [-1000 - 2047, 3000],
+        ] {
+            let parts = ground_map_todo(old, new).unwrap();
+            let mut todo = vec![false; (size * size) as usize];
+            for [x, y, w, h] in parts {
+                assert!(x >= 0 && y >= 0 && x + w <= size as i32 && y + h <= size as i32);
+                assert!((w * h) as i64 <= GROUND_MAP_PIECE.max(w as i64));
+                for ty in y..y + h {
+                    for tx in x..x + w {
+                        todo[(ty as i64 * size + tx as i64) as usize] = true;
+                    }
+                }
+            }
+            // Every texel whose place changed is worked out; the others,
+            // still right, are left alone.
+            for ty in 0..size {
+                for tx in 0..size {
+                    let changed = place(old, tx, ty) != place(new, tx, ty);
+                    let done = todo[(ty * size + tx) as usize];
+                    assert!(done || !changed, "{new:?}: texel {tx},{ty} missed");
+                    assert!(changed || !done, "{new:?}: texel {tx},{ty} needlessly");
+                }
+            }
+        }
+        // Too far to keep any of it.
+        assert!(ground_map_todo(old, [old[0] + size, old[1]]).is_none());
+    }
 
     #[test]
     fn the_noise_texture_is_evenly_random() {

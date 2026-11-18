@@ -88,14 +88,16 @@ vec3 grass_albedo(float n1) {
 pub const GROUND_MAP: &str = r#"
 uniform sampler2D u_ground;
 uniform float u_ground_half;   // half the window's size, or 0 without a map
+// The map is pinned to the world, a texel a metre, and wraps round: as the
+// window moves, only the ground newly in it has to be worked out.
+const float GROUND_MAP_WORLD = 2048.0;
 // At a render-space point inside the window: the meadow noise `n1`, the
 // coarse octaves of the ground's detail noise (as fbm3) and the patches
 // of wild flowers.
 bool ground_map(vec3 p, out vec3 g) {
     if (u_ground_half <= 0.0) return false;
-    vec2 uv = (p.xz + u_ground_half) / (2.0 * u_ground_half);
-    if (uv != clamp(uv, 0.0, 1.0)) return false;
-    g = texture(u_ground, uv).rgb;
+    if (abs(p.x) > u_ground_half || abs(p.z) > u_ground_half) return false;
+    g = texture(u_ground, world_xz(p) / GROUND_MAP_WORLD).rgb;
     return true;
 }
 // The finest two octaves of `fbm(q)`, which `ground_map` leaves out:
@@ -108,12 +110,13 @@ float fbm_fine(vec2 q) {
 
 /// Fills the ground map for the terrain window (see `GROUND_MAP`).
 pub const GROUND_MAP_FS: &str = r#"
-uniform float u_ground_half;
-in vec2 v_uv;
+// The world corner (east, north, whole metres) of the 2048 m square the
+// map holds: each texel works out the one place inside it that it stands for.
+uniform vec2 u_map_min;
+const float GROUND_MAP_WORLD = 2048.0;
 out vec4 frag;
 void main() {
-    vec2 local = (v_uv * 2.0 - 1.0) * u_ground_half;
-    vec2 w = world_xz(vec3(local.x, 0.0, local.y));
+    vec2 w = u_map_min + mod(gl_FragCoord.xy - u_map_min, GROUND_MAP_WORLD);
     frag = vec4(fbm(w * 0.012), fbm3(w * 0.11), fbm3(w * 0.021 + 9.0), 1.0);
 }
 "#;
