@@ -805,10 +805,10 @@ function appObjects(verts, inst, v, uniforms) {
 // compare, the released app's: full meshes close by, then cards, each tree
 // changing at its own distance with some slack and dissolving over a moment.
 const LOD_RULES = {
-  // Every tree stays its full model until it becomes a card.
-  now: { mid: 0, card: 100, jitter: 6, slack: 2.5, secs: 0.45, cards: true, mids: false, pineMid: false, thinSlack: 0.02 },
-  // 1.6.7: broadleaf and birch went to middle models at 70 m first.
-  base: { mid: 70, card: 120, jitter: 6, slack: 2.5, secs: 0.45, cards: true, mids: true, pineMid: false, thinSlack: 0.02 },
+  // Every tree stays its full model until it becomes a card, far away.
+  now: { mid: 0, card: 300, jitter: 6, slack: 2.5, secs: 0.45, cards: true, mids: false, pineMid: false, thinSlack: 0.02 },
+  // 1.6.8: cards from 100 m.
+  base: { mid: 0, card: 100, jitter: 6, slack: 2.5, secs: 0.45, cards: true, mids: false, pineMid: false, thinSlack: 0.02 },
 };
 const LOD_THIN_FROM = 400, LOD_FAR_CULL = 1600;
 const keepShare = (d) => 1 - 0.6 * Math.min(1, Math.max(0, (d - LOD_THIN_FROM) / (LOD_FAR_CULL - LOD_THIN_FROM)));

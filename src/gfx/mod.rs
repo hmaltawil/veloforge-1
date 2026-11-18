@@ -83,9 +83,9 @@ impl Quality {
             return TreeLod { card };
         }
         match self {
-            Quality::High => TreeLod { card: 100.0 },
-            Quality::Medium => TreeLod { card: 80.0 },
-            Quality::Low => TreeLod { card: 62.0 },
+            Quality::High => TreeLod { card: 300.0 },
+            Quality::Medium => TreeLod { card: 200.0 },
+            Quality::Low => TreeLod { card: 150.0 },
         }
     }
     /// Levels of the blur pyramid (bloom and the frosted glass).
@@ -1392,18 +1392,6 @@ struct ShadowMaps {
     tex: [glow::Texture; 2],
 }
 
-/// `VELOFORGE_BEHIND=metres`: for trying it, drop everything further than
-/// this behind the camera, even what still casts a shadow into view.
-fn behind_cut() -> Option<f32> {
-    static CUT: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
-    *CUT.get_or_init(|| {
-        std::env::var("VELOFORGE_BEHIND")
-            .ok()
-            .and_then(|v| v.parse::<f32>().ok())
-            .filter(|m| *m >= 0.0)
-    })
-}
-
 /// How far a tree's shadow can reach along the ground with the sun at
 /// `sun_y` (the sine of its height): the tallest trees are about 30 m.
 fn shadow_reach(sun_y: f32) -> f32 {
@@ -2248,7 +2236,6 @@ impl GlState {
                 .into_iter()
                 .any(|k| in_view(add(p, scale(s, k)), r))
         };
-        let behind_cut = behind_cut();
         for (kind, list) in self.scattered.iter().enumerate() {
             let tree = match kind {
                 OBJ_PINE => Some(0),
@@ -2268,11 +2255,7 @@ impl GlState {
                 if !in_view([inst[0], inst[1] + 0.5 * r, inst[2]], r) {
                     // Out of view, only its shadow can show: close by, and
                     // only if it falls into view.
-                    let behind = dot(rel, fwd) < 0.0;
-                    if dist > KEEP_AROUND
-                        || behind_cut.is_some_and(|c| behind && dist > c)
-                        || !shadow_in_view(foot, r * 1.15, inst[4].max(1.0))
-                    {
+                    if dist > KEEP_AROUND || !shadow_in_view(foot, r * 1.15, inst[4].max(1.0)) {
                         continue;
                     }
                     // Trees cast it without being drawn in the view: the same
