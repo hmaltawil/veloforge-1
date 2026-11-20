@@ -505,7 +505,25 @@ void main() {
     }
     if (rock > 0.0) {
         float strata = vnoise(vec2(dot(w, vec2(0.02, 0.013)), v_pos.y * 0.45 + n2 * 2.0));
-        vec3 rockc = mix(vec3(0.2, 0.185, 0.165), vec3(0.1, 0.098, 0.097), strata) * (0.75 + 0.5 * n2);
+        float grain = n2;
+        // On a steep face the ground's noise, seen from above, smears into
+        // streaks down it: there the rock's pattern is laid on the face
+        // itself instead, along it and up it, in broken blocks and cracks.
+        float face = smoothstep(0.62, 0.3, n.y);
+        if (face > 0.0) {
+            float fl = length(n.xz);
+            vec2 t = fl > 1e-3 ? vec2(-n.z, n.x) / fl : vec2(1.0, 0.0);
+            // Render z is minus north.
+            vec2 fc = vec2(dot(w, vec2(t.x, -t.y)), v_pos.y);
+            float big = vnoise(fc * vec2(0.05, 0.07));
+            float blocks = vnoise(fc * vec2(0.22, 0.34) + big * 1.5);
+            float fine = detail > 0.0 ? mix(0.5, vnoise(fc * 1.4), detail) : 0.5;
+            float crack = smoothstep(0.08, 0.0, abs(vnoise(fc * vec2(0.12, 0.05) + 3.1) - 0.5));
+            float ledges = vnoise(vec2(fc.x * 0.015, fc.y * 0.12 + big * 3.0));
+            strata = mix(strata, 0.55 * ledges + 0.45 * blocks, face);
+            grain = mix(grain, (0.45 * big + 0.35 * blocks + 0.2 * fine) * (1.0 - 0.45 * crack), face);
+        }
+        vec3 rockc = mix(vec3(0.2, 0.185, 0.165), vec3(0.1, 0.098, 0.097), strata) * (0.75 + 0.5 * grain);
         col = mix(col, rockc, rock);
     }
     float gloss = 0.0;

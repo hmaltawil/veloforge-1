@@ -40,6 +40,64 @@ pub const MAPLE: usize = 10;
 pub const BALE: usize = 11;
 pub const WALL: usize = 12;
 
+/// The farmland patchwork the ground shader paints (`TERRAIN_FS`, where
+/// the scenery is farmland or a lake): fields 150 by 105 m on a grid turned
+/// a little from north, each with its own crop. Worked out here exactly as
+/// there, so what stands in the fields suits what grows in them.
+struct Field {
+    /// Which field.
+    cell: (i64, i64),
+    /// What grows in it, as the shader picks: under 0.2 ripe wheat, 0.2 to
+    /// 0.32 rapeseed, to 0.46 young green, to 0.58 ploughed, to 0.74
+    /// pasture; above that, plain meadow.
+    crop: f32,
+    /// Metres to the field's nearest edge.
+    edge: f64,
+    /// The turn (as an instance's, see `Bales`) of the field's rows.
+    rows: f32,
+}
+
+impl Field {
+    fn at(x: f64, z: f64) -> Field {
+        // q = mat2(0.94, 0.34, -0.34, 0.94) * w / vec2(150, 105), w = (x, z);
+        // GLSL matrices are column by column.
+        let (wx, wz) = (x as f32, z as f32);
+        let q = (
+            (0.94 * wx - 0.34 * wz) / 150.0,
+            (0.34 * wx + 0.94 * wz) / 105.0,
+        );
+        let cell = (q.0.floor(), q.1.floor());
+        let f = (q.0 - cell.0, q.1 - cell.1);
+        let crop = hash12(cell.0 + 3.7, cell.1 + 3.7);
+        let edge = (f.0.min(1.0 - f.0) * 150.0).min(f.1.min(1.0 - f.1) * 105.0) as f64;
+        // q.x grows along (0.94, -0.34) in (east, north), q.y along
+        // (0.34, 0.94); rows run along q.x where the crop is over 0.5.
+        let along_x = (-0.34f32).atan2(0.94);
+        let rows = if crop > 0.5 {
+            along_x
+        } else {
+            along_x + std::f32::consts::FRAC_PI_2
+        };
+        Field {
+            cell: (cell.0 as i64, cell.1 as i64),
+            crop,
+            edge,
+            rows,
+        }
+    }
+}
+
+/// The shaders' `hash12`, in the same 32-bit floats.
+fn hash12(px: f32, py: f32) -> f32 {
+    let fract = |v: f32| v - v.floor();
+    let mut p3 = [fract(px * 0.1031), fract(py * 0.1031), fract(px * 0.1031)];
+    let d = p3[0] * (p3[1] + 33.33) + p3[1] * (p3[2] + 33.33) + p3[2] * (p3[0] + 33.33);
+    for v in p3.iter_mut() {
+        *v += d;
+    }
+    fract((p3[0] + p3[1]) * p3[2])
+}
+
 /// Bales in one cell of a field: where each lies from the cell's spot,
 /// which way, and their colour.
 struct Bales {
@@ -694,10 +752,12 @@ impl RouteGeo {
         out
     }
 
-    /// A bale (or two side by side) in the cell `gi`, `gj` at `x`, `z`, if
-    /// that cell lies in a mown field: fields are 66 m squares, some with
-    /// bales, each lying in rows the field's own way, all of one sort
-    /// (straw, or wrapped white, green or black).
+    /// A bale (or two end to end) in the cell `gi`, `gj` at `x`, `z`, if
+    /// it lies inside a field of the farmland patchwork (`Field`) that is
+    /// mown: a wheat field (straw) or a pasture (hay, often wrapped), near
+    /// a farm, not at its edge, on level open ground. Some such fields have
+    /// bales, lying in rows along the field's own direction.
+    #[allow(clippy::too_many_arguments)]
     fn bale(
         &self,
         palette: &Palette,
@@ -706,38 +766,59 @@ impl RouteGeo {
         x: f64,
         z: f64,
         spot: &Spot,
+        ground: &dyn Fn(f64, f64) -> f64,
     ) -> Option<Bales> {
-        if palette.bales <= 0.0 || spot.forest > 0.08 || spot.dist < 17.0 {
+        if palette.bales <= 0.0 || spot.forest > 0.05 || spot.dist < 40.0 {
             return None;
         }
-        let (fi, fj) = (gi.div_euclid(6), gj.div_euclid(6));
-        let mut field = Rng(hash2(fi, fj, self.seed + 4111));
-        if field.next() >= palette.bales {
+        let field = Field::at(x, z);
+        let (straw, hay) = (field.crop < 0.2, (0.58..0.74).contains(&field.crop));
+        if !(straw || hay) || field.edge < 8.0 {
+            return None;
+        }
+        let mut each = Rng(hash2(field.cell.0, field.cell.1, self.seed + 4111));
+        if each.next() >= palette.bales {
             return None;
         }
         let mut cell = Rng(hash2(gi, gj, self.seed + 4127));
-        if cell.next() >= 0.25 {
+        if cell.next() >= 0.3 {
             return None;
         }
-        let rot = (field.next() * std::f64::consts::PI) as f32;
-        let tint = match field.next() {
-            r if r < 0.55 => [0.55, 0.45, 0.24],
-            r if r < 0.8 => [0.78, 0.8, 0.77],
-            r if r < 0.92 => [0.2, 0.3, 0.17],
-            _ => [0.05, 0.05, 0.055],
+        // Farmland lies around the farms.
+        if !self
+            .farms
+            .iter()
+            .any(|b| (x - b.x).powi(2) + (z - b.z).powi(2) < 500.0f64.powi(2))
+        {
+            return None;
+        }
+        let tint = if straw {
+            [0.55, 0.45, 0.24]
+        } else {
+            match each.next() {
+                r if r < 0.35 => [0.5, 0.43, 0.22],
+                r if r < 0.7 => [0.78, 0.8, 0.77],
+                r if r < 0.88 => [0.2, 0.3, 0.17],
+                _ => [0.05, 0.05, 0.055],
+            }
         };
         let shade = (0.9 + 0.2 * cell.next()) as f32;
-        let rot = rot + (0.12 * (cell.next() - 0.5)) as f32;
+        let rot = field.rows + (0.1 * (cell.next() - 0.5)) as f32;
         let mut at = vec![(0.0, 0.0)];
         if cell.next() < 0.3 {
             // A second one end to end along its axis (x, turned by `rot`).
             // (World z is north; the turn is about render space's -z.)
             at.push((1.28 * rot.cos() as f64, 1.28 * rot.sin() as f64));
         }
-        // Not in the farmyards, nor in the water.
+        // On level, dry ground, out of the farmyards.
         let clear = at.iter().all(|&(dx, dz)| {
             let (bx, bz) = (x + dx, z + dz);
-            !self.sample(bx, bz).water
+            let e = 1.5;
+            let slope = (ground(bx + e, bz) - ground(bx - e, bz))
+                .hypot(ground(bx, bz + e) - ground(bx, bz - e))
+                / (2.0 * e);
+            slope < 0.2
+                && self.room_to_stand(bx, bz, 1.5, ground)
                 && self
                     .farms
                     .iter()
@@ -748,6 +829,28 @@ impl RouteGeo {
             rot,
             tint: tint.map(|c| c * shade),
         })
+    }
+
+    /// Whether `x`, `z` lies inside a cropped field or pasture of the
+    /// farmland patchwork the ground is painted with, away from its edge:
+    /// no tree, bush or rock stands there (trees grow along the edges,
+    /// as hedgerows).
+    fn in_field(&self, x: f64, z: f64, smp: &Sample, ground: &dyn Fn(f64, f64) -> f64) -> bool {
+        if !matches!(self.route.scenery, Scenery::Hills | Scenery::Lake)
+            || smp.forest > 0.2
+            || smp.dist < 36.0
+        {
+            return false;
+        }
+        let e = 2.0;
+        let slope = (ground(x + e, z) - ground(x - e, z))
+            .hypot(ground(x, z + e) - ground(x, z - e))
+            / (2.0 * e);
+        if slope > 0.33 {
+            return false;
+        }
+        let field = Field::at(x, z);
+        field.crop < 0.74 && field.edge > 5.0
     }
 
     /// Dry-stone walls along the fields beside the road, piece by piece,
@@ -832,7 +935,12 @@ impl RouteGeo {
                     let b = point(t, side);
                     let (cx, cz) = ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
                     let gap = has_gate && (s - gate_at).abs() < 2.6;
-                    if !gap && inside(cx, cz, 0.0) && self.wall_fits(cx, cz) {
+                    // Not where the ground falls so steeply along it that the
+                    // pieces would stand in steps, nor with an end in water.
+                    let steady = (ground(a.0, a.1) - ground(b.0, b.1)).abs() < 0.8
+                        && !self.sample(a.0, a.1).water
+                        && !self.sample(b.0, b.1).water;
+                    if !gap && steady && inside(cx, cz, 0.0) && self.wall_fits(cx, cz) {
                         let (rx, rz) = rel(cx, cz);
                         let rot = (b.1 - a.1).atan2(b.0 - a.0) as f32;
                         // Every other piece turned end for end, and each a
@@ -878,6 +986,32 @@ impl RouteGeo {
                 .all(|b| (x - b.x).powi(2) + (z - b.z).powi(2) > (b.reach + 3.0).powi(2))
     }
 
+    /// Whether something may stand at `x`, `z` on the ground as drawn: not
+    /// on a slope so steep that it would stand out of it, and dry, well
+    /// above the water, for `reach` around (so no crown hangs over it).
+    fn room_to_stand(&self, x: f64, z: f64, reach: f64, ground: &dyn Fn(f64, f64) -> f64) -> bool {
+        let e = 2.0;
+        let slope = (ground(x + e, z) - ground(x - e, z))
+            .hypot(ground(x, z + e) - ground(x, z - e))
+            / (2.0 * e);
+        if slope > 0.9 {
+            return false;
+        }
+        if let Some(level) = self.water_level {
+            if ground(x, z) < level + 0.6 {
+                return false;
+            }
+            for k in 0..6 {
+                let a = k as f64 * std::f64::consts::TAU / 6.0;
+                let (px, pz) = (x + a.cos() * reach, z + a.sin() * reach);
+                if ground(px, pz) < level + 0.2 {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
     fn scatter(
         &self,
         ox: f64,
@@ -907,7 +1041,7 @@ impl RouteGeo {
                 let z = (gj as f64 + rng.next()) * cell;
                 let smp = self.sample(x, z);
                 let gh = ground(x, z) as f32;
-                if smp.water || smp.dist < 9.5 {
+                if smp.water || smp.dist < 9.5 || !self.room_to_stand(x, z, 3.0, ground) {
                     continue;
                 }
                 // Nothing grows where a building stands.
@@ -923,7 +1057,7 @@ impl RouteGeo {
                 };
                 // Bales lie in mown fields, open and away from the road; with
                 // numbers of their own, so the trees stay where they were.
-                if let Some(b) = self.bale(&palette, gi, gj, x, z, &spot) {
+                if let Some(b) = self.bale(&palette, gi, gj, x, z, &spot, ground) {
                     let (rx, rz) = rel(x, z);
                     for (dx, dz) in b.at {
                         let (bx, bz) = (x + dx, z + dz);
@@ -942,6 +1076,10 @@ impl RouteGeo {
                         ]);
                     }
                     shadows.extend_from_slice(&[rx, gh + 0.08, rz, 1.1]);
+                    continue;
+                }
+                // Fields are kept clear.
+                if self.in_field(x, z, &smp, ground) {
                     continue;
                 }
                 let r = rng.next();
@@ -1323,6 +1461,126 @@ mod tests {
             }
         }
         assert!(checked > 1000);
+    }
+
+    /// The ground as drawn in a window (the triangles between its vertices).
+    fn drawn(w: &TerrainData) -> impl Fn(f64, f64) -> f64 + '_ {
+        let n = WINDOW_VERTS;
+        let cell = WINDOW_SIZE / (n - 1) as f64;
+        let half = WINDOW_SIZE / 2.0;
+        move |x: f64, z: f64| {
+            let (u, v) = ((x - w.ox + half) / cell, (z - w.oz + half) / cell);
+            let (i, j) = (
+                (u.floor().max(0.0) as usize).min(n - 2),
+                (v.floor().max(0.0) as usize).min(n - 2),
+            );
+            let h = |i: usize, j: usize| w.verts[(j * n + i) * TERRAIN_STRIDE + 1] as f64;
+            let (fx, fz) = (u - i as f64, v - j as f64);
+            if fx + fz <= 1.0 {
+                h(i, j) + (h(i + 1, j) - h(i, j)) * fx + (h(i, j + 1) - h(i, j)) * fz
+            } else {
+                h(i + 1, j + 1)
+                    + (h(i, j + 1) - h(i + 1, j + 1)) * (1.0 - fx)
+                    + (h(i + 1, j) - h(i + 1, j + 1)) * (1.0 - fz)
+            }
+        }
+    }
+
+    #[test]
+    fn nothing_stands_in_the_water_on_cliffs_or_in_the_fields() {
+        for id in ["valley-loop", "lakeside", "island-coast", "col-loop"] {
+            let r = route::builtin().into_iter().find(|r| r.id == id).unwrap();
+            let g = RouteGeo::new(&r);
+            let (mut bales, mut checked) = (0, 0);
+            for at in [1500.0, 9000.0] {
+                let p = r.at(at);
+                let w = g.build_window(p.x, p.z, WINDOW_SIZE, WINDOW_VERTS);
+                let ground = drawn(&w);
+                let world = |inst: &[f32]| (inst[0] as f64 + w.ox, w.oz - inst[2] as f64);
+                for kind in [PINE, BROADLEAF, BIRCH, OAK, MAPLE, BUSH, ROCK, BALE] {
+                    for inst in w.instances[kind].chunks(INSTANCE_STRIDE) {
+                        let (x, z) = world(inst);
+                        // Garden trees stand in their gardens.
+                        if g.farms.iter().any(|b| (b.x - x).hypot(b.z - z) < 0.5) {
+                            continue;
+                        }
+                        let e = 2.0;
+                        let slope = (ground(x + e, z) - ground(x - e, z))
+                            .hypot(ground(x, z + e) - ground(x, z - e))
+                            / (2.0 * e);
+                        assert!(
+                            slope <= 0.9 + 1e-6,
+                            "{id}: kind {kind} on a {slope:.2} slope"
+                        );
+                        if let Some(level) = g.water_level {
+                            assert!(
+                                ground(x, z) >= level + 0.6 - 1e-6,
+                                "{id}: kind {kind} in water"
+                            );
+                        }
+                        let smp = g.sample(x, z);
+                        if kind == BALE {
+                            let f = Field::at(x, z);
+                            assert!(
+                                (f.crop < 0.2 || (0.58..0.74).contains(&f.crop)) && f.edge >= 6.5,
+                                "{id}: a bale outside a mown field"
+                            );
+                            assert!(g.farms.iter().any(|b| (x - b.x).hypot(z - b.z) < 505.0));
+                            bales += 1;
+                        } else {
+                            assert!(
+                                !g.in_field(x, z, &smp, &ground),
+                                "{id}: kind {kind} in a field"
+                            );
+                        }
+                        checked += 1;
+                    }
+                }
+            }
+            assert!(checked > 1000, "{id}: {checked}");
+            if id == "valley-loop" || id == "lakeside" {
+                assert!(bales > 0, "{id}: no bales");
+            } else {
+                assert_eq!(bales, 0, "{id}: bales outside farmland");
+            }
+        }
+    }
+
+    #[test]
+    fn walls_stand_on_the_land_side_of_lakes_and_the_sea() {
+        let mut routes: Vec<Route> = route::builtin()
+            .into_iter()
+            .filter(|r| r.id == "lakeside" || r.id == "island-coast")
+            .collect();
+        for seed in 1..3 {
+            for scenery in [Scenery::Lake, Scenery::Coast] {
+                routes.push(
+                    crate::routegen::RandomRoute {
+                        seed,
+                        scenery,
+                        km: 20,
+                        hills: crate::routegen::Hills::Rolling,
+                    }
+                    .route(),
+                );
+            }
+        }
+        for r in routes {
+            let id = r.id.clone();
+            let g = RouteGeo::new(&r);
+            let mut n = 0;
+            for at in [2000.0, 9000.0] {
+                let p = r.at(at);
+                let w = g.build_window(p.x, p.z, WINDOW_SIZE, WINDOW_VERTS);
+                for inst in w.instances[WALL].chunks(INSTANCE_STRIDE) {
+                    let (x, z) = (inst[0] as f64 + w.ox, w.oz - inst[2] as f64);
+                    let near = g.nearest(x, z);
+                    assert_ne!(near.side, g.water_side, "{id}: a wall on the water side");
+                    n += 1;
+                }
+            }
+            assert!(n > 0, "{id}: no walls");
+        }
     }
 
     #[test]

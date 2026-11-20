@@ -45,7 +45,8 @@ pub struct Palette {
     pub rocks: f64,
     /// Farmhouses along the road.
     pub farmhouses: bool,
-    /// The share of fields with bales of hay in them.
+    /// The share of mown fields (wheat stubble or pasture, near a farm)
+    /// with bales in them.
     pub bales: f64,
 }
 
@@ -153,10 +154,11 @@ impl Palette {
             },
             farmhouses: scenery != Scenery::Alpine,
             bales: match scenery {
-                Scenery::Hills => 0.1,
-                Scenery::Lake => 0.07,
-                Scenery::Coast => 0.05,
-                Scenery::Alpine => 0.03,
+                // Of the mown fields near farms; only farmland and lakeside
+                // country has fields.
+                Scenery::Hills => 0.45,
+                Scenery::Lake => 0.35,
+                Scenery::Coast | Scenery::Alpine => 0.0,
             },
         }
     }

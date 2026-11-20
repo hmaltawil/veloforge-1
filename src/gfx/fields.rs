@@ -82,6 +82,8 @@ pub fn stone_wall() -> Mesh {
     let thick = |y: f32| 0.36 - 0.11 * (y / top).clamp(0.0, 1.0);
     // The core: dark, so the joints between stones read as shadow.
     let core = tinted(GAPS);
+    let footing = tinted(add(scale(STONE, 0.55), scale(MOSS, 0.4)));
+    let z0 = |y: f32| thick(y) - 0.06;
     let (b, t) = (-WALL_FOOT, top);
     for s in [1.0f32, -1.0] {
         let (zb, zt) = (s * (thick(0.0) - 0.06), s * (thick(t) - 0.06));
@@ -90,27 +92,86 @@ pub fn stone_wall() -> Mesh {
         } else {
             (half, -half)
         };
-        m.quad([x0, b, zb], [x1, b, zb], [x1, t, zt], [x0, t, zt], core);
+        // Below the stones, earthy footing stone; above, the dark joints.
+        let foot = -0.3;
+        let zf = s * (thick(0.0) - 0.02);
+        m.quad(
+            [x0, b, zf],
+            [x1, b, zf],
+            [x1, foot, zf],
+            [x0, foot, zf],
+            footing,
+        );
+        m.quad(
+            [x0, foot, zb],
+            [x1, foot, zb],
+            [x1, t, zt],
+            [x0, t, zt],
+            core,
+        );
     }
-    let z = |y: f32| thick(y) - 0.06;
-    for x in [-half, half] {
+    // Each end in stones laid across the wall, course by course: where
+    // pieces step down a slope, the higher one's end shows stonework, not
+    // the core. (Below the ground it is the core's own end.)
+    for (e, x) in [(0u32, -half), (1, half)] {
         let s = x.signum();
-        let (a, c) = if s > 0.0 {
-            ([x, b, z(0.0)], [x, b, -z(0.0)])
-        } else {
-            ([x, b, -z(0.0)], [x, b, z(0.0)])
-        };
-        let (d, e) = if s > 0.0 {
-            ([x, t, z(t)], [x, t, -z(t)])
-        } else {
-            ([x, t, -z(t)], [x, t, z(t)])
-        };
-        m.quad(c, a, d, e, core);
+        let (a, c) = ([x, b, s * z0(0.0)], [x, b, -s * z0(0.0)]);
+        let (d, f) = ([x, -0.3, s * z0(0.0)], [x, -0.3, -s * z0(0.0)]);
+        m.quad(c, a, d, f, footing);
+        let mut y = -0.3;
+        let mut k = 0u32;
+        while y < top - 0.05 {
+            let q = |n: u32| rnd(43 + e, k, n);
+            let h = ((0.2 + 0.08 * q(1)) * (1.0 - 0.2 * y / top)).min(top - y);
+            let w = thick(y + h * 0.5) + 0.02;
+            // One stone through, or two meeting in the middle.
+            let split = q(2) < 0.5;
+            let tone = scale(STONE, 0.72 + 0.36 * q(3));
+            let depth = 0.22 + 0.12 * q(4);
+            let (x0, x1) = if s > 0.0 {
+                (x - depth, x + 0.015)
+            } else {
+                (x - 0.015, x + depth)
+            };
+            let lo_y = y + 0.008;
+            let hi_y = y + h - 0.008;
+            if split {
+                let mid = 0.08 * (q(5) - 0.5);
+                m.stone(
+                    [x0, lo_y, -w],
+                    [x1, hi_y, mid - 0.006],
+                    0.025,
+                    500 + e * 97 + k,
+                    tinted(tone),
+                    Skip::None,
+                );
+                let tone2 = scale(STONE, 0.72 + 0.36 * q(6));
+                m.stone(
+                    [x0, lo_y, mid + 0.006],
+                    [x1, hi_y, w],
+                    0.025,
+                    700 + e * 97 + k,
+                    tinted(tone2),
+                    Skip::None,
+                );
+            } else {
+                m.stone(
+                    [x0, lo_y, -w],
+                    [x1, hi_y, w],
+                    0.025,
+                    900 + e * 97 + k,
+                    tinted(tone),
+                    Skip::None,
+                );
+            }
+            y += h;
+            k += 1;
+        }
     }
     // The face stones, course by course from just below the ground.
     let mut seed = 1u32;
     for (face, skip) in [(1.0f32, Skip::Back), (-1.0, Skip::Front)] {
-        let mut y = -0.14;
+        let mut y = -0.3;
         let mut course = 0u32;
         while y < top - 0.08 {
             let q = |n: u32| rnd(17 + face as u32, course, n);

@@ -146,8 +146,10 @@ impl RandomRoute {
         let n = (km * 1000.0 / STEP) as usize;
         let mut rng = Rng(self.seed);
         let name_rng_seed = rng.next().to_bits();
-        // Bends: tries until one keeps clear of itself.
-        let mut pts = None;
+        // Bends and hills: tries until the road keeps clear of itself, and
+        // wherever it passes near itself the heights differ little enough
+        // for a hillside between, not a cliff.
+        let mut found = None;
         const TRIES: usize = 120;
         for k in 0..TRIES {
             // Gentler with every try that fails.
@@ -156,14 +158,23 @@ impl RandomRoute {
             let p = integrate_loop(n, |u| t[((u * n as f64) as usize).min(n - 1)], |_| 0.0);
             // Checked with the headings the route will have.
             let r = Route::from_points("", "", self.scenery, 0, p);
-            if keeps_clear(r.points()) {
-                pts = Some(r.points().to_vec());
+            if !keeps_clear(r.points()) {
+                continue;
+            }
+            for _ in 0..6 {
+                let eles = heights(&mut rng, km, self.hills, n);
+                if gentle_between(r.points(), &eles) {
+                    found = Some((r.points().to_vec(), eles));
+                    break;
+                }
+            }
+            if found.is_some() {
                 break;
             }
         }
-        // A plain round loop never fails.
-        let mut pts = pts.unwrap_or_else(|| integrate_loop(n, |_| 1.0, |_| 0.0));
-        let eles = heights(&mut rng, km, self.hills, n);
+        // A plain round loop, flat, never fails.
+        let (mut pts, eles) =
+            found.unwrap_or_else(|| (integrate_loop(n, |_| 1.0, |_| 0.0), vec![0.0; n + 1]));
         let base = match self.scenery {
             Scenery::Hills => 110.0,
             Scenery::Lake => 40.0,
@@ -286,6 +297,51 @@ fn keeps_clear(pts: &[crate::route::RoutePt]) -> bool {
                     if along(i, j) > APART_ALONG
                         && (pts[i].x - pts[j].x).hypot(pts[i].z - pts[j].z) < APART
                     {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    true
+}
+
+/// Whether, wherever the road passes within `NEAR_ENOUGH` of another stretch
+/// of itself (far from it along the road), the two differ in height little
+/// enough for the land between to be a hillside rather than a cliff.
+fn gentle_between(pts: &[crate::route::RoutePt], eles: &[f64]) -> bool {
+    const NEAR_ENOUGH: f64 = 600.0;
+    // The steepest the land between may average.
+    const SLOPE: f64 = 0.28;
+    let n = pts.len() - 1;
+    let step = 6;
+    let cell = NEAR_ENOUGH;
+    let mut grid: std::collections::HashMap<(i64, i64), Vec<usize>> =
+        std::collections::HashMap::new();
+    let key = |i: usize| {
+        (
+            (pts[i].x / cell).floor() as i64,
+            (pts[i].z / cell).floor() as i64,
+        )
+    };
+    for i in (0..n).step_by(step) {
+        grid.entry(key(i)).or_default().push(i);
+    }
+    for i in (0..n).step_by(step) {
+        let (cx, cz) = key(i);
+        for dx in -1..=1 {
+            for dz in -1..=1 {
+                for &j in grid.get(&(cx + dx, cz + dz)).into_iter().flatten() {
+                    let along = {
+                        let d = i.abs_diff(j) as f64 * STEP;
+                        d.min(n as f64 * STEP - d)
+                    };
+                    if along < APART_ALONG {
+                        continue;
+                    }
+                    let d = (pts[i].x - pts[j].x).hypot(pts[i].z - pts[j].z);
+                    // The road's own verges (about 30 m each) are level.
+                    if d < NEAR_ENOUGH && (eles[i] - eles[j]).abs() > SLOPE * (d - 60.0).max(0.0) {
                         return false;
                     }
                 }
@@ -483,6 +539,11 @@ mod tests {
                 assert!(r.is_loop(), "{seed} {scenery:?}");
                 assert!((r.length / 1000.0 - km as f64).abs() < 0.1);
                 assert!(keeps_clear(r.points()), "{seed} {scenery:?} {km} km");
+                let eles: Vec<f64> = r.points().iter().map(|p| p.ele).collect();
+                assert!(
+                    gentle_between(r.points(), &eles),
+                    "{seed} {scenery:?} {km} km: a cliff"
+                );
                 // Never the plain round loop kept for when every try fails.
                 let turning: f64 = r
                     .points()
