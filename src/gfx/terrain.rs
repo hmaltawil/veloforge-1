@@ -2301,3 +2301,217 @@ mod survey {
         }
     }
 }
+
+/// A survey of every kind of route (builtins, random routes of each scenery
+/// and shape, imports of several kinds) to compare before and after a
+/// change to the land or the road: how far any land rises over the road,
+/// how much retaining wall shows, the sharpest turn, the steepest grade and
+/// how far an import strays from its track. `VELOFORGE_ALPE` adds a GPX file.
+/// `cargo test --release survey_all_kinds -- --ignored --nocapture`
+#[cfg(test)]
+mod survey_many {
+    use super::*;
+    use crate::route;
+
+    fn gpx(pts: &[(f64, f64, f64)]) -> String {
+        let mut xml = String::from("<gpx><trk><trkseg>");
+        for &(x, z, e) in pts {
+            let lat = 45.0 + (z / 6_371_000.0).to_degrees();
+            let lon = 6.0 + (x / (6_371_000.0 * 45f64.to_radians().cos())).to_degrees();
+            xml += &format!(r#"<trkpt lat="{lat:.7}" lon="{lon:.7}"><ele>{e:.1}</ele></trkpt>"#);
+        }
+        xml + "</trkseg></trk></gpx>"
+    }
+
+    type Track = Vec<(f64, f64, f64)>;
+
+    /// Imports of other kinds than a hairpin climb.
+    fn imports() -> Vec<(String, Track, Scenery)> {
+        let mut out = Vec::new();
+        // A town loop: blocks with square corners at junctions.
+        let corners = [
+            (0.0, 0.0),
+            (300.0, 0.0),
+            (300.0, 200.0),
+            (500.0, 200.0),
+            (500.0, 500.0),
+            (150.0, 500.0),
+            (150.0, 250.0),
+            (0.0, 250.0),
+            (0.0, 0.0),
+        ];
+        let mut town = Vec::new();
+        for w in corners.windows(2) {
+            let ((x0, z0), (x1, z1)) = (w[0], w[1]);
+            let n = (x1 - x0).hypot(z1 - z0) / 10.0;
+            for i in 0..n as usize {
+                let u = i as f64 / n;
+                town.push((
+                    x0 + (x1 - x0) * u,
+                    z0 + (z1 - z0) * u,
+                    120.0 + 3.0 * (u * 6.0).sin(),
+                ));
+            }
+        }
+        out.push(("town loop, square corners".into(), town, Scenery::Hills));
+        // A winding descent: S-bends down a valley side.
+        let mut s_bends = Vec::new();
+        let (mut x, mut z, mut h, mut e) = (0.0f64, 0.0f64, 0.0f64, 900.0f64);
+        for i in 0..900 {
+            h += 0.06 * ((i as f64) * 0.05).sin();
+            x += 8.0 * h.sin();
+            z += 8.0 * h.cos();
+            e -= 0.5;
+            s_bends.push((x, z, e));
+        }
+        out.push(("winding descent, S-bends".into(), s_bends, Scenery::Alpine));
+        // Out and back on the same road.
+        let mut there: Vec<(f64, f64, f64)> = (0..400)
+            .map(|i| {
+                let u = i as f64 * 10.0;
+                (u, 200.0 * (u / 900.0).sin(), 50.0 + u * 0.03)
+            })
+            .collect();
+        let back: Vec<(f64, f64, f64)> = there
+            .iter()
+            .rev()
+            .skip(1)
+            .map(|&(x, z, e)| (x + 1.5, z, e))
+            .collect();
+        there.extend(back);
+        out.push(("out and back".into(), there, Scenery::Lake));
+        // A recorded ride: GPS wander and jumpy heights on country roads.
+        let mut rec = Vec::new();
+        let (mut x, mut z, mut h) = (0.0f64, 0.0f64, 0.3f64);
+        for i in 0..1500 {
+            let n = |s: u32| ((s as f64 * 12.9898).sin() * 43758.5453).fract() - 0.5;
+            h += 0.04 * ((i as f64) * 0.013).sin() + 0.03 * n(i);
+            x += 7.0 * h.sin() + 2.0 * n(i + 7);
+            z += 7.0 * h.cos() + 2.0 * n(i + 99);
+            rec.push((
+                x,
+                z,
+                200.0 + 40.0 * ((i as f64) * 0.004).sin() + 3.0 * n(i + 500),
+            ));
+        }
+        out.push(("recorded ride, GPS noise".into(), rec, Scenery::Coast));
+        out
+    }
+
+    fn survey(r: &Route, track: Option<&[(f64, f64)]>) -> String {
+        let geo = RouteGeo::new(r);
+        assert!(
+            r.points()
+                .iter()
+                .all(|p| p.x.is_finite() && p.ele.is_finite()),
+            "{}: not a number",
+            r.name
+        );
+        let (mut over, mut walls, mut tall_walls, mut samples) = (f64::MIN, 0usize, 0usize, 0usize);
+        let mut c = 0.0;
+        while c < r.length {
+            let p = r.at(c);
+            let w = geo.build_window(p.x, p.z, WINDOW_SIZE, WINDOW_VERTS);
+            let mut d = c;
+            while d < (c + 800.0).min(r.length) {
+                let q = r.at(d);
+                for k in -6..=6 {
+                    let lat = k as f64 * 5.6 / 6.0;
+                    let (x, z) = (q.x + lat * q.heading.cos(), q.z - lat * q.heading.sin());
+                    let surface = q.ele - if lat.abs() > 4.6 { 0.25 } else { 0.0 };
+                    if let Some(h) = w.ground(x, z) {
+                        over = over.max(h - surface);
+                    }
+                }
+                for side in [-1.0, 1.0] {
+                    let lat = side * 6.5;
+                    let (x, z) = (q.x + lat * q.heading.cos(), q.z - lat * q.heading.sin());
+                    if let Some(h) = w.ground(x, z) {
+                        samples += 1;
+                        if q.ele - h > 1.0 {
+                            walls += 1;
+                        }
+                        if q.ele - h > 4.0 {
+                            tall_walls += 1;
+                        }
+                    }
+                }
+                d += 5.0;
+            }
+            c += 800.0;
+        }
+        let pts = r.course_points();
+        let wrap = |a: f64| {
+            (a + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI
+        };
+        let turn = (2..pts.len())
+            .map(|i| {
+                let h1 = (pts[i - 1].x - pts[i - 2].x).atan2(pts[i - 1].z - pts[i - 2].z);
+                let h2 = (pts[i].x - pts[i - 1].x).atan2(pts[i].z - pts[i - 1].z);
+                wrap(h2 - h1).abs().to_degrees()
+            })
+            .fold(0.0, f64::max);
+        let stray = track.map(|t| {
+            pts.iter()
+                .map(|p| {
+                    t.iter()
+                        .map(|q| (q.0 - p.x).hypot(q.1 - p.z))
+                        .fold(f64::MAX, f64::min)
+                })
+                .fold(0.0, f64::max)
+        });
+        let mut grade = 0.0f64;
+        let mut d = 0.0;
+        while d < r.length {
+            grade = grade.max(r.grade(d).abs());
+            d += 10.0;
+        }
+        format!(
+            "{:34} {:5.1} km  land over road {:+5.2} m  walls >1 m {:4.1} %  >4 m {:4.1} %  sharpest turn {:4.1} deg/5 m  steepest {:4.1} %{}",
+            r.name.chars().take(34).collect::<String>(),
+            r.length / 1000.0,
+            over,
+            100.0 * walls as f64 / samples.max(1) as f64,
+            100.0 * tall_walls as f64 / samples.max(1) as f64,
+            turn,
+            grade,
+            stray.map(|s| format!("  strays {s:4.1} m")).unwrap_or_default()
+        )
+    }
+
+    #[test]
+    #[ignore]
+    fn survey_all_kinds_of_route() {
+        for r in route::builtin() {
+            println!("{}", survey(&r, None));
+        }
+        for (k, scenery) in Scenery::ALL.into_iter().enumerate() {
+            for shape in route::Shape::ALL {
+                let r = crate::routegen::RandomRoute {
+                    seed: 100 + k as u64,
+                    scenery,
+                    km: 15,
+                    hills: crate::routegen::Hills::Hilly,
+                    shape,
+                }
+                .route();
+                println!("{}", survey(&r, None));
+            }
+        }
+        if let Ok(path) = std::env::var("VELOFORGE_ALPE") {
+            let xml = std::fs::read_to_string(path).unwrap();
+            let mut g = route::parse_gpx(&xml, "alpe", "Alpe d'Huez").unwrap();
+            g.scenery = Some(Scenery::Alpine);
+            let track: Vec<(f64, f64)> = g.pts.iter().map(|p| (p.2, p.3)).collect();
+            println!("{}", survey(&g.to_route(), Some(&track)));
+        }
+        for (name, pts, scenery) in imports() {
+            let mut g = route::parse_gpx(&gpx(&pts), "import", &name).unwrap();
+            g.scenery = Some(scenery);
+            g.name = name;
+            let track: Vec<(f64, f64)> = g.pts.iter().map(|p| (p.2, p.3)).collect();
+            let r = g.to_route();
+            println!("{}", survey(&r, Some(&track)));
+        }
+    }
+}
