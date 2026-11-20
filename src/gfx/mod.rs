@@ -8,6 +8,7 @@
 //! (see [`GpuWorld::error`]).
 
 mod body;
+mod flora;
 mod impostor;
 mod math;
 mod mesh;

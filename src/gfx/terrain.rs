@@ -2,6 +2,7 @@
 //! distance to the road (the road sits in a valley), forests, rocks,
 //! bushes, houses and lakes. Windows of terrain are built on a worker thread.
 
+use super::flora::{Cover, Palette, Spot};
 use crate::route::{Route, Scenery, STEP};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
@@ -50,10 +51,10 @@ fn unit(h: u64) -> f64 {
 }
 
 /// Small deterministic random sequence (splitmix64) seeded from a hash.
-struct Rng(u64);
+pub(super) struct Rng(pub(super) u64);
 
 impl Rng {
-    fn next(&mut self) -> f64 {
+    pub(super) fn next(&mut self) -> f64 {
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -426,18 +427,7 @@ impl RouteGeo {
         let cell = 11.0;
         let (gi0, gj0) = ((x0 / cell).floor() as i64, (z0 / cell).floor() as i64);
         let cells = (size / cell).ceil() as i64;
-        let pine_share = match self.route.scenery {
-            Scenery::Alpine => 0.95,
-            Scenery::Hills => 0.35,
-            Scenery::Lake => 0.45,
-            Scenery::Coast => 0.7,
-        };
-        let (birch_share, bush_chance) = match self.route.scenery {
-            Scenery::Alpine => (0.3, 0.02),
-            Scenery::Hills => (0.3, 0.05),
-            Scenery::Lake => (0.4, 0.05),
-            Scenery::Coast => (0.15, 0.07),
-        };
+        let palette = Palette::of(self.route.scenery);
         for gj in gj0..gj0 + cells {
             for gi in gi0..gi0 + cells {
                 let mut rng = Rng(hash2(gi, gj, s + 77));
@@ -447,97 +437,85 @@ impl RouteGeo {
                 if smp.water || smp.dist < 9.5 {
                     continue;
                 }
+                let spot = Spot {
+                    forest: smp.forest,
+                    dist: smp.dist,
+                };
                 let r = rng.next();
-                let chance = smp.forest * 0.85 + 0.025;
                 let (rx, rz) = rel(x, z);
-                if r < chance {
-                    let pine = rng.next() < pine_share;
-                    // Birches stand among the broadleaves, mostly at the forest's edge.
-                    let birch = !pine && rng.next() < birch_share * (1.3 - smp.forest);
-                    let tall = 0.7 + 0.6 * rng.next() + smp.forest * 0.3;
-                    let height = if pine {
-                        14.0 * tall
-                    } else if birch {
-                        11.0 * tall
-                    } else {
-                        10.5 * tall
-                    };
-                    let width = height
-                        * (if pine {
-                            0.72
-                        } else if birch {
-                            0.7
-                        } else {
-                            1.0
-                        })
-                        * (0.85 + 0.3 * rng.next());
-                    // Each tree has its own shade of green, some a little yellower.
-                    let tint = 0.78 + 0.44 * rng.next() as f32;
-                    let warm = (rng.next() as f32).powi(2) * if pine { 0.25 } else { 0.7 };
-                    let rot = rng.next() * std::f64::consts::TAU;
-                    let kind = if pine {
-                        PINE
-                    } else if birch {
-                        BIRCH
-                    } else {
-                        BROADLEAF
-                    };
-                    out[kind].extend_from_slice(&[
-                        rx,
-                        smp.h as f32 - 0.2,
-                        rz,
-                        rot as f32,
-                        width as f32,
-                        height as f32,
-                        tint * (0.95 + 0.4 * warm),
-                        tint * (1.0 + 0.08 * warm),
-                        tint * (0.9 - 0.3 * warm),
-                    ]);
-                    shadows.extend_from_slice(&[rx, smp.h as f32 + 0.08, rz, width as f32 * 0.5]);
-                } else if r < chance + bush_chance * (0.4 + smp.forest) && smp.dist > 12.0 {
-                    let height = 1.2 + 1.8 * rng.next();
-                    let width = height * (1.2 + 0.8 * rng.next());
-                    let tint = 0.8 + 0.4 * rng.next() as f32;
-                    let rot = rng.next() * std::f64::consts::TAU;
-                    out[BUSH].extend_from_slice(&[
-                        rx,
-                        smp.h as f32 - 0.15,
-                        rz,
-                        rot as f32,
-                        width as f32,
-                        height as f32,
-                        tint,
-                        tint,
-                        tint * 0.9,
-                    ]);
-                    shadows.extend_from_slice(&[rx, smp.h as f32 + 0.08, rz, width as f32 * 0.55]);
-                } else if r < chance
-                    + bush_chance * 1.4
-                    + if self.route.scenery == Scenery::Alpine {
-                        0.05
-                    } else {
-                        0.006
+                match palette.cover(&spot, r) {
+                    Some(Cover::Tree) => {
+                        let t = palette.tree(&spot, || rng.next());
+                        let tall = 0.7 + 0.6 * rng.next() + smp.forest * 0.3;
+                        let height = t.height * tall;
+                        let width = height * t.width * (0.85 + 0.3 * rng.next());
+                        // Each tree has its own shade of green, some a little yellower.
+                        let tint = 0.78 + 0.44 * rng.next() as f32;
+                        let warm = (rng.next() as f32).powi(2) * t.warm;
+                        let rot = rng.next() * std::f64::consts::TAU;
+                        out[t.kind].extend_from_slice(&[
+                            rx,
+                            smp.h as f32 - 0.2,
+                            rz,
+                            rot as f32,
+                            width as f32,
+                            height as f32,
+                            tint * (0.95 + 0.4 * warm),
+                            tint * (1.0 + 0.08 * warm),
+                            tint * (0.9 - 0.3 * warm),
+                        ]);
+                        shadows.extend_from_slice(&[
+                            rx,
+                            smp.h as f32 + 0.08,
+                            rz,
+                            width as f32 * 0.5,
+                        ]);
                     }
-                {
-                    let size = 1.0 + 3.5 * rng.next().powi(2);
-                    let g = 0.8 + 0.3 * rng.next() as f32;
-                    let rot = rng.next() * std::f64::consts::TAU;
-                    out[ROCK].extend_from_slice(&[
-                        rx,
-                        smp.h as f32 - size as f32 * 0.25,
-                        rz,
-                        rot as f32,
-                        size as f32,
-                        size as f32 * 0.7,
-                        g,
-                        g,
-                        g,
-                    ]);
+                    Some(Cover::Bush) => {
+                        let height = 1.2 + 1.8 * rng.next();
+                        let width = height * (1.2 + 0.8 * rng.next());
+                        let tint = 0.8 + 0.4 * rng.next() as f32;
+                        let rot = rng.next() * std::f64::consts::TAU;
+                        out[BUSH].extend_from_slice(&[
+                            rx,
+                            smp.h as f32 - 0.15,
+                            rz,
+                            rot as f32,
+                            width as f32,
+                            height as f32,
+                            tint,
+                            tint,
+                            tint * 0.9,
+                        ]);
+                        shadows.extend_from_slice(&[
+                            rx,
+                            smp.h as f32 + 0.08,
+                            rz,
+                            width as f32 * 0.55,
+                        ]);
+                    }
+                    Some(Cover::Rock) => {
+                        let size = 1.0 + 3.5 * rng.next().powi(2);
+                        let g = 0.8 + 0.3 * rng.next() as f32;
+                        let rot = rng.next() * std::f64::consts::TAU;
+                        out[ROCK].extend_from_slice(&[
+                            rx,
+                            smp.h as f32 - size as f32 * 0.25,
+                            rz,
+                            rot as f32,
+                            size as f32,
+                            size as f32 * 0.7,
+                            g,
+                            g,
+                            g,
+                        ]);
+                    }
+                    None => {}
                 }
             }
         }
         // Farmhouses along the road.
-        if self.route.scenery != Scenery::Alpine {
+        if palette.farmhouses {
             let spacing = 320.0;
             let route = &self.route;
             let k_max = (route.length / spacing) as i64;
