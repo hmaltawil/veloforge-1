@@ -12,13 +12,14 @@ mod buildings;
 mod fields;
 mod flora;
 mod impostor;
+mod lettering;
 mod math;
 mod mesh;
 mod shaders;
 mod terrain;
 
 use crate::route::{Route, Scenery};
-use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect};
+use eframe::egui::{self, Pos2, Rect};
 use eframe::egui_glow;
 use eframe::glow::{self, HasContext};
 use math::*;
@@ -478,6 +479,8 @@ pub struct GpuWorld {
     rest_inverse: [M4; body::BONES],
     /// Milliseconds the last frame took to prepare (for `--bench`).
     prep_ms: f32,
+    /// The land window drawn now, for standing roadside things on it.
+    land: Option<Arc<TerrainData>>,
 }
 
 impl Default for GpuWorld {
@@ -500,6 +503,7 @@ impl Default for GpuWorld {
                 body::rest_inverse()
             },
             prep_ms: 0.0,
+            land: None,
         }
     }
 }
@@ -753,6 +757,7 @@ impl GpuWorld {
             }
         }
         if let Some(t) = &upload {
+            self.land = Some(t.clone());
             self.terrain = Some(CurrentTerrain {
                 ox: t.ox,
                 oz: t.oz,
@@ -811,10 +816,37 @@ impl GpuWorld {
                 })
                 .collect()
         };
+        // Stone walls hold the road up where the land falls away beside it
+        // (down from both edges, hidden where the ground meets the road).
+        let mut walls = mesh::Mesh::default();
         let mut prev = row(slices[0]);
         let mut prev_s = slices[0];
         for &s in &slices[1..] {
-            let cur = row(s);
+            let mut cur = row(s);
+            // In a bend tighter than the road is wide its inside edge would
+            // fold back on itself: an edge never moves backwards.
+            let h = route.at(s).heading;
+            let ahead = [h.sin() as f32, 0.0, -h.cos() as f32];
+            for k in 0..4 {
+                if dot(sub(cur[k].0, prev[k].0), ahead) < 0.01 {
+                    cur[k].0 = prev[k].0;
+                }
+            }
+            let right = [h.cos() as f32, 0.0, h.sin() as f32];
+            let tone =
+                0.85 + 0.3 * (terrain_hash((s / 2.5) as i64, 3, route.seed) % 100) as f32 / 100.0;
+            let stone = scale([0.2, 0.19, 0.17], tone);
+            for (k, out) in [(0usize, scale(right, -1.0)), (3, right)] {
+                let (a, b) = (
+                    add(prev[k].0, [0.0, -0.03, 0.0]),
+                    add(cur[k].0, [0.0, -0.03, 0.0]),
+                );
+                let drop = [0.0, -25.0, 0.0];
+                let quad = [a, b, add(b, drop), add(a, drop)];
+                for i in [0, 1, 2, 0, 2, 3] {
+                    walls.push(quad[i], out, stone);
+                }
+            }
             for k in 0..3 {
                 let (a, ua) = prev[k];
                 let (b, ub) = prev[k + 1];
@@ -902,11 +934,13 @@ impl GpuWorld {
             }
         }
 
+        rider.extend(walls.v);
+
         // --- roadside posts and kilometre banners --------------------------
         let mut posts = Vec::new();
         let mut reflectors = Vec::new();
         let mut planks = Vec::new();
-        let mut labels = Vec::new();
+        let mut lettering = mesh::Mesh::default();
         let mut k = ((d - 20.0) / 50.0).ceil() as i64;
         while (k as f64) * 50.0 < d + 700.0 {
             let ps = k as f64 * 50.0;
@@ -943,13 +977,14 @@ impl GpuWorld {
         for (ks, text) in route.banners(d - 10.0, d + 500.0) {
             let p = route.at(ks);
             for side in [-1.0, 1.0] {
+                // Reaching well into the ground, wherever it lies.
                 let pos = rp(
                     p.x + side * 5.4 * p.heading.cos(),
-                    p.ele,
+                    p.ele - 3.0,
                     p.z - side * 5.4 * p.heading.sin(),
                 );
                 posts
-                    .extend_from_slice(&[pos[0], pos[1], pos[2], 0.0, 0.3, 5.3, 0.03, 0.03, 0.035]);
+                    .extend_from_slice(&[pos[0], pos[1], pos[2], 0.0, 0.3, 8.3, 0.03, 0.03, 0.035]);
             }
             let centre = rp(p.x, p.ele + 3.9, p.z);
             planks.extend_from_slice(&[
@@ -975,8 +1010,30 @@ impl GpuWorld {
                 0.16,
                 0.03,
             ]);
-            labels.push((add(centre, [0.0, 0.58, 0.0]), text));
+            // The lettering on the banner's face, towards the riders coming.
+            let right = [p.heading.cos() as f32, 0.0, p.heading.sin() as f32];
+            let face = [-(p.heading.sin() as f32), 0.0, p.heading.cos() as f32];
+            // (The banner's plank is 0.03 thick before its width scales it.)
+            let at = add(
+                add(centre, [0.0, 0.6, 0.0]),
+                scale(face, 0.03 * 11.1 + 0.02),
+            );
+            let height = if lettering::width(&text, 0.62) > 10.4 {
+                0.5
+            } else {
+                0.62
+            };
+            lettering::paint(
+                &mut lettering,
+                &text,
+                at,
+                right,
+                [0.0, 1.0, 0.0],
+                height,
+                [0.82, 0.82, 0.8],
+            );
         }
+        rider.extend(lettering.v);
 
         // --- fences along the fields -----------------------------------------
         let fence_sides: &[f64] = match (route.scenery, self.water_side) {
@@ -1002,18 +1059,28 @@ impl GpuWorld {
                 }
                 let p = route.at(fs);
                 let lateral = side * 8.4;
-                let pos = rp(
+                let (wx, wz) = (
                     p.x + lateral * p.heading.cos(),
-                    p.ele - 0.3,
                     p.z - lateral * p.heading.sin(),
                 );
+                // On the ground as drawn; none on a steep bank beside the road.
+                let ground = self
+                    .land
+                    .as_ref()
+                    .and_then(|l| l.ground(wx, wz))
+                    .unwrap_or(p.ele - 0.3);
+                if (ground - p.ele).abs() > 1.2 {
+                    prev = None;
+                    continue;
+                }
+                let pos = rp(wx, ground - 0.3, wz);
                 posts.extend_from_slice(&[
                     pos[0],
                     pos[1],
                     pos[2],
                     -p.heading as f32,
                     0.13,
-                    1.25,
+                    1.55,
                     wood[0],
                     wood[1],
                     wood[2],
@@ -1022,7 +1089,7 @@ impl GpuWorld {
                     let (dx, dz) = (pos[0] - a[0], pos[2] - a[2]);
                     let span = (dx * dx + dz * dz).sqrt();
                     let rot = (-dz).atan2(dx);
-                    for rail in [0.5f32, 0.92] {
+                    for rail in [0.8f32, 1.22] {
                         planks.extend_from_slice(&[
                             (a[0] + pos[0]) / 2.0,
                             (a[1] + pos[1]) / 2.0 + rail,
@@ -1190,23 +1257,6 @@ impl GpuWorld {
                     &text,
                     w as f64,
                 );
-            }
-        }
-
-        // Banner text drawn by egui on top of the 3D view.
-        for (p, text) in labels {
-            if let Some((x, y, w)) = project(&vp, p, rect.width(), rect.height()) {
-                let size = (rect.height() * 0.62 / w) * 1.6;
-                if (6.0..140.0).contains(&size) {
-                    let fade = (1.0 - (w - 250.0) / 250.0).clamp(0.0, 1.0);
-                    painter.with_clip_rect(rect).text(
-                        Pos2::new(rect.left() + x, rect.top() + y),
-                        Align2::CENTER_CENTER,
-                        text,
-                        FontId::proportional(size),
-                        Color32::from_white_alpha((235.0 * fade) as u8),
-                    );
-                }
             }
         }
     }

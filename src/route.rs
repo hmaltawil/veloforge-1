@@ -564,7 +564,7 @@ impl GpxRoute {
     }
 
     pub fn to_route(&self) -> Route {
-        let mut pts: Vec<RoutePt> = self
+        let track: Vec<RoutePt> = self
             .pts
             .iter()
             .map(|&(_, ele, x, z)| RoutePt {
@@ -574,6 +574,7 @@ impl GpxRoute {
                 heading: 0.0,
             })
             .collect();
+        let mut pts = clean_track(&track);
         let seed = self
             .id
             .bytes()
@@ -604,6 +605,134 @@ impl GpxRoute {
             }
         }
     }
+}
+
+/// The tightest bend a cleaned track keeps (radius of its centre line,
+/// metres): about a real hairpin's, and wider than the road's half width, so
+/// its edges never fold over.
+pub const TIGHTEST_BEND: f64 = 9.0;
+/// The steepest a cleaned track climbs or falls (percent).
+pub const STEEPEST_GRADE: f64 = 20.0;
+
+/// A road from a GPS track (points `STEP` apart), as a road engineer would
+/// lay it: the track's jitter and its corners at single points smoothed
+/// away, every bend at least `TIGHTEST_BEND` round where the track allows,
+/// keeping close to the track; its heights smoothed over about 100 m and
+/// no steeper than `STEEPEST_GRADE`. Its ends stay where they are.
+pub(crate) fn clean_track(track: &[RoutePt]) -> Vec<RoutePt> {
+    let n = track.len();
+    if n < 8 {
+        return track.to_vec();
+    }
+    let at = |v: &[RoutePt], i: i64| v[i.clamp(0, n as i64 - 1) as usize];
+    // Jitter: a gentle average over about 25 m.
+    let weights = [0.06, 0.24, 0.4, 0.24, 0.06];
+    let mut pts: Vec<RoutePt> = (0..n as i64)
+        .map(|i| {
+            let (mut x, mut z) = (0.0, 0.0);
+            for (k, w) in weights.iter().enumerate() {
+                let p = at(track, i + k as i64 - 2);
+                x += w * p.x;
+                z += w * p.z;
+            }
+            RoutePt {
+                x,
+                z,
+                ..track[i as usize]
+            }
+        })
+        .collect();
+    pts[0] = track[0];
+    pts[n - 1] = track[n - 1];
+    // Bends: wherever the road turns tighter than it may (over 10 m either
+    // side), ease it, a little at a time, until none is left or it cannot
+    // be eased further.
+    let radius = |p: &[RoutePt], i: usize| -> f64 {
+        let (a, b, c) = (p[i - 2], p[i], p[i + 2]);
+        let (ab, bc, ca) = (
+            (a.x - b.x).hypot(a.z - b.z),
+            (b.x - c.x).hypot(b.z - c.z),
+            (c.x - a.x).hypot(c.z - a.z),
+        );
+        let area = ((b.x - a.x) * (c.z - a.z) - (c.x - a.x) * (b.z - a.z)).abs() / 2.0;
+        if area < 1e-9 {
+            f64::INFINITY
+        } else {
+            ab * bc * ca / (4.0 * area)
+        }
+    };
+    for _ in 0..400 {
+        let tight: Vec<usize> = (2..n - 2)
+            .filter(|&i| radius(&pts, i) < TIGHTEST_BEND)
+            .collect();
+        if tight.is_empty() {
+            break;
+        }
+        for &i in &tight {
+            for j in i - 1..=i + 1 {
+                let (a, b) = (pts[j - 1], pts[j + 1]);
+                pts[j].x = 0.5 * pts[j].x + 0.25 * (a.x + b.x);
+                pts[j].z = 0.5 * pts[j].z + 0.25 * (a.z + b.z);
+            }
+        }
+    }
+    // Back to points `STEP` apart along the eased road (easing shortens
+    // it), each with the track's height where it came from.
+    let mut along = vec![0.0; n];
+    for i in 1..n {
+        along[i] = along[i - 1] + (pts[i].x - pts[i - 1].x).hypot(pts[i].z - pts[i - 1].z);
+    }
+    let total = along[n - 1];
+    let m = ((total / STEP).round() as usize).max(2);
+    let mut out = Vec::with_capacity(m + 1);
+    let mut j = 0;
+    for k in 0..=m {
+        let d = total * k as f64 / m as f64;
+        while j + 2 < n && along[j + 1] < d {
+            j += 1;
+        }
+        let span = (along[j + 1] - along[j]).max(1e-9);
+        let u = ((d - along[j]) / span).clamp(0.0, 1.0);
+        let (a, b) = (pts[j], pts[j + 1]);
+        out.push(RoutePt {
+            x: a.x + (b.x - a.x) * u,
+            z: a.z + (b.z - a.z) * u,
+            ele: a.ele + (b.ele - a.ele) * u,
+            heading: 0.0,
+        });
+    }
+    // Heights: averaged over about 100 m, then no step steeper than allowed
+    // (eased from both ends so neither is favoured).
+    let m = out.len();
+    let reach = 10i64;
+    let eles: Vec<f64> = out.iter().map(|p| p.ele).collect();
+    for (i, p) in out.iter_mut().enumerate() {
+        let (mut sum, mut wsum) = (0.0, 0.0);
+        for k in -reach..=reach {
+            let j = (i as i64 + k).clamp(0, m as i64 - 1) as usize;
+            let w = 1.0 - (k.abs() as f64 / (reach + 1) as f64);
+            sum += w * eles[j];
+            wsum += w;
+        }
+        p.ele = sum / wsum;
+    }
+    let step_max = STEEPEST_GRADE / 100.0 * STEP;
+    for _ in 0..200 {
+        let mut changed = false;
+        for i in 0..m - 1 {
+            let d = out[i + 1].ele - out[i].ele;
+            if d.abs() > step_max + 1e-9 {
+                let fix = (d.abs() - step_max) / 2.0 * d.signum();
+                out[i].ele += fix;
+                out[i + 1].ele -= fix;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    out
 }
 
 /// Parse a GPX track or route, project it to local metres and resample.
@@ -771,6 +900,73 @@ mod tests {
                 .fold(f64::MAX, f64::min);
             assert!(nearest > 85.0, "{nearest:.0} m from the course");
         }
+    }
+
+    #[test]
+    fn a_rough_track_is_cleaned_into_a_road() {
+        // Straight legs meeting at sharp corners (a planner's line through
+        // map points), with GPS jitter, a height spike and a far too steep
+        // step.
+        let mut track = Vec::new();
+        let corners = [
+            (0.0, 0.0),
+            (400.0, 0.0),
+            (400.0, 300.0),
+            (120.0, 330.0),
+            (130.0, 700.0),
+        ];
+        let mut k = 0u32;
+        for w in corners.windows(2) {
+            let ((x0, z0), (x1, z1)): ((f64, f64), (f64, f64)) = (w[0], w[1]);
+            let n = ((x1 - x0).hypot(z1 - z0) / STEP) as usize;
+            for i in 0..n {
+                let u = i as f64 / n as f64;
+                let jitter = |s: u32| ((s as f64 * 12.9898).sin() * 43758.5453).fract() - 0.5;
+                k += 1;
+                track.push(RoutePt {
+                    x: x0 + (x1 - x0) * u + 1.5 * jitter(k),
+                    z: z0 + (z1 - z0) * u + 1.5 * jitter(k + 999),
+                    ele: 100.0 + track.len() as f64 * 0.3 + if k == 120 { 25.0 } else { 0.0 },
+                    heading: 0.0,
+                });
+            }
+        }
+        let road = clean_track(&track);
+        // Every bend at least as round as allowed (over 10 m either side).
+        for i in 2..road.len() - 2 {
+            let (a, b, c) = (road[i - 2], road[i], road[i + 2]);
+            let (ab, bc, ca) = (
+                (a.x - b.x).hypot(a.z - b.z),
+                (b.x - c.x).hypot(b.z - c.z),
+                (c.x - a.x).hypot(c.z - a.z),
+            );
+            let area = ((b.x - a.x) * (c.z - a.z) - (c.x - a.x) * (b.z - a.z)).abs() / 2.0;
+            if area > 1e-6 {
+                let r = ab * bc * ca / (4.0 * area);
+                assert!(r > TIGHTEST_BEND * 0.9, "a bend of {r:.1} m at {i}");
+            }
+        }
+        // Points evenly apart, close to the track, ends where they were.
+        for w in road.windows(2) {
+            let d = (w[1].x - w[0].x).hypot(w[1].z - w[0].z);
+            assert!((d - STEP).abs() < 0.3, "{d}");
+        }
+        for p in &road {
+            let off = track
+                .iter()
+                .map(|t| (t.x - p.x).hypot(t.z - p.z))
+                .fold(f64::MAX, f64::min);
+            assert!(off < 12.0, "{off:.1} m off the track");
+        }
+        assert!((road[0].x - track[0].x).abs() < 1e-9);
+        let (l, t) = (road[road.len() - 1], track[track.len() - 1]);
+        assert!((l.x - t.x).hypot(l.z - t.z) < 1e-6);
+        // No step steeper than allowed, and the spike gone.
+        for w in road.windows(2) {
+            assert!((w[1].ele - w[0].ele).abs() <= STEEPEST_GRADE / 100.0 * STEP + 1e-6);
+        }
+        let spike = road.iter().map(|p| p.ele).fold(f64::MIN, f64::max);
+        assert!(spike < 100.0 + track.len() as f64 * 0.3 + 5.0, "{spike}");
     }
 
     #[test]

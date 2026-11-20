@@ -230,6 +230,9 @@ pub struct RouteGeo {
     pts: Vec<(f64, f64)>,
     eles: Vec<f64>,
     grid: NearGrid,
+    /// Every point of the road by `SEG_CELL` square, to find all the road
+    /// near a spot (not only the nearest).
+    segs: std::collections::HashMap<(i64, i64), Vec<u32>>,
     looped: bool,
     /// Side (+1 right, -1 left) the lake or sea is on.
     water_side: f64,
@@ -267,11 +270,18 @@ impl RouteGeo {
             _ => inside,
         };
         let grid = NearGrid::build(&pts);
+        let mut segs: std::collections::HashMap<(i64, i64), Vec<u32>> = Default::default();
+        for (i, &(x, z)) in pts.iter().enumerate() {
+            segs.entry(((x / SEG_CELL).floor() as i64, (z / SEG_CELL).floor() as i64))
+                .or_default()
+                .push(i as u32);
+        }
         let mut geo = RouteGeo {
             route: route.clone(),
             eles: route.points().iter().map(|p| p.ele).collect(),
             pts,
             grid,
+            segs,
             looped,
             water_side,
             water_level,
@@ -322,6 +332,62 @@ impl RouteGeo {
 
     /// Snow lies on the mountains well above the highest road, so a climb
     /// that finishes at its top finishes on grass and rock.
+    /// How high the ground may be at (`x`, `z`) so as to stay below every
+    /// stretch of road within `reach`: for each, its surface where it is
+    /// nearest, less a little for how much it climbs or falls across a
+    /// triangle of the land. None if no road is that near.
+    fn road_bed(&self, x: f64, z: f64, reach: f64) -> Option<f64> {
+        let (ci, cj) = ((x / SEG_CELL).floor() as i64, (z / SEG_CELL).floor() as i64);
+        let k = (reach / SEG_CELL).ceil() as i64;
+        let mut near: Vec<u32> = Vec::new();
+        for dj in -k..=k {
+            for di in -k..=k {
+                if let Some(v) = self.segs.get(&(ci + di, cj + dj)) {
+                    near.extend_from_slice(v);
+                }
+            }
+        }
+        if near.is_empty() {
+            return None;
+        }
+        near.sort_unstable();
+        let n = self.pts.len();
+        let mut cap: Option<f64> = None;
+        // Each run of neighbouring points is one stretch of road.
+        let mut start = 0;
+        while start < near.len() {
+            let mut end = start + 1;
+            while end < near.len() && near[end] - near[end - 1] <= 8 {
+                end += 1;
+            }
+            let (mut best, mut ele, mut grade) = (f64::MAX, 0.0, 0.0);
+            for &i in &near[start..end] {
+                let i = i as usize;
+                for j in [i.saturating_sub(1), i] {
+                    if j + 1 >= n {
+                        continue;
+                    }
+                    let ((ax, az), (bx, bz)) = (self.pts[j], self.pts[j + 1]);
+                    let (dx, dz) = (bx - ax, bz - az);
+                    let l2 = (dx * dx + dz * dz).max(1e-9);
+                    let t = (((x - ax) * dx + (z - az) * dz) / l2).clamp(0.0, 1.0);
+                    let d = (x - ax - dx * t).hypot(z - az - dz * t);
+                    if d < best {
+                        best = d;
+                        ele = self.eles[j] + (self.eles[j + 1] - self.eles[j]) * t;
+                        grade = (self.eles[j + 1] - self.eles[j]) / l2.sqrt();
+                    }
+                }
+            }
+            if best < reach {
+                let here = ele - grade.abs() * 4.0;
+                cap = Some(cap.map_or(here, |c: f64| c.min(here)));
+            }
+            start = end;
+        }
+        cap
+    }
+
     pub fn snow_level(&self) -> f64 {
         self.max_ele + 150.0
     }
@@ -620,6 +686,22 @@ impl RouteGeo {
             for i in 0..m {
                 samples
                     .push(self.sample(x0 + (i as f64 - 1.0) * cell, z0 + (j as f64 - 1.0) * cell));
+            }
+        }
+        // The road bed: no point of the land's triangles near a road higher
+        // than just below it, so no triangle reaching from the roadside up a
+        // bank can rise over the road (a triangle reaches a cell's diagonal
+        // from its points), whichever stretch of road it is beside.
+        let reach = ROAD_HALF_WIDTH + cell * std::f64::consts::SQRT_2;
+        for j in 0..m {
+            for i in 0..m {
+                let (x, z) = (x0 + (i as f64 - 1.0) * cell, z0 + (j as f64 - 1.0) * cell);
+                if samples[j * m + i].dist < reach + 30.0 {
+                    if let Some(bed) = self.road_bed(x, z, reach) {
+                        let s = &mut samples[j * m + i];
+                        s.h = s.h.min(bed - ROAD_BED);
+                    }
+                }
             }
         }
         let at = |i: usize, j: usize| &samples[j * m + i];
@@ -1427,6 +1509,33 @@ pub struct TerrainData {
     pub sea: bool,
 }
 
+impl TerrainData {
+    /// The height of the ground as drawn at world (`x`, `z`), if the
+    /// window covers it: the triangles between its points.
+    pub fn ground(&self, x: f64, z: f64) -> Option<f64> {
+        let n = ((self.verts.len() / TERRAIN_STRIDE) as f64).sqrt().round() as usize;
+        if n < 2 {
+            return None;
+        }
+        let cell = self.size / (n - 1) as f64;
+        let half = self.size / 2.0;
+        let (u, v) = ((x - self.ox + half) / cell, (z - self.oz + half) / cell);
+        if u < 0.0 || v < 0.0 || u >= (n - 1) as f64 || v >= (n - 1) as f64 {
+            return None;
+        }
+        let (i, j) = (u.floor() as usize, v.floor() as usize);
+        let h = |i: usize, j: usize| self.verts[(j * n + i) * TERRAIN_STRIDE + 1] as f64;
+        let (fx, fz) = (u - i as f64, v - j as f64);
+        Some(if fx + fz <= 1.0 {
+            h(i, j) + (h(i + 1, j) - h(i, j)) * fx + (h(i, j + 1) - h(i, j)) * fz
+        } else {
+            h(i + 1, j + 1)
+                + (h(i, j + 1) - h(i + 1, j + 1)) * (1.0 - fx)
+                + (h(i + 1, j) - h(i + 1, j + 1)) * (1.0 - fz)
+        })
+    }
+}
+
 struct Request {
     route: Arc<Route>,
     cx: f64,
@@ -1434,6 +1543,14 @@ struct Request {
 }
 
 /// Builds terrain windows off the UI thread.
+/// Half the road's width to the outside of its verges (the road ribbon's
+/// outer edge in `gfx`).
+pub const ROAD_HALF_WIDTH: f64 = 5.8;
+/// How far below the road its bed lies.
+pub const ROAD_BED: f64 = 0.3;
+/// The size of the squares road points are sorted into.
+const SEG_CELL: f64 = 16.0;
+
 pub struct Worker {
     tx: Sender<Request>,
     pub rx: Receiver<Built>,
@@ -1850,6 +1967,89 @@ mod tests {
             steepest < 1.35 * mean,
             "steepest {steepest:.2} against {mean:.2} on average"
         );
+    }
+
+    /// A climb of twelve legs `gap` m apart up an 8 % slope joined by
+    /// hairpins, imported as from a GPX file.
+    fn hairpin_climb(gap: f64) -> Route {
+        let mut xml = String::from("<gpx><trk><trkseg>");
+        let (mut x, mut z, mut ele) = (0.0f64, 0.0f64, 700.0f64);
+        let push = |x: f64, z: f64, e: f64, xml: &mut String| {
+            let lat = 45.0 + (z / 6_371_000.0).to_degrees();
+            let lon = 6.0 + (x / (6_371_000.0 * 45f64.to_radians().cos())).to_degrees();
+            *xml += &format!(r#"<trkpt lat="{lat:.7}" lon="{lon:.7}"><ele>{e:.1}</ele></trkpt>"#);
+        };
+        for leg in 0..12 {
+            let dir = if leg % 2 == 0 { 1.0 } else { -1.0 };
+            for _ in 0..60 {
+                z += dir * 10.0;
+                ele += 0.8;
+                push(x, z, ele, &mut xml);
+            }
+            for k in 1..12 {
+                let a = std::f64::consts::PI * k as f64 / 12.0;
+                push(
+                    x + gap / 2.0 - gap / 2.0 * a.cos(),
+                    z + dir * gap * 0.4 * a.sin(),
+                    ele,
+                    &mut xml,
+                );
+            }
+            x += gap;
+        }
+        xml += "</trkseg></trk></gpx>";
+        let mut g = route::parse_gpx(&xml, "hairpins", "Hairpins").unwrap();
+        g.scenery = Some(Scenery::Alpine);
+        g.to_route()
+    }
+
+    #[test]
+    fn a_window_knows_its_ground_as_drawn() {
+        let r = &route::builtin()[0];
+        let g = RouteGeo::new(r);
+        let p = r.at(500.0);
+        let w = g.build_window(p.x, p.z, WINDOW_SIZE, WINDOW_VERTS);
+        let ground = drawn(&w);
+        for k in 0..50 {
+            let (x, z) = (p.x + k as f64 * 13.7 - 300.0, p.z + k as f64 * 7.3 - 150.0);
+            assert!((w.ground(x, z).unwrap() - ground(x, z)).abs() < 1e-6);
+        }
+        assert!(w.ground(p.x + 5000.0, p.z).is_none());
+    }
+
+    #[test]
+    fn no_land_rises_over_any_road() {
+        let mut routes = vec![route::builtin()[0].clone(), route::builtin()[4].clone()];
+        routes.push(hairpin_climb(40.0));
+        for r in routes {
+            let g = RouteGeo::new(&r);
+            let (mut checked, mut worst) = (0, f64::MIN);
+            for at in [r.length * 0.3, r.length * 0.7] {
+                let p = r.at(at);
+                let w = g.build_window(p.x, p.z, WINDOW_SIZE, WINDOW_VERTS);
+                let ground = drawn(&w);
+                let half = WINDOW_SIZE / 2.0 - 20.0;
+                let mut d = 0.0;
+                while d < r.span() {
+                    let q = r.at(d);
+                    d += 2.5;
+                    if (q.x - w.ox).abs() > half || (q.z - w.oz).abs() > half {
+                        continue;
+                    }
+                    for k in -6..=6 {
+                        let lat = k as f64 * 5.6 / 6.0;
+                        let (x, z) = (q.x + lat * q.heading.cos(), q.z - lat * q.heading.sin());
+                        // The road's surface there, edges a little lower.
+                        let surface = q.ele - if lat.abs() > 4.6 { 0.25 } else { 0.0 };
+                        let over = ground(x, z) - surface;
+                        worst = worst.max(over);
+                        checked += 1;
+                    }
+                }
+            }
+            assert!(checked > 1000, "{}: {checked}", r.id);
+            assert!(worst < 0.02, "{}: land {worst:.2} m over the road", r.id);
+        }
     }
 
     #[test]
