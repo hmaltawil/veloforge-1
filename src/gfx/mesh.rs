@@ -1823,7 +1823,6 @@ mod tests {
             super::super::buildings::townhouse(),
             super::super::buildings::barn(),
             super::super::buildings::shed(),
-            super::super::buildings::church(),
             post(),
             reflector(),
             plank(),
@@ -1995,8 +1994,6 @@ mod tests {
             ),
             ("barn", super::super::buildings::barn(), 1600),
             ("shed", super::super::buildings::shed(), 400),
-            // One a village, seen from afar.
-            ("church", super::super::buildings::church(), 4500),
             // Many in view along the fields, though small.
             ("wall piece", super::super::fields::stone_wall(), 1300),
             ("bale", super::super::fields::hay_bale(), 700),

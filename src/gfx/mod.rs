@@ -987,7 +987,6 @@ impl GpuWorld {
             _ => &[],
         };
         let wood = [0.17, 0.125, 0.085];
-        let villages = terrain::villages(route);
         for &side in fence_sides {
             let spacing = 3.2;
             let mut prev: Option<V3> = None;
@@ -997,8 +996,7 @@ impl GpuWorld {
                 k += 1;
                 // Fenced stretches come and go: fields, then open meadow.
                 let stretch = (fs / 140.0).floor() as i64;
-                let fenced = terrain_hash(stretch, side as i64, route.seed) % 5 < 2
-                    && !villages.iter().any(|v| fs > v.0 - 25.0 && fs < v.1 + 25.0);
+                let fenced = terrain_hash(stretch, side as i64, route.seed) % 5 < 2;
                 if !fenced {
                     prev = None;
                     continue;
@@ -1666,7 +1664,6 @@ const OBJ_MAPLE: usize = terrain::MAPLE;
 const OBJ_BALE: usize = terrain::BALE;
 /// Dry-stone walls along the fields, piece by piece.
 const OBJ_WALL: usize = terrain::WALL;
-const OBJ_CHURCH: usize = terrain::CHURCH;
 const OBJ_POST: usize = KINDS;
 const OBJ_PLANK: usize = KINDS + 1;
 const OBJ_RIDER: usize = KINDS + 2;
@@ -1715,7 +1712,7 @@ fn tree_mesh(t: usize) -> mesh::Mesh {
     ][t]()
 }
 /// The farm buildings, drawn like the houses.
-const BUILDINGS: [usize; 5] = [OBJ_HOUSE, OBJ_BARN, OBJ_SHED, OBJ_TOWNHOUSE, OBJ_CHURCH];
+const BUILDINGS: [usize; 4] = [OBJ_HOUSE, OBJ_BARN, OBJ_SHED, OBJ_TOWNHOUSE];
 /// Distances where trees change level of detail (`Quality::tree_lod`).
 #[derive(Clone, Copy)]
 struct TreeLod {
@@ -2097,7 +2094,6 @@ impl GlState {
                     OBJ_TOWNHOUSE => buildings::townhouse(),
                     OBJ_BALE => fields::hay_bale(),
                     OBJ_WALL => fields::stone_wall(),
-                    OBJ_CHURCH => buildings::church(),
                     tree => tree_mesh(TREES.iter().position(|&k| k == tree).expect("a tree")),
                 })
                 .collect();
@@ -2385,10 +2381,7 @@ impl GlState {
                 // How far it reaches: trees carry their height, buildings
                 // only a scale (they are modelled in metres, up to about
                 // 12 m from their middle).
-                let r = if kind == OBJ_CHURCH {
-                    // Up to its weathercock, 30 m up.
-                    16.0 * inst[4]
-                } else if BUILDINGS.contains(&kind) {
+                let r = if BUILDINGS.contains(&kind) {
                     12.0 * inst[4]
                 } else if kind == OBJ_WALL {
                     fields::WALL_PIECE * 0.6
@@ -3767,7 +3760,6 @@ impl GlState {
                     OBJ_BARN,
                     OBJ_SHED,
                     OBJ_TOWNHOUSE,
-                    OBJ_CHURCH,
                     OBJ_BALE,
                     OBJ_WALL,
                     OBJ_POST,

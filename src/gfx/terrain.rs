@@ -25,7 +25,7 @@ pub struct Tile {
 pub const INSTANCE_STRIDE: usize = 9;
 
 /// Kinds of scattered object, indexing [`TerrainData::instances`].
-pub const KINDS: usize = 14;
+pub const KINDS: usize = 13;
 pub const PINE: usize = 0;
 pub const BROADLEAF: usize = 1;
 pub const ROCK: usize = 2;
@@ -39,30 +39,6 @@ pub const OAK: usize = 9;
 pub const MAPLE: usize = 10;
 pub const BALE: usize = 11;
 pub const WALL: usize = 12;
-pub const CHURCH: usize = 13;
-
-/// Where the villages stand along a route: from and to, in metres along
-/// it. About one every 7 km on routes long enough, in sceneries with farms;
-/// the fences and walls along the fields stop at them.
-pub fn villages(route: &Route) -> Vec<(f64, f64)> {
-    if !Palette::of(route.scenery).farmhouses || route.length < 6000.0 {
-        return Vec::new();
-    }
-    let spacing = 7000.0;
-    let n = (route.length / spacing).floor().max(1.0) as i64;
-    let room = route.length / n as f64;
-    (0..n)
-        .filter_map(|k| {
-            let mut rng = Rng(hash2(k, 7, route.seed + 5501));
-            if n > 1 && rng.next() < 0.15 {
-                return None;
-            }
-            let len = 220.0 + 140.0 * rng.next();
-            let start = k as f64 * room + 500.0 + (room - len - 1000.0).max(0.0) * rng.next();
-            Some((start, start + len))
-        })
-        .collect()
-}
 
 /// Bales in one cell of a field: where each lies from the cell's spot,
 /// which way, and their colour.
@@ -239,7 +215,7 @@ impl RouteGeo {
             // height of their ground, so pads that overlap agree.
             let buildings: Vec<&Building> = first
                 .iter()
-                .filter(|b| [HOUSE, TOWNHOUSE, BARN, SHED, CHURCH].contains(&b.kind))
+                .filter(|b| [HOUSE, TOWNHOUSE, BARN, SHED].contains(&b.kind))
                 .collect();
             let mut yard: std::collections::HashMap<i64, (f64, f64)> = Default::default();
             for b in &buildings {
@@ -255,12 +231,9 @@ impl RouteGeo {
                 .iter()
                 .map(|b| {
                     let (sum, n) = yard[&b.farm];
-                    // Houses' yards reach past their front gardens; the
-                    // church's takes in its churchyard.
+                    // Houses' yards reach past their front gardens.
                     let level = if [HOUSE, TOWNHOUSE].contains(&b.kind) {
                         b.reach + 6.0
-                    } else if b.kind == CHURCH {
-                        b.reach + 2.0
                     } else {
                         b.reach + 1.0
                     };
@@ -355,16 +328,13 @@ impl RouteGeo {
         }
         // Level under each building, blending back into the slope around
         // it, never near the road. Where pads meet, the one a point is
-        // well inside wins, and where it is inside both (a village's houses
-        // side by side) the nearer one: weights raised to a high power, so
-        // neighbouring yards meet in a short bank, like terraces.
+        // well inside wins (weights raised to a high power).
         let (mut wmax, mut sum, mut total) = (0.0f64, 0.0, 0.0);
         for &(px, pz, ph, r) in &self.pads {
             let d = ((x - px).powi(2) + (z - pz).powi(2)).sqrt();
             if d < r + 10.0 {
                 let w = 1.0 - smoothstep(r, r + 10.0, d);
-                let near = 1.0 - 0.5 * d / (r + 10.0);
-                let k = (w * near).powi(32);
+                let k = w.powi(32);
                 wmax = wmax.max(w);
                 sum += k * ph;
                 total += k;
@@ -580,17 +550,12 @@ impl RouteGeo {
         let spacing = 320.0;
         let house_roofs = [[0.55, 0.22, 0.15], [0.35, 0.33, 0.32], [0.45, 0.28, 0.18]];
         let barn_roofs = [[0.4, 0.4, 0.4], [0.45, 0.2, 0.12], [0.28, 0.27, 0.26]];
-        let villages = villages(route);
         for k in 0..(route.length / spacing) as i64 {
             let mut rng = Rng(hash2(k, 0, s + 991));
             if rng.next() > 0.55 {
                 continue;
             }
             let d = k as f64 * spacing + rng.next() * 100.0;
-            // Farms stand outside the villages.
-            if villages.iter().any(|v| d > v.0 - 150.0 && d < v.1 + 150.0) {
-                continue;
-            }
             let p = route.at(d);
             let side = if rng.next() < 0.5 { -1.0 } else { 1.0 };
             let lateral = side * (24.0 + 26.0 * rng.next());
@@ -726,182 +691,7 @@ impl RouteGeo {
                 });
             }
         }
-        for (v, &(from, to)) in villages.iter().enumerate() {
-            self.village(v as i64, from, to, (x0, z0, size), &mut out);
-        }
         out
-    }
-
-    /// A village between `from` and `to` along the road: houses facing
-    /// each other across it, each with its front garden, a shed here and
-    /// there, gaps between some, and the church near the middle on one
-    /// side with a tree or two in its churchyard. Each building has a yard
-    /// of its own, so on a slope the village steps down the hill.
-    fn village(&self, v: i64, from: f64, to: f64, area: (f64, f64, f64), out: &mut Vec<Building>) {
-        let route = &self.route;
-        let mut rng = Rng(hash2(v, 3, self.seed + 5507));
-        let house_roofs = [
-            [0.55, 0.22, 0.15],
-            [0.35, 0.33, 0.32],
-            [0.45, 0.28, 0.18],
-            [0.5, 0.25, 0.17],
-        ];
-        // Where something `lateral` m to one side at `d` (and `along`
-        // further on) stands, and the turn that faces its front to the road.
-        let spot = |d: f64, side: f64, lateral: f64, along: f64| {
-            let p = route.at(d);
-            let (ax, az) = (p.heading.sin(), p.heading.cos());
-            let (wx, wz) = (side * p.heading.cos(), -side * p.heading.sin());
-            let facing = (std::f64::consts::FRAC_PI_2 - p.heading
-                + if side > 0.0 {
-                    std::f64::consts::PI
-                } else {
-                    0.0
-                }) as f32;
-            (
-                (
-                    p.x + wx * lateral + ax * along,
-                    p.z + wz * lateral + az * along,
-                ),
-                facing,
-            )
-        };
-        let id = |slot: i64| 1_000_000 + v * 1000 + slot;
-        let church_d = (from + to) / 2.0 + (rng.next() - 0.5) * 40.0;
-        let church_side = if rng.next() < 0.5 { -1.0 } else { 1.0 };
-        let (at, facing) = spot(church_d, church_side, 31.0, 0.0);
-        self.stand(
-            out,
-            area,
-            CHURCH,
-            id(0),
-            at,
-            facing,
-            1.0,
-            [0.3, 0.31, 0.34],
-            17.0,
-        );
-        // Trees at the back of the churchyard.
-        for (k, along) in [(1, -12.0), (2, 13.0)] {
-            if rng.next() < 0.25 {
-                continue;
-            }
-            let ((x, z), _) = spot(church_d, church_side, 39.0 + 2.0 * rng.next(), along);
-            let height = (10.0 + 4.0 * rng.next()) as f32;
-            let (kind, wide) = if rng.next() < 0.5 {
-                (OAK, 1.2)
-            } else {
-                (MAPLE, 0.88)
-            };
-            if x < area.0 || x > area.0 + area.2 || z < area.1 || z > area.1 + area.2 {
-                continue;
-            }
-            let smp = self.sample(x, z);
-            if smp.water {
-                continue;
-            }
-            out.push(Building {
-                kind,
-                farm: id(k),
-                x,
-                z,
-                h: smp.h - 0.2,
-                rot: (rng.next() * std::f64::consts::TAU) as f32,
-                scale: (height * wide, height),
-                tint: [1.0, 1.02, 0.92],
-                reach: 3.0,
-            });
-        }
-        // The houses, slot by slot along both sides.
-        let mut slot = 10;
-        for side in [-1.0, 1.0] {
-            let mut d = from;
-            while d < to {
-                let step = 19.0 + 6.0 * rng.next();
-                slot += 1;
-                let here = d;
-                d += step;
-                if (side == church_side && (here - church_d).abs() < 27.0) || rng.next() < 0.15 {
-                    continue;
-                }
-                let two_storey = rng.next() < 0.55;
-                let (kind, lateral, reach) = if two_storey {
-                    (TOWNHOUSE, 16.5, 7.5)
-                } else {
-                    (HOUSE, 18.5, 10.5)
-                };
-                let (at, facing) = spot(here, side, lateral + 1.5 * rng.next(), 0.0);
-                let roof = house_roofs[(rng.next() * 4.0) as usize % 4];
-                let scale = (0.92 + 0.14 * rng.next()) as f32;
-                let turn = (0.06 * (rng.next() - 0.5)) as f32;
-                self.stand(
-                    out,
-                    area,
-                    kind,
-                    id(slot),
-                    at,
-                    facing + turn,
-                    scale,
-                    roof,
-                    reach,
-                );
-                if rng.next() < 0.3 {
-                    let behind = if two_storey { 8.0 } else { 9.5 };
-                    let (at, _) = spot(here, side, lateral + 9.0, behind);
-                    self.stand(out, area, SHED, id(slot), at, facing, 0.95, roof, 3.5);
-                }
-            }
-        }
-    }
-
-    /// Put a building at `x`, `z` (if in `area`): on dry ground off the
-    /// road, not on ground too steep, at the top of its ground (its footing
-    /// shows on the downhill side).
-    #[allow(clippy::too_many_arguments)]
-    fn stand(
-        &self,
-        out: &mut Vec<Building>,
-        (x0, z0, size): (f64, f64, f64),
-        kind: usize,
-        farm: i64,
-        (x, z): (f64, f64),
-        rot: f32,
-        scale: f32,
-        roof: [f32; 3],
-        reach: f64,
-    ) {
-        if x < x0 || x > x0 + size || z < z0 || z > z0 + size {
-            return;
-        }
-        let smp = self.sample(x, z);
-        if smp.water || smp.dist < 15.0 {
-            return;
-        }
-        let reach = reach * scale as f64;
-        let (mut lo, mut hi) = (smp.h, smp.h);
-        for k in 0..8 {
-            let a = k as f64 * std::f64::consts::FRAC_PI_4;
-            let g = self.sample(x + a.cos() * reach * 0.75, z + a.sin() * reach * 0.75);
-            if g.water {
-                return;
-            }
-            lo = lo.min(g.h);
-            hi = hi.max(g.h);
-        }
-        if hi - lo > 3.0 {
-            return;
-        }
-        out.push(Building {
-            kind,
-            farm,
-            x,
-            z,
-            h: hi - 0.1,
-            rot,
-            scale: (scale, scale),
-            tint: roof,
-            reach,
-        });
     }
 
     /// A bale (or two side by side) in the cell `gi`, `gj` at `x`, `z`, if
@@ -999,8 +789,6 @@ impl RouteGeo {
             x > x0 - pad && x < x0 + size + pad && z > z0 - pad && z < z0 + size + pad
         };
         let stretches = (route.length / STRETCH).ceil() as i64;
-        let villages = villages(route);
-        let in_village = |s: f64| villages.iter().any(|v| s > v.0 - 25.0 && s < v.1 + 25.0);
         for &side in sides {
             for k in 0..stretches {
                 let pick = super::terrain_hash(k, side as i64, route.seed) % 5;
@@ -1043,7 +831,7 @@ impl RouteGeo {
                     }
                     let b = point(t, side);
                     let (cx, cz) = ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
-                    let gap = has_gate && (s - gate_at).abs() < 2.6 || in_village(s);
+                    let gap = has_gate && (s - gate_at).abs() < 2.6;
                     if !gap && inside(cx, cz, 0.0) && self.wall_fits(cx, cz) {
                         let (rx, rz) = rel(cx, cz);
                         let rot = (b.1 - a.1).atan2(b.0 - a.0) as f32;
@@ -1433,7 +1221,7 @@ mod tests {
             // The buildings (not the trees in their gardens).
             for b in farms
                 .iter()
-                .filter(|b| [HOUSE, TOWNHOUSE, BARN, SHED, CHURCH].contains(&b.kind))
+                .filter(|b| [HOUSE, TOWNHOUSE, BARN, SHED].contains(&b.kind))
             {
                 let smp = g.sample(b.x, b.z);
                 assert!(
@@ -1535,50 +1323,6 @@ mod tests {
             }
         }
         assert!(checked > 1000);
-    }
-
-    #[test]
-    fn villages_have_a_church_and_houses_that_do_not_overlap() {
-        let r = &route::builtin()[0];
-        let vs = villages(r);
-        assert!(!vs.is_empty());
-        let g = RouteGeo::new(r);
-        let churches = g.farms.iter().filter(|b| b.kind == CHURCH).count();
-        assert_eq!(churches, vs.len(), "a church in each village");
-        let houses: Vec<&Building> = g
-            .farms
-            .iter()
-            .filter(|b| [HOUSE, TOWNHOUSE, CHURCH, BARN].contains(&b.kind))
-            .collect();
-        let in_villages = houses
-            .iter()
-            .filter(|b| b.farm >= 1_000_000 && b.kind != CHURCH)
-            .count();
-        assert!(in_villages >= 10, "{in_villages} houses in villages");
-        for (i, a) in houses.iter().enumerate() {
-            for b in &houses[i + 1..] {
-                let d = (a.x - b.x).hypot(a.z - b.z);
-                assert!(
-                    d > 0.6 * (a.reach + b.reach),
-                    "buildings {d:.1} m apart (reach {:.1} and {:.1})",
-                    a.reach,
-                    b.reach
-                );
-            }
-        }
-        // No fence or wall runs through a village.
-        for (from, to) in vs {
-            let p = r.at((from + to) / 2.0);
-            let w = g.build_window(p.x, p.z, 600.0, 61);
-            for inst in w.instances[WALL].chunks(INSTANCE_STRIDE) {
-                let (x, z) = (inst[0] as f64 + w.ox, w.oz - inst[2] as f64);
-                let near = g.nearest(x, z);
-                assert!(
-                    near.d < from - 20.0 || near.d > to + 20.0,
-                    "a wall in a village"
-                );
-            }
-        }
     }
 
     #[test]
