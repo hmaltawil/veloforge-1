@@ -24,7 +24,7 @@ use math::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use terrain::{TerrainData, Worker, INSTANCE_STRIDE, KINDS, TERRAIN_STRIDE};
+use terrain::{TerrainData, Worker, DEEP_TURN, INSTANCE_STRIDE, KINDS, TERRAIN_STRIDE};
 
 use crate::world::{Scene, Sky, TimeOfDay, Weather};
 
@@ -72,7 +72,9 @@ impl Quality {
     }
     /// Where trees change from their full meshes to cards (metres; every
     /// tree's own is shifted by up to `LOD_JITTER` either way).
-    /// `VELOFORGE_CARD_AT=metres` overrides it, for trying distances.
+    /// Trees deep in a forest, mostly hidden by those in front, become
+    /// cards nearer. `VELOFORGE_CARD_AT=metres` and
+    /// `VELOFORGE_DEEP_CARD_AT=metres` override them, for trying distances.
     fn tree_lod(self) -> TreeLod {
         static CARD_AT: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
         let card_at = *CARD_AT.get_or_init(|| {
@@ -81,13 +83,22 @@ impl Quality {
                 .and_then(|v| v.parse::<f32>().ok())
                 .filter(|m| (20.0..1500.0).contains(m))
         });
-        if let Some(card) = card_at {
-            return TreeLod { card };
-        }
-        match self {
-            Quality::High => TreeLod { card: 300.0 },
-            Quality::Medium => TreeLod { card: 200.0 },
-            Quality::Low => TreeLod { card: 150.0 },
+        static DEEP_AT: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+        let deep_at = *DEEP_AT.get_or_init(|| {
+            std::env::var("VELOFORGE_DEEP_CARD_AT")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok())
+                .filter(|m| (20.0..1500.0).contains(m))
+        });
+        let (card, deep) = match self {
+            Quality::High => (300.0, 100.0),
+            Quality::Medium => (200.0, 70.0),
+            Quality::Low => (150.0, 50.0),
+        };
+        let card = card_at.unwrap_or(card);
+        TreeLod {
+            card,
+            deep: deep_at.unwrap_or(deep).min(card),
         }
     }
     /// Levels of the blur pyramid (bloom and the frosted glass).
@@ -1679,6 +1690,8 @@ const BUILDINGS: [usize; 4] = [OBJ_HOUSE, OBJ_BARN, OBJ_SHED, OBJ_TOWNHOUSE];
 #[derive(Clone, Copy)]
 struct TreeLod {
     card: f32,
+    /// For trees deep in a forest, mostly hidden by those in front.
+    deep: f32,
 }
 /// How far each tree's own distances are shifted, at most, so trees
 /// change level one at a time rather than along a line.
@@ -2371,7 +2384,12 @@ impl GlState {
                     // Trees cast it without being drawn in the view: the same
                     // shadow as if they were (full trees close by, a card's
                     // further out), so none changes as it comes into view.
-                    let full = (inst[0] - f.cam[0]).hypot(inst[2] - f.cam[2]) < lod.card;
+                    let card_at = if inst[3] > DEEP_TURN * 0.5 {
+                        lod.deep
+                    } else {
+                        lod.card
+                    };
+                    let full = (inst[0] - f.cam[0]).hypot(inst[2] - f.cam[2]) < card_at;
                     match tree {
                         Some(t) if full || !cards => shadow_mesh[t].extend_from_slice(inst),
                         Some(t) => {
@@ -2395,8 +2413,9 @@ impl GlState {
                     ((f.origin.1 - inst[2] as f64) * 10.0).round() as i64,
                 );
                 let shift = (unit_hash(key) - 0.5) * 2.0 * LOD_JITTER;
+                let deep = inst[3] > DEEP_TURN * 0.5;
                 let reach = Reach {
-                    to_card: lod.card + shift,
+                    to_card: if deep { lod.deep } else { lod.card } + shift,
                     // Thin distant forest: in the haze fewer, slightly bigger
                     // trees look the same, and masses of tiny trees are slow
                     // to draw. Which trees stay depends only on where they

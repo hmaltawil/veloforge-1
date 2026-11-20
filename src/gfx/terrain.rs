@@ -22,6 +22,10 @@ pub struct Tile {
 }
 /// Floats per object instance: position (3), rotation, scale (2), tint (3).
 pub const INSTANCE_STRIDE: usize = 9;
+/// Added to the turn of a tree standing deep in a forest (whole turns, so
+/// it changes nothing it is drawn with): such trees, mostly hidden by the
+/// ones in front, become cards nearer (see `Quality::tree_lod`).
+pub const DEEP_TURN: f32 = std::f32::consts::TAU * 16.0;
 
 /// Kinds of scattered object, indexing [`TerrainData::instances`].
 pub const KINDS: usize = 9;
@@ -736,11 +740,12 @@ impl RouteGeo {
                         let tint = 0.78 + 0.44 * rng.next() as f32;
                         let warm = (rng.next() as f32).powi(2) * t.warm;
                         let rot = rng.next() * std::f64::consts::TAU;
+                        let deep = smp.forest > 0.6 && smp.dist > 40.0;
                         out[t.kind].extend_from_slice(&[
                             rx,
                             gh - 0.2,
                             rz,
-                            rot as f32,
+                            rot as f32 + if deep { DEEP_TURN } else { 0.0 },
                             width as f32,
                             height as f32,
                             tint * (0.95 + 0.4 * warm),
@@ -1093,6 +1098,31 @@ mod tests {
             }
         }
         assert!(checked > 1000);
+    }
+
+    #[test]
+    fn trees_deep_in_forest_are_marked_and_none_by_the_road() {
+        let r = route::builtin()
+            .into_iter()
+            .find(|r| r.id == "valley-loop")
+            .unwrap();
+        let g = RouteGeo::new(&r);
+        let p = r.at(3000.0);
+        let w = g.build_window(p.x, p.z, WINDOW_SIZE, WINDOW_VERTS);
+        let (mut deep, mut all) = (0, 0);
+        for kind in [PINE, BROADLEAF, BIRCH] {
+            for inst in w.instances[kind].chunks(INSTANCE_STRIDE) {
+                all += 1;
+                if inst[3] > DEEP_TURN * 0.5 {
+                    deep += 1;
+                    let (x, z) = (inst[0] as f64 + w.ox, -(inst[2] as f64) + w.oz);
+                    let s = g.sample(x, z);
+                    assert!(s.dist > 40.0 && s.forest > 0.6, "a deep tree by the road");
+                }
+            }
+        }
+        assert!(deep * 3 > all, "{deep} of {all}");
+        assert!(deep < all);
     }
 
     #[test]
