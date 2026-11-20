@@ -441,7 +441,15 @@ in vec3 v_nrm;
 in float v_dist;
 in float v_forest;
 out vec4 frag;
+#ifdef FAR_LAND
+uniform float u_cut;  // none of the distant land inside the window this far out
+#endif
 void main() {
+#ifdef FAR_LAND
+    // (Only in the distant land's own program: a discard can cost the
+    // window's land its early depth test.)
+    if (max(abs(v_pos.x), abs(v_pos.z)) < u_cut) discard;
+#endif
     vec3 n = normalize(v_nrm);
     vec2 w = world_xz(v_pos);
     float dcam = length(v_pos - u_cam);
@@ -685,6 +693,8 @@ void main() {
 /// tree's progress). `LOD_FADE` turns it on in the object shaders (only
 /// trees in the middle of a change need it: it costs the early depth test).
 pub const LOD_FADE: &str = "#define LOD_FADE\n";
+/// The terrain shader for the distant land (`FAR_LAND`).
+pub const FAR_LAND: &str = "#define FAR_LAND\n";
 
 /// Whether this pixel belongs to this level, given (share faded in, share
 /// faded out). Every level uses the same fine pattern, so two levels
@@ -1358,8 +1368,11 @@ void main() {
     col = mix(col, vec3(0.84, 0.87, 0.94), snow);
     vec3 d = normalize(v_dir);
     vec3 lit = shade(col, n, 1.0, 1.0);
-    // Distant mountains fade into the sky, most strongly at their base.
-    float haze = clamp(u_haze + (1.0 - smoothstep(-150.0, 900.0, h)) * 0.32, 0.0, 0.96);
+    // Distant mountains fade into the sky, most strongly at their base:
+    // below the eye (where the land in front of them is as hazy), all but
+    // gone, so they rise out of the haze rather than stand on it.
+    float haze = mix(0.97, clamp(u_haze + (1.0 - smoothstep(-150.0, 900.0, h)) * 0.32, 0.0, 0.96),
+                     smoothstep(-200.0, 350.0, h));
     vec3 air = sky_color(normalize(vec3(d.x, 0.03, d.z)));
     frag = out_col(mix(lit, air, haze));
 }

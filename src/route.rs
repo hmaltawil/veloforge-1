@@ -725,6 +725,55 @@ mod tests {
     }
 
     #[test]
+    fn a_hairpin_climb_is_ridden_point_to_point_with_a_road_beyond() {
+        // Twelve legs 130 m apart up an 8 % slope, joined by hairpins.
+        let mut xml = String::from("<gpx><trk><trkseg>");
+        let (mut x, mut z, mut ele) = (0.0f64, 0.0f64, 700.0f64);
+        let push = |x: f64, z: f64, e: f64, xml: &mut String| {
+            let lat = 45.0 + (z / 6_371_000.0).to_degrees();
+            let lon = 6.0 + (x / (6_371_000.0 * 45f64.to_radians().cos())).to_degrees();
+            *xml += &format!(r#"<trkpt lat="{lat:.7}" lon="{lon:.7}"><ele>{e:.1}</ele></trkpt>"#);
+        };
+        for leg in 0..12 {
+            let dir = if leg % 2 == 0 { 1.0 } else { -1.0 };
+            for _ in 0..95 {
+                z += dir * 10.0;
+                ele += 0.8;
+                push(x, z, ele, &mut xml);
+            }
+            for k in 1..20 {
+                let a = std::f64::consts::PI * k as f64 / 20.0;
+                push(
+                    x + 65.0 - 65.0 * a.cos(),
+                    z + dir * 39.0 * a.sin(),
+                    ele,
+                    &mut xml,
+                );
+            }
+            x += 130.0;
+        }
+        xml += "</trkseg></trk></gpx>";
+        let g = parse_gpx(&xml, "hairpins", "Hairpins").unwrap();
+        assert_eq!(g.shape(), Shape::PointToPoint);
+        let r = g.to_route();
+        assert_eq!(r.shape(), Shape::PointToPoint);
+        assert!(r
+            .points()
+            .iter()
+            .all(|p| p.x.is_finite() && p.ele.is_finite()));
+        assert!(r.span() > r.length + 30_000.0, "a road beyond the finish");
+        // The road beyond keeps clear of the course's legs.
+        let course = r.course_points();
+        for p in &r.points()[course.len() + 100..] {
+            let nearest = course
+                .iter()
+                .map(|c| (c.x - p.x).hypot(c.z - p.z))
+                .fold(f64::MAX, f64::min);
+            assert!(nearest > 85.0, "{nearest:.0} m from the course");
+        }
+    }
+
+    #[test]
     fn builtin_loops_close() {
         for r in builtin() {
             let a = r.at(0.0);

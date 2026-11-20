@@ -376,10 +376,12 @@ impl RouteGeo {
     /// road, blending smoothly towards every other part of the route further
     /// away, so switchbacks and the two sides of a climb join up as one
     /// hillside instead of stepping where one becomes nearer than the other.
-    fn base_height(&self, x: f64, z: f64, near: &Near) -> f64 {
+    /// Also how high and low the land may go there, hills and all: no
+    /// steeper than `CONE` from any road (`land` holds it between them).
+    fn base_height(&self, x: f64, z: f64, near: &Near) -> (f64, f64, f64) {
         let exact = self.route.at(near.d).ele;
         if near.dist <= 9.0 {
-            return exact;
+            return (exact, exact, exact);
         }
         let n = self.pts.len();
         let step = (n / 800).max(3);
@@ -419,14 +421,23 @@ impl RouteGeo {
             sw += w;
             se += w * self.eles[j];
         }
-        // Roads too steep apart for both bounds to hold meet halfway.
+        // Where roads are steeper apart than the bounds allow, the blend
+        // between them is the best there is.
         let blended = se / sw;
         let bounded = if lo <= hi {
             blended.clamp(lo, hi)
         } else {
-            (lo + hi) / 2.0
+            blended
         };
-        exact + (bounded - exact) * smoothstep(9.0, 24.0, near.dist)
+        let h = exact + (bounded - exact) * smoothstep(9.0, 24.0, near.dist);
+        if lo <= hi {
+            (h, lo, hi)
+        } else {
+            // Roads steeper apart than the land may be (the legs of a
+            // steep hairpin climb): the land between is the slope from one
+            // to the other, with no more than bumps on it.
+            (h, h - 1.5, h + 1.5)
+        }
     }
 
     /// What the land is like at (x, z): its height, how far the road is,
@@ -461,7 +472,7 @@ impl RouteGeo {
     /// The land as it lies, before any levelling.
     fn land(&self, x: f64, z: f64) -> Sample {
         let near = self.nearest(x, z);
-        let road = self.base_height(x, z, &near);
+        let (road, lo, hi) = self.base_height(x, z, &near);
         let s = self.seed;
         let flat = road - 0.25;
         let forest_noise = fbm(x / 650.0 + 31.0, z / 650.0 - 7.0, 4, s + 5);
@@ -528,12 +539,69 @@ impl RouteGeo {
             }
         };
         let bumps = fbm(x / 55.0, z / 55.0, 3, s + 9) * 1.8;
-        let h = flat + t * (hills + bumps);
+        // Hills and all, no steeper from any road than the land allows: the
+        // ground between the legs of a hairpin climb is the slope between
+        // them, not a ridge.
+        let h = (flat + t * (hills + bumps)).clamp(lo - 0.25, hi.max(lo - 0.25));
         Sample {
             h,
             dist: near.dist,
             forest,
             water: false,
+        }
+    }
+
+    /// The distant land around (`cx`, `cz`): the land's own heights on a
+    /// coarse grid, with no trees or buildings (too small to see there).
+    pub fn build_far(&self, cx: f64, cz: f64) -> FarData {
+        let (size, n) = (FAR_SIZE, FAR_VERTS);
+        let cell = size / (n - 1) as f64;
+        let ox = (cx / cell).round() * cell;
+        let oz = (cz / cell).round() * cell;
+        let (x0, z0) = (ox - size / 2.0, oz - size / 2.0);
+        let m = n + 2;
+        let mut samples = Vec::with_capacity(m * m);
+        for j in 0..m {
+            for i in 0..m {
+                samples
+                    .push(self.sample(x0 + (i as f64 - 1.0) * cell, z0 + (j as f64 - 1.0) * cell));
+            }
+        }
+        let at = |i: usize, j: usize| &samples[j * m + i];
+        let mut verts = Vec::with_capacity(n * n * TERRAIN_STRIDE);
+        for j in 0..n {
+            for i in 0..n {
+                let s = at(i + 1, j + 1);
+                let dhdx = (at(i + 2, j + 1).h - at(i, j + 1).h) / (2.0 * cell);
+                let dhdz = (at(i + 1, j + 2).h - at(i + 1, j).h) / (2.0 * cell);
+                let (nx, ny, nz) = (-dhdx, 1.0, -dhdz);
+                let l = (nx * nx + ny * ny + nz * nz).sqrt();
+                verts.extend_from_slice(&[
+                    (x0 + i as f64 * cell - ox) as f32,
+                    s.h as f32,
+                    -(z0 + j as f64 * cell - oz) as f32,
+                    (nx / l) as f32,
+                    (ny / l) as f32,
+                    (-nz / l) as f32,
+                    s.dist as f32,
+                    s.forest as f32,
+                ]);
+            }
+        }
+        let mut indices = Vec::with_capacity((n - 1) * (n - 1) * 6);
+        for j in 0..n - 1 {
+            for i in 0..n - 1 {
+                let a = (j * n + i) as u32;
+                let (b, c) = (a + 1, a + n as u32);
+                indices.extend_from_slice(&[a, c, b, b, c, c + 1]);
+            }
+        }
+        FarData {
+            ox,
+            oz,
+            verts,
+            indices,
+            route_id: self.route.id.clone(),
         }
     }
 
@@ -1222,7 +1290,8 @@ impl RouteGeo {
 
 impl NearGrid {
     fn build(pts: &[(f64, f64)]) -> NearGrid {
-        let margin = 2600.0;
+        // Far enough out for the distant land (`FAR_SIZE`).
+        let margin = 4500.0;
         let (mut xmin, mut xmax, mut zmin, mut zmax) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
         for &(x, z) in pts {
             xmin = xmin.min(x);
@@ -1312,6 +1381,32 @@ impl NearGrid {
     }
 }
 
+/// The distant land: a coarse sheet of the same land around a centre, out
+/// to the mountains on the horizon, drawn where the detailed window does
+/// not reach. Vertices as the window's (`TERRAIN_STRIDE`), from its own
+/// centre.
+pub struct FarData {
+    pub ox: f64,
+    pub oz: f64,
+    pub verts: Vec<f32>,
+    pub indices: Vec<u32>,
+    pub route_id: String,
+}
+
+/// What the terrain worker sends back.
+pub enum Built {
+    Window(Box<TerrainData>),
+    Far(FarData),
+}
+
+/// Across the distant land (metres), and its vertices across: about 60 m
+/// apart. Inside the nearest mountain ring (3.9 km away).
+pub const FAR_SIZE: f64 = 7600.0;
+pub const FAR_VERTS: usize = 129;
+/// The distant land is built again once the camera is this far from its
+/// centre.
+pub const FAR_MOVE: f64 = 1200.0;
+
 pub struct TerrainData {
     /// Square tiles of the index list, to skip those out of view.
     pub tiles: Vec<Tile>,
@@ -1341,7 +1436,7 @@ struct Request {
 /// Builds terrain windows off the UI thread.
 pub struct Worker {
     tx: Sender<Request>,
-    pub rx: Receiver<TerrainData>,
+    pub rx: Receiver<Built>,
 }
 
 pub const WINDOW_SIZE: f64 = 2000.0;
@@ -1355,6 +1450,7 @@ impl Worker {
             .name("terrain".into())
             .spawn(move || {
                 let mut geo: Option<Arc<RouteGeo>> = None;
+                let mut far_at: Option<(String, f64, f64)> = None;
                 while let Ok(mut req) = req_rx.recv() {
                     // Only the newest request matters.
                     while let Ok(r) = req_rx.try_recv() {
@@ -1373,8 +1469,22 @@ impl Worker {
                         }
                     };
                     let data = g.build_window(req.cx, req.cz, WINDOW_SIZE, WINDOW_VERTS);
-                    if done_tx.send(data).is_err() {
+                    if done_tx.send(Built::Window(Box::new(data))).is_err() {
                         break;
+                    }
+                    // The distant land, when the camera has moved far from
+                    // where it was last built (or the route changed).
+                    let stale = far_at
+                        .as_ref()
+                        .is_none_or(|(id, x, z): &(String, f64, f64)| {
+                            *id != req.route.id || (req.cx - x).hypot(req.cz - z) > FAR_MOVE
+                        });
+                    if stale {
+                        let far = g.build_far(req.cx, req.cz);
+                        far_at = Some((req.route.id.clone(), far.ox, far.oz));
+                        if done_tx.send(Built::Far(far)).is_err() {
+                            break;
+                        }
                     }
                 }
             })
@@ -1391,6 +1501,54 @@ impl Worker {
 mod tests {
     use super::*;
     use crate::route;
+
+    #[test]
+    fn distant_land_is_quick_to_build_and_meets_the_window() {
+        for r in [&route::builtin()[0], &route::builtin()[4]] {
+            let g = RouteGeo::new(r);
+            let p = r.at(1000.0);
+            let t = std::time::Instant::now();
+            let far = g.build_far(p.x, p.z);
+            let ms = t.elapsed().as_millis();
+            println!("{}: distant land in {ms} ms", r.id);
+            assert_eq!(far.verts.len(), FAR_VERTS * FAR_VERTS * TERRAIN_STRIDE);
+            assert!(far.verts.iter().all(|v| v.is_finite()));
+            // Its heights are the land's own, so it meets the window.
+            let w = g.build_window(p.x, p.z, WINDOW_SIZE, WINDOW_VERTS);
+            let near = drawn(&w);
+            let cell = FAR_SIZE / (FAR_VERTS - 1) as f64;
+            for k in 0..FAR_VERTS {
+                let v = &far.verts[(k * FAR_VERTS + k) * TERRAIN_STRIDE..];
+                let (x, z) = (v[0] as f64 + far.ox, far.oz - v[2] as f64);
+                if (x - w.ox).abs() < 900.0 && (z - w.oz).abs() < 900.0 {
+                    assert!(
+                        (v[1] as f64 - near(x, z)).abs() < 0.5,
+                        "{} at {k}",
+                        v[1] as f64 - near(x, z)
+                    );
+                }
+            }
+            let _ = cell;
+        }
+    }
+
+    #[test]
+    fn the_worker_sends_the_window_then_the_distant_land() {
+        let r = Arc::new(route::builtin()[0].clone());
+        let w = Worker::spawn();
+        let p = r.at(100.0);
+        w.request(r.clone(), p.x, p.z);
+        let (mut window, mut far) = (false, false);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while std::time::Instant::now() < until && !(window && far) {
+            match w.rx.recv_timeout(std::time::Duration::from_millis(200)) {
+                Ok(Built::Window(_)) => window = true,
+                Ok(Built::Far(_)) => far = true,
+                Err(_) => {}
+            }
+        }
+        assert!(window && far, "window {window}, distant land {far}");
+    }
 
     #[test]
     fn nearest_matches_route_geometry() {
@@ -1674,16 +1832,16 @@ mod tests {
         // Across the gap near the bottom, where the legs differ most.
         let z = 150.0;
         let (lo, hi) = (
-            g.base_height(12.0, z, &g.nearest(12.0, z)),
-            g.base_height(128.0, z, &g.nearest(128.0, z)),
+            g.base_height(12.0, z, &g.nearest(12.0, z)).0,
+            g.base_height(128.0, z, &g.nearest(128.0, z)).0,
         );
         let mean = (hi - lo).abs() / 116.0;
         let mut steepest = 0.0f64;
         for k in 0..58 {
             let (x0, x1) = (12.0 + k as f64 * 2.0, 14.0 + k as f64 * 2.0);
             let (h0, h1) = (
-                g.base_height(x0, z, &g.nearest(x0, z)),
-                g.base_height(x1, z, &g.nearest(x1, z)),
+                g.base_height(x0, z, &g.nearest(x0, z)).0,
+                g.base_height(x1, z, &g.nearest(x1, z)).0,
             );
             steepest = steepest.max((h1 - h0).abs() / 2.0);
         }

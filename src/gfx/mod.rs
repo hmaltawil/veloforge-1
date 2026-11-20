@@ -25,7 +25,7 @@ use math::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use terrain::{TerrainData, Worker, INSTANCE_STRIDE, KINDS, TERRAIN_STRIDE};
+use terrain::{Built, FarData, TerrainData, Worker, INSTANCE_STRIDE, KINDS, TERRAIN_STRIDE};
 
 use crate::world::{Scene, Sky, TimeOfDay, Weather};
 
@@ -214,7 +214,8 @@ fn look(s: Scenery, sky: Sky) -> Look {
             srgb(28, 86, 190),
             srgb(160, 194, 228),
             [1.16, 1.07, 0.94],
-            0.00085,
+            // Clear mountain air: the distant land shows, out to the peaks.
+            0.0006,
         ),
     };
     let grass = match s {
@@ -445,6 +446,8 @@ struct FrameData {
     light_vp: [M4; 2],
     shadow_texels: [f32; 2],
     terrain: Option<Arc<TerrainData>>,
+    /// New distant land to upload, when there is some.
+    far: Option<Arc<FarData>>,
     mountains: Option<(Vec<f32>, Vec<Ring>)>,
 }
 
@@ -738,10 +741,15 @@ impl GpuWorld {
             self.pending = true;
         }
         let mut upload = None;
-        while let Ok(t) = self.worker.rx.try_recv() {
-            if t.route_id == route.id {
-                self.pending = false;
-                upload = Some(Arc::new(t));
+        let mut far = None;
+        while let Ok(built) = self.worker.rx.try_recv() {
+            match built {
+                Built::Window(t) if t.route_id == route.id => {
+                    self.pending = false;
+                    upload = Some(Arc::new(*t));
+                }
+                Built::Far(t) if t.route_id == route.id => far = Some(Arc::new(t)),
+                _ => {}
             }
         }
         if let Some(t) = &upload {
@@ -1158,6 +1166,7 @@ impl GpuWorld {
             lamp_pos,
             lamp_dir,
             terrain: upload,
+            far,
             mountains,
         };
 
@@ -1261,7 +1270,8 @@ fn mountain_ring(seed: u64, scenery: Scenery) -> (Vec<f32>, Vec<Ring>) {
         let point = |i: usize, frac: f32| -> (V3, V3) {
             let a = i as f32 / n as f32 * std::f32::consts::TAU;
             let top = h(a);
-            let y = -400.0 + (top + 400.0) * frac;
+            // Down well below any land seen in front of them.
+            let y = -2500.0 + (top + 2500.0) * frac;
             let dir = [a.sin(), 0.0, -a.cos()];
             let slope = (h(a + 0.004) - h(a - 0.004)) / (0.008 * radius);
             let tangent = [a.cos(), 0.0, a.sin()];
@@ -1488,6 +1498,11 @@ struct GlState {
     programs: HashMap<&'static str, Program>,
     sky_vao: Option<glow::VertexArray>,
     terrain: Option<Buffers>,
+    /// The distant land (`FarData`), its vertices moved to the render
+    /// origin they were uploaded for.
+    far: Option<Buffers>,
+    far_data: Option<Arc<FarData>>,
+    far_origin: (f64, f64),
     road: Option<Buffers>,
     water: Option<Buffers>,
     mountains: Option<(Buffers, Vec<Ring>)>,
@@ -1958,6 +1973,13 @@ impl GlState {
                 "terrain",
                 &[TERRAIN_VS],
                 &[&noise_tex, NOISE, LIGHT, GROUND_MAP, TERRAIN_FS],
+                &terrain_attribs,
+            )?;
+            self.compile(
+                gl,
+                "terrain_far",
+                &[TERRAIN_VS],
+                &[FAR_LAND, &noise_tex, NOISE, LIGHT, GROUND_MAP, TERRAIN_FS],
                 &terrain_attribs,
             )?;
             self.compile(
@@ -2681,6 +2703,51 @@ impl GlState {
         }
     }
 
+    /// Upload the distant land, its vertices moved to the render `origin`
+    /// (the detailed window's centre) and a little lower, so where the two
+    /// overlap the detailed land is the one seen.
+    unsafe fn upload_far(&mut self, gl: &glow::Context, origin: (f64, f64)) -> Result<(), String> {
+        let Some(far) = self.far_data.clone() else {
+            return Ok(());
+        };
+        let (dx, dz) = ((far.ox - origin.0) as f32, -(far.oz - origin.1) as f32);
+        let mut verts = far.verts.clone();
+        for v in verts.as_chunks_mut::<TERRAIN_STRIDE>().0 {
+            v[0] += dx;
+            v[1] -= 0.4;
+            v[2] += dz;
+        }
+        unsafe {
+            if self.far.is_none() {
+                let mut b = Self::buffers(
+                    gl,
+                    &[(3, 0), (3, 3), (1, 6), (1, 7)],
+                    TERRAIN_STRIDE as i32,
+                    &[],
+                    None,
+                )?;
+                let ebo = gl.create_buffer()?;
+                gl.bind_vertex_array(Some(b.vao));
+                gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ebo));
+                gl.buffer_data_u8_slice(
+                    glow::ELEMENT_ARRAY_BUFFER,
+                    bytes_u32(&far.indices),
+                    glow::STATIC_DRAW,
+                );
+                gl.bind_vertex_array(None);
+                b.ebo = Some(ebo);
+                b.count = far.indices.len() as i32;
+                self.far = Some(b);
+            }
+            let b = self.far.as_ref().unwrap();
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(b.vbo));
+            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes(&verts), glow::STATIC_DRAW);
+            gl.bind_buffer(glow::ARRAY_BUFFER, None);
+        }
+        self.far_origin = origin;
+        Ok(())
+    }
+
     unsafe fn upload_terrain(&mut self, gl: &glow::Context, t: &TerrainData) -> Result<(), String> {
         unsafe {
             if self.terrain.is_none() {
@@ -2760,7 +2827,8 @@ impl GlState {
                 let h = if t.sea {
                     14_000.0
                 } else {
-                    (t.size / 2.0) as f32
+                    // Out over the distant land too.
+                    (terrain::FAR_SIZE / 2.0) as f32
                 };
                 let y = level as f32;
                 let quad = [-h, y, -h, h, y, -h, h, y, h, -h, y, -h, h, y, h, -h, y, h];
@@ -3600,6 +3668,16 @@ impl GlState {
                     return;
                 }
             }
+            if let Some(far) = &f.far {
+                self.far_data = Some(far.clone());
+                self.far_origin = (f64::NAN, f64::NAN);
+            }
+            if self.far_data.is_some() && self.far_origin != f.origin {
+                if let Err(e) = self.upload_far(gl, f.origin) {
+                    self.error = Some(e);
+                    return;
+                }
+            }
             if let Some((v, rings)) = &f.mountains {
                 match Self::buffers(gl, &[(3, 0), (3, 3), (3, 6)], 9, v, None) {
                     Ok(b) => {
@@ -3827,6 +3905,19 @@ impl GlState {
                 p.f1(gl, "u_snow", f.snow);
                 gl.bind_vertex_array(Some(vao));
                 self.draw_terrain(gl, &f.vp, count);
+                // The distant land, out to the mountains, where the
+                // window does not reach (the shader leaves out the rest).
+                if let Some(far) = &self.far {
+                    let (fvao, fcount) = (far.vao, far.count);
+                    self.common(gl, "terrain_far", f);
+                    let p = self.programs.get_mut("terrain_far").unwrap();
+                    p.i1(gl, "u_scenery", f.scenery);
+                    p.f1(gl, "u_water", f.water);
+                    p.f1(gl, "u_snow", f.snow);
+                    p.f1(gl, "u_cut", (terrain::WINDOW_SIZE / 2.0) as f32 - 40.0);
+                    gl.bind_vertex_array(Some(fvao));
+                    gl.draw_elements(glow::TRIANGLES, fcount, glow::UNSIGNED_INT, 0);
+                }
             }
 
             // Road, pulled slightly towards the camera so it never z-fights the ground.

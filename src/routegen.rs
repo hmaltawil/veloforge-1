@@ -275,7 +275,7 @@ fn turns(rng: &mut Rng, km: f64, scenery: Scenery, n: usize, calm: f64, looped: 
         // More gentle bends than sharp ones.
         let angle = (angles.0 + (angles.1 - angles.0) * rng.next().powf(1.6)) * calm;
         let way = if rng.next() < 0.5 { -1.0 } else { 1.0 };
-        let radius = (radii.0 + (radii.1 - radii.0) * rng.next()) / calm.sqrt();
+        let radius = (radii.0 + (radii.1 - radii.0) * rng.next()) / calm.max(0.05).sqrt();
         // A bell of turning, its peak at the bend's radius.
         let sigma = angle * radius / (2.0 * std::f64::consts::PI).sqrt();
         let reach = (3.0 * sigma / STEP).ceil() as i64;
@@ -299,6 +299,12 @@ fn turns(rng: &mut Rng, km: f64, scenery: Scenery, n: usize, calm: f64, looped: 
 /// `looped`, else from end to end. Only stretches from point `from` on are
 /// held to it (a road added to one that is as it is).
 fn keeps_clear(pts: &[RoutePt], looped: bool, from: usize) -> bool {
+    keeps_clear_by(pts, looped, from, APART)
+}
+
+/// `keeps_clear`, with stretches far apart along the road kept `apart`
+/// metres apart.
+fn keeps_clear_by(pts: &[RoutePt], looped: bool, from: usize, apart: f64) -> bool {
     let n = pts.len() - 1;
     // Bends, over 20 m.
     let k = 4;
@@ -316,9 +322,9 @@ fn keeps_clear(pts: &[RoutePt], looped: bool, from: usize) -> bool {
             return false;
         }
     }
-    // Every 20 m into a grid of `APART` cells; neighbours compared.
+    // Every 20 m into a grid of `apart` cells; neighbours compared.
     let step = 4;
-    let cell = APART;
+    let cell = apart;
     let mut grid: std::collections::HashMap<(i64, i64), Vec<usize>> =
         std::collections::HashMap::new();
     for i in (0..n).step_by(step) {
@@ -346,7 +352,7 @@ fn keeps_clear(pts: &[RoutePt], looped: bool, from: usize) -> bool {
                 for &j in grid.get(&(cx + dx, cz + dz)).into_iter().flatten() {
                     if (i >= from || j >= from)
                         && along(i, j) > APART_ALONG
-                        && (pts[i].x - pts[j].x).hypot(pts[i].z - pts[j].z) < APART
+                        && (pts[i].x - pts[j].x).hypot(pts[i].z - pts[j].z) < apart
                     {
                         return false;
                     }
@@ -361,9 +367,13 @@ fn keeps_clear(pts: &[RoutePt], looped: bool, from: usize) -> bool {
 /// of itself (far from it along the road), the two differ in height little
 /// enough for the land between to be a hillside rather than a cliff.
 fn gentle_between(pts: &[RoutePt], eles: &[f64], looped: bool, from: usize) -> bool {
+    gentle_between_by(pts, eles, looped, from, 0.28)
+}
+
+/// `gentle_between`, with the land between averaging no steeper than
+/// `slope`.
+fn gentle_between_by(pts: &[RoutePt], eles: &[f64], looped: bool, from: usize, slope: f64) -> bool {
     const NEAR_ENOUGH: f64 = 600.0;
-    // The steepest the land between may average.
-    const SLOPE: f64 = 0.28;
     let n = pts.len() - 1;
     let step = 6;
     let cell = NEAR_ENOUGH;
@@ -396,7 +406,7 @@ fn gentle_between(pts: &[RoutePt], eles: &[f64], looped: bool, from: usize) -> b
                     }
                     let d = (pts[i].x - pts[j].x).hypot(pts[i].z - pts[j].z);
                     // The road's own verges (about 30 m each) are level.
-                    if d < NEAR_ENOUGH && (eles[i] - eles[j]).abs() > SLOPE * (d - 60.0).max(0.0) {
+                    if d < NEAR_ENOUGH && (eles[i] - eles[j]).abs() > slope * (d - 60.0).max(0.0) {
                         return false;
                     }
                 }
@@ -563,14 +573,22 @@ pub fn beyond(course: &[RoutePt], scenery: Scenery, seed: u64) -> Vec<RoutePt> {
         all.extend_from_slice(&road[1..]);
         let all = Route::from_points("", "", scenery, 0, all);
         let eles: Vec<f64> = all.points().iter().map(|p| p.ele).collect();
-        if keeps_clear(all.points(), false, from)
-            && gentle_between(all.points(), &eles, false, from)
+        // A real course may have its own stretches close together (the
+        // legs of a hairpin climb): the road beyond keeps 90 m from it,
+        // and the land between no steeper than the land allows (see
+        // `base_height` in `gfx::terrain`).
+        if keeps_clear_by(all.points(), false, from, 90.0)
+            && gentle_between_by(all.points(), &eles, false, from, 0.55)
         {
             return road[1..].to_vec();
         }
     }
     // Straight on, gently down then level.
-    make(&mut Rng(seed), 0.0)[1..].to_vec()
+    let mut road = integrate_open(&vec![0.0; n], end.x, end.z, heading, end.ele);
+    for (i, p) in road.iter_mut().enumerate() {
+        p.ele = end.ele - 0.02 * (i as f64 * STEP).min(1500.0);
+    }
+    road[1..].to_vec()
 }
 
 /// A name for a route, from words that suit its scenery.
@@ -724,11 +742,26 @@ mod tests {
                     (s.x - fin.x).hypot(s.z - fin.z) > 500.0,
                     "{what}: ends together"
                 );
-                let eles: Vec<f64> = r.points().iter().map(|p| p.ele).collect();
-                assert!(keeps_clear(r.points(), false, 0), "{what}");
                 assert!(
-                    gentle_between(r.points(), &eles, false, 0),
-                    "{what}: a cliff"
+                    r.points()
+                        .iter()
+                        .all(|p| p.x.is_finite() && p.ele.is_finite()),
+                    "{what}: not a number"
+                );
+                // The course by the strict rules; the road beyond by its own.
+                let course = r.course_points();
+                let eles: Vec<f64> = course.iter().map(|p| p.ele).collect();
+                assert!(keeps_clear(course, false, 0), "{what}");
+                assert!(gentle_between(course, &eles, false, 0), "{what}: a cliff");
+                let all: Vec<f64> = r.points().iter().map(|p| p.ele).collect();
+                let from = course.len();
+                assert!(
+                    keeps_clear_by(r.points(), false, from, 90.0),
+                    "{what}: beyond"
+                );
+                assert!(
+                    gentle_between_by(r.points(), &all, false, from, 0.55),
+                    "{what}: a cliff beyond"
                 );
                 if hills == Hills::Mountains {
                     assert!(
