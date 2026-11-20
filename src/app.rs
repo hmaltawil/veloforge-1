@@ -232,6 +232,9 @@ pub struct App {
     /// The ride finishing by itself (its workout done, or a point-to-point
     /// finish reached): since when, and why.
     auto_finish: Option<(Instant, &'static str)>,
+    /// A file being chosen in the system's file dialog (on its own
+    /// thread): the file, or None if cancelled or there is no dialog.
+    picking: Option<std::sync::mpsc::Receiver<Result<Option<std::path::PathBuf>, String>>>,
     /// "Keep riding" was chosen: this ride finishes when you say.
     keep_riding: bool,
     /// Where along the route the ride was last frame, to see the finish
@@ -365,6 +368,7 @@ impl App {
             demo: false,
             bench: None,
             auto_finish: None,
+            picking: None,
             keep_riding: false,
             last_route_pos: 0.0,
             frame_marks: (None, None),
@@ -1435,6 +1439,75 @@ impl App {
         self.links
             .get(SIM_ID)
             .is_some_and(|l| l.link == Link::Connected)
+    }
+
+    /// Open the system's file dialog for a workout (.zwo) or route (.gpx),
+    /// as `filters` (a name and its extensions) allow, and import what is
+    /// chosen. The dialog runs on a thread of its own so the rest keeps
+    /// going (on macOS it must be the main thread: there it waits).
+    pub(crate) fn pick_file(&mut self, title: &str, filters: &[(&str, &[&str])]) {
+        if self.picking.is_some() {
+            return;
+        }
+        let mut dialog = rfd::FileDialog::new().set_title(title);
+        for (name, exts) in filters {
+            dialog = dialog.add_filter(*name, exts);
+        }
+        if let Some(dir) =
+            directories::UserDirs::new().and_then(|u| u.download_dir().map(Path::to_path_buf))
+        {
+            dialog = dialog.set_directory(dir);
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let run = move || {
+            let opened = Instant::now();
+            let picked =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dialog.pick_file()))
+                    .map_err(|_| "no file dialog is available".to_string())
+                    .and_then(|p| {
+                        // No answer at once with nothing chosen: no dialog
+                        // came up (no desktop portal on Linux), not a cancel.
+                        if p.is_none() && opened.elapsed() < std::time::Duration::from_millis(300) {
+                            Err("no file dialog came up".to_string())
+                        } else {
+                            Ok(p)
+                        }
+                    });
+            let _ = tx.send(picked);
+        };
+        if cfg!(target_os = "macos") {
+            run();
+        } else if std::thread::Builder::new()
+            .name("file-dialog".into())
+            .spawn(run)
+            .is_err()
+        {
+            self.notify("Could not open the file dialog");
+            return;
+        }
+        self.picking = Some(rx);
+    }
+
+    /// Import the file chosen in the file dialog, once it is chosen.
+    fn check_picked_file(&mut self) {
+        let Some(rx) = &self.picking else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(Ok(Some(path))) => {
+                self.picking = None;
+                self.import_file(&path, None);
+            }
+            Ok(Ok(None)) => self.picking = None,
+            Ok(Err(e)) => {
+                self.picking = None;
+                self.notify(format!(
+                    "Could not open the file dialog ({e}): type the file's path in Workouts instead"
+                ));
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.picking = None,
+        }
     }
 
     /// Seconds between the ride being done and it finishing by itself.
@@ -2726,6 +2799,7 @@ impl eframe::App for App {
         self.pump_events();
         self.tick_ride();
         self.check_auto_finish();
+        self.check_picked_file();
         self.pump_icu();
         self.pump_strava();
         self.pump_update();
@@ -4376,11 +4450,25 @@ impl App {
 
         egui::CentralPanel::default_margins().show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label("Import .zwo / .gpx:");
+                if ui
+                    .add_enabled(self.picking.is_none(), egui::Button::new("Import a file…"))
+                    .on_hover_text("A workout (.zwo) or a route (.gpx)")
+                    .clicked()
+                {
+                    self.pick_file(
+                        "Import a workout or route",
+                        &[
+                            ("Workouts and routes", &["zwo", "gpx"]),
+                            ("Workouts (.zwo)", &["zwo"]),
+                            ("Routes (.gpx)", &["gpx"]),
+                        ],
+                    );
+                }
+                ui.label(RichText::new("or its path:").weak());
                 ui.add(
                     egui::TextEdit::singleline(&mut self.import_path)
                         .hint_text("/path/to/file.zwo")
-                        .desired_width(320.0),
+                        .desired_width(260.0),
                 );
                 if ui.button("Import").clicked() {
                     let p = self.import_path.trim().to_string();
@@ -4393,7 +4481,7 @@ impl App {
                     };
                     self.import_file(Path::new(&p), None);
                 }
-                ui.label(RichText::new("…or drag & drop files onto the window").weak());
+                ui.label(RichText::new("You can also drop files onto the window").weak());
             });
             ui.separator();
             let Some(id) = self.selected_workout.clone() else {

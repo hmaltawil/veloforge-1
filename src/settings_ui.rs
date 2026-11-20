@@ -991,7 +991,7 @@ impl App {
         card(ui, "Random routes", |ui| {
             ui.label(
                 RichText::new(
-                    "A new loop of road each time, with its own bends, hills, farms and forest. Make one here or from the route menu on the Ride tab (+ New random route).",
+                    "A new road each time, with its own bends, hills, farms and forest. Make one here or from the route menu on the Ride tab (+ New random route).",
                 )
                 .weak()
                 .size(12.5),
@@ -1092,14 +1092,22 @@ impl App {
         }
         let mut remove = None;
         let mut rebuild = false;
+        let mut pick = false;
+        let picking = self.picking.is_some();
         card(ui, "Imported routes", |ui| {
             ui.label(
                 RichText::new(
-                    "To import a route, drag a .gpx file (from Strava, Komoot, RideWithGPS…) onto the VeloForge window.",
+                    "Ride a real route: import a .gpx file from Strava, Komoot, RideWithGPS… (or drop one onto the window). A climb or any route that ends away from its start is ridden point to point.",
                 )
                 .weak()
                 .size(12.5),
             );
+            if ui
+                .add_enabled(!picking, egui::Button::new("Import a GPX route…"))
+                .clicked()
+            {
+                pick = true;
+            }
             if self.store.gpx_routes.is_empty() {
                 ui.label(RichText::new("No imported routes yet.").italics());
             }
@@ -1140,6 +1148,9 @@ impl App {
                 });
             }
         });
+        if pick {
+            self.pick_file("Import a route", &[("Routes (.gpx)", &["gpx"])]);
+        }
         if rebuild {
             self.rebuild_routes();
             self.mark_dirty();

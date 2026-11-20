@@ -836,3 +836,26 @@ mod tests {
         assert!((grade - 5.0).abs() < 0.3, "{grade}");
     }
 }
+
+#[cfg(test)]
+mod gpx_out {
+    /// Turn a GPX file into an imported route as the app keeps it (JSON):
+    /// `VELOFORGE_GPX_IN=a.gpx VELOFORGE_GPX_OUT=a.json cargo test gpx_to_json -- --ignored`.
+    #[test]
+    #[ignore]
+    fn gpx_to_json() {
+        let src = std::env::var("VELOFORGE_GPX_IN").expect("VELOFORGE_GPX_IN");
+        let out = std::env::var("VELOFORGE_GPX_OUT").expect("VELOFORGE_GPX_OUT");
+        let xml = std::fs::read_to_string(&src).unwrap();
+        let mut g = super::parse_gpx(&xml, "gpx-test", "Test").unwrap();
+        g.scenery = Some(super::Scenery::Alpine);
+        let r = g.to_route();
+        println!(
+            "{} km, {} m climb, {:?}",
+            r.length / 1000.0,
+            r.ascent,
+            r.shape()
+        );
+        std::fs::write(out, serde_json::to_string(&g).unwrap()).unwrap();
+    }
+}

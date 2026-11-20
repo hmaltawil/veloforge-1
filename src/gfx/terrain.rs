@@ -320,8 +320,10 @@ impl RouteGeo {
         geo
     }
 
+    /// Snow lies on the mountains well above the highest road, so a climb
+    /// that finishes at its top finishes on grass and rock.
     pub fn snow_level(&self) -> f64 {
-        self.max_ele + 35.0
+        self.max_ele + 150.0
     }
 
     pub fn nearest(&self, x: f64, z: f64) -> Near {
@@ -382,9 +384,24 @@ impl RouteGeo {
         let n = self.pts.len();
         let step = (n / 800).max(3);
         let (mut sw, mut se) = (0.0, 0.0);
+        // The land rises or falls away from any road no steeper than
+        // `CONE`: between these bounds (from every road, the nearest
+        // exactly), so where all the other roads in reach are far below (a
+        // summit), the land falls away from it as a mountainside, not a
+        // causeway with cliffs either side.
+        const CONE: f64 = 0.6;
+        let (mut lo, mut hi) = (
+            exact - CONE * (near.dist - 9.0),
+            exact + CONE * (near.dist - 9.0),
+        );
         for j in (0..n).step_by(step) {
             let (px, pz) = self.pts[j];
             let d = ((px - x).powi(2) + (pz - z).powi(2)).sqrt();
+            if d < 1500.0 {
+                let reach = CONE * (d - 9.0).max(0.0);
+                lo = lo.max(self.eles[j] - reach);
+                hi = hi.min(self.eles[j] + reach);
+            }
             // Each point of road weighs as one over its distance to the
             // power 2.5: summed along a road, nearly one over the distance to
             // the road, so between two stretches of road (the legs of a
@@ -402,7 +419,14 @@ impl RouteGeo {
             sw += w;
             se += w * self.eles[j];
         }
-        exact + (se / sw - exact) * smoothstep(9.0, 24.0, near.dist)
+        // Roads too steep apart for both bounds to hold meet halfway.
+        let blended = se / sw;
+        let bounded = if lo <= hi {
+            blended.clamp(lo, hi)
+        } else {
+            (lo + hi) / 2.0
+        };
+        exact + (bounded - exact) * smoothstep(9.0, 24.0, near.dist)
     }
 
     /// What the land is like at (x, z): its height, how far the road is,
