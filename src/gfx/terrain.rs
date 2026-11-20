@@ -2329,7 +2329,7 @@ mod survey_many {
     fn imports() -> Vec<(String, Track, Scenery)> {
         let mut out = Vec::new();
         // A town loop: blocks with square corners at junctions.
-        let corners = [
+        let corners: [(f64, f64); 9] = [
             (0.0, 0.0),
             (300.0, 0.0),
             (300.0, 200.0),
