@@ -2,12 +2,15 @@
 //! the road), z across it, y up. Their roofs take each building's tint.
 
 use super::math::*;
-use super::mesh::{tinted, Mesh, MAT_GLOSS, MAT_MATT, MAT_WINDOW};
+use super::mesh::{tinted, Mesh, MAT_GLOSS, MAT_LAMP, MAT_MATT, MAT_WINDOW};
 
 const STONE: V3 = [0.2, 0.19, 0.18];
 const TIMBER: V3 = [0.11, 0.07, 0.045];
 const FRAME: V3 = [0.58, 0.56, 0.52];
 const GLASS: V3 = [0.03, 0.04, 0.055];
+/// How deep the stone footings go: on a slope a building stands at the top
+/// of its ground, and the footing shows below it on the downhill side.
+pub const FOUNDATION: f32 = 3.5;
 
 /// A side of a building, seen from outside.
 #[derive(Clone, Copy, PartialEq)]
@@ -67,6 +70,11 @@ impl Mesh {
         self.mat = if lit { MAT_WINDOW } else { MAT_GLOSS };
         self.panel(side, a, b, v0, v1, d + 0.07, GLASS);
         self.mat = MAT_MATT;
+        // Curtains drawn back to each side.
+        let cw = (b - a) * 0.2;
+        let curtain = [0.78, 0.72, 0.6];
+        self.panel(side, a, a + cw, v0, v1, d + 0.085, curtain);
+        self.panel(side, b - cw, b, v0, v1, d + 0.085, curtain);
         let bar = 0.035;
         self.panel(side, u - bar, u + bar, v0, v1, d + 0.1, FRAME);
         let mid = v0 + (v1 - v0) * 0.6;
@@ -122,7 +130,7 @@ impl Mesh {
             d + 0.1,
             [0.5, 0.45, 0.3],
         );
-        let p0 = at(side, a - 0.35, -0.3, d);
+        let p0 = at(side, a - 0.35, -FOUNDATION, d);
         let p1 = at(side, b + 0.35, 0.0, d + 0.55);
         self.cuboid(
             [p0[0].min(p1[0]), p0[1], p0[2].min(p1[2])],
@@ -138,6 +146,212 @@ impl Mesh {
                 tinted([0.85, 0.85, 0.85]),
             );
         }
+    }
+
+    /// A box standing out from a wall: `u0..u1` along it, `v0..v1` up,
+    /// `d0..d1` out from the building's centre.
+    #[allow(clippy::too_many_arguments)]
+    fn block(&mut self, side: Side, u0: f32, u1: f32, v0: f32, v1: f32, d0: f32, d1: f32, col: V3) {
+        let (p, q) = (at(side, u0, v0, d0), at(side, u1, v1, d1));
+        self.cuboid(
+            [p[0].min(q[0]), p[1], p[2].min(q[2])],
+            [p[0].max(q[0]), q[1], p[2].max(q[2])],
+            col,
+        );
+    }
+
+    /// A box of flowers under a window centred at `u`, its top at `v`.
+    fn flower_box(&mut self, side: Side, u: f32, w: f32, v: f32, d: f32, seed: u32) {
+        let (a, b) = (u - w / 2.0 - 0.1, u + w / 2.0 + 0.1);
+        self.block(side, a, b, v - 0.3, v, d, d + 0.32, [0.3, 0.17, 0.08]);
+        self.block(
+            side,
+            a + 0.04,
+            b - 0.04,
+            v,
+            v + 0.12,
+            d + 0.04,
+            d + 0.3,
+            [0.08, 0.2, 0.05],
+        );
+        let colours = [
+            [0.75, 0.08, 0.08],
+            [0.85, 0.35, 0.55],
+            [0.85, 0.7, 0.1],
+            [0.85, 0.82, 0.78],
+            [0.5, 0.2, 0.6],
+        ];
+        let n = ((b - a) / 0.22) as usize;
+        for k in 0..n {
+            let x = a + 0.12 + k as f32 * (b - a - 0.24) / (n - 1).max(1) as f32;
+            let c = colours[(k + seed as usize) % colours.len()];
+            let h = 0.12 + 0.08 * ((k * 7 + seed as usize) % 3) as f32 / 2.0;
+            self.block(
+                side,
+                x - 0.07,
+                x + 0.07,
+                v + 0.08,
+                v + 0.08 + h,
+                d + 0.1,
+                d + 0.26,
+                c,
+            );
+        }
+    }
+
+    /// A wooden bench against a wall, centred at `u`.
+    fn bench(&mut self, side: Side, u: f32, d: f32) {
+        let wood = [0.33, 0.2, 0.1];
+        self.block(side, u - 0.8, u + 0.8, 0.42, 0.5, d + 0.12, d + 0.55, wood);
+        self.block(side, u - 0.8, u + 0.8, 0.6, 0.95, d + 0.1, d + 0.17, wood);
+        for x in [u - 0.7, u + 0.62] {
+            self.block(
+                side,
+                x,
+                x + 0.08,
+                0.0,
+                0.42,
+                d + 0.14,
+                d + 0.53,
+                scale(wood, 0.7),
+            );
+        }
+    }
+
+    /// A terracotta pot with a plant, at `u` in front of a wall.
+    fn pot(&mut self, side: Side, u: f32, d: f32) {
+        self.block(
+            side,
+            u - 0.2,
+            u + 0.2,
+            0.0,
+            0.45,
+            d + 0.2,
+            d + 0.6,
+            [0.5, 0.24, 0.14],
+        );
+        self.block(
+            side,
+            u - 0.3,
+            u + 0.3,
+            0.45,
+            0.85,
+            d + 0.12,
+            d + 0.68,
+            [0.07, 0.19, 0.05],
+        );
+        self.block(
+            side,
+            u - 0.18,
+            u + 0.18,
+            0.85,
+            1.05,
+            d + 0.25,
+            d + 0.55,
+            [0.09, 0.23, 0.06],
+        );
+    }
+
+    /// A lamp on a bracket, lit after dark.
+    fn lamp(&mut self, side: Side, u: f32, v: f32, d: f32) {
+        self.block(
+            side,
+            u - 0.04,
+            u + 0.04,
+            v + 0.15,
+            v + 0.22,
+            d,
+            d + 0.3,
+            [0.08, 0.08, 0.08],
+        );
+        self.mat = MAT_LAMP;
+        self.block(
+            side,
+            u - 0.1,
+            u + 0.1,
+            v - 0.12,
+            v + 0.15,
+            d + 0.2,
+            d + 0.4,
+            [0.3, 0.22, 0.12],
+        );
+        self.mat = MAT_MATT;
+        self.block(
+            side,
+            u - 0.13,
+            u + 0.13,
+            v + 0.15,
+            v + 0.2,
+            d + 0.17,
+            d + 0.43,
+            [0.08, 0.08, 0.08],
+        );
+    }
+
+    /// A bicycle leaning on a wall, centred at `u`.
+    fn bicycle(&mut self, side: Side, u: f32, d: f32) {
+        let tyre = [0.04, 0.04, 0.04];
+        let frame = [0.55, 0.08, 0.06];
+        let dd = d + 0.3;
+        let r = 0.34;
+        // Each wheel a ring of short strips, both faces.
+        for c in [u - 0.52, u + 0.52] {
+            for k in 0..14 {
+                let a0 = k as f32 / 14.0 * std::f32::consts::TAU;
+                let a1 = (k + 1) as f32 / 14.0 * std::f32::consts::TAU;
+                let ring = |a: f32, rr: f32| at(side, c + a.cos() * rr, r + a.sin() * rr, dd);
+                let (p0, p1) = (ring(a0, r), ring(a1, r));
+                let (q1, q0) = (ring(a1, r - 0.05), ring(a0, r - 0.05));
+                self.quad(p0, p1, q1, q0, tyre);
+                self.quad(p0, q0, q1, p1, tyre);
+            }
+        }
+        // The frame: tubes as strips between joints, both faces.
+        let joint = |x: f32, y: f32| (u + x, y);
+        let (rear, front) = (joint(-0.52, r), joint(0.52, r));
+        let (crank, seat, head) = (joint(-0.05, r), joint(-0.22, 0.85), joint(0.38, 0.88));
+        let tube = |m: &mut Mesh, a: (f32, f32), b: (f32, f32), w: f32, col: V3| {
+            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+            let l = (dx * dx + dy * dy).sqrt().max(1e-4);
+            let (nx, ny) = (-dy / l * w, dx / l * w);
+            let p = |x: f32, y: f32| at(side, x, y, dd + 0.01);
+            let (p0, p1) = (p(a.0 - nx, a.1 - ny), p(b.0 - nx, b.1 - ny));
+            let (p2, p3) = (p(b.0 + nx, b.1 + ny), p(a.0 + nx, a.1 + ny));
+            m.quad(p0, p1, p2, p3, col);
+            m.quad(p0, p3, p2, p1, col);
+        };
+        for (a, b) in [
+            (rear, crank),
+            (crank, seat),
+            (seat, rear),
+            (seat, head),
+            (crank, head),
+            (head, front),
+        ] {
+            tube(self, a, b, 0.025, frame);
+        }
+        // Saddle and handlebar.
+        tube(
+            self,
+            joint(-0.32, 0.9),
+            joint(-0.12, 0.9),
+            0.035,
+            [0.05, 0.05, 0.05],
+        );
+        tube(
+            self,
+            joint(0.38, 0.88),
+            joint(0.3, 1.02),
+            0.02,
+            [0.3, 0.3, 0.3],
+        );
+        tube(
+            self,
+            joint(0.22, 1.02),
+            joint(0.38, 1.02),
+            0.025,
+            [0.05, 0.05, 0.05],
+        );
     }
 
     /// Walls and a pitched roof: a box `len` by `dep` up to `wall`, gables
@@ -157,7 +371,7 @@ impl Mesh {
         let (hx, hz) = (len / 2.0, dep / 2.0);
         // A stone footing, then the walls.
         self.cuboid(
-            [-hx - 0.06, -0.6, -hz - 0.06],
+            [-hx - 0.06, -FOUNDATION, -hz - 0.06],
             [hx + 0.06, plinth, hz + 0.06],
             STONE,
         );
@@ -320,10 +534,21 @@ pub fn farmhouse() -> Mesh {
         false,
         Some(green),
     );
+    // Flowers under the front windows, a bench and pots by the door, a
+    // lamp beside it and a bicycle against the wall.
+    for (k, u) in [-5.0f32, -2.6, 2.6, 5.0].into_iter().enumerate() {
+        m.flower_box(Side::Front, u, 1.0, 1.02, d, k as u32);
+    }
+    m.bench(Side::Front, 1.75, d);
+    m.pot(Side::Front, -1.0, d);
+    m.pot(Side::Front, 3.75, d);
+    m.lamp(Side::Front, -0.95, 2.15, d);
+    m.bicycle(Side::Front, -3.8, d);
     m.chimney(3.0, -1.6, 4.5, 8.6);
     // A lean-to woodshed at the west end.
     let x0 = -len / 2.0;
-    m.cuboid([x0 - 3.0, -0.6, -3.0], [x0, 2.4, 2.6], TIMBER);
+    m.cuboid([x0 - 3.0, -FOUNDATION, -3.0], [x0, 0.3, 2.6], STONE);
+    m.cuboid([x0 - 3.0, 0.3, -3.0], [x0, 2.4, 2.6], TIMBER);
     let lean = tinted([1.0, 1.0, 1.0]);
     m.quad(
         [x0 - 3.3, 2.3, 2.9],
@@ -381,6 +606,17 @@ pub fn townhouse() -> Mesh {
             Some(shutters),
         );
     }
+    // Flowers under the upstairs windows and the two downstairs ones in
+    // front, pots by the door and a lamp beside it.
+    for (k, u) in [-3.9f32, -1.5, 1.5, 3.9].into_iter().enumerate() {
+        m.flower_box(Side::Front, u, 0.95, 3.82, d, k as u32 + 2);
+    }
+    for (k, u) in [-3.9f32, 3.9].into_iter().enumerate() {
+        m.flower_box(Side::Front, u, 0.95, 0.82, d, k as u32);
+    }
+    m.pot(Side::Front, -1.05, d);
+    m.pot(Side::Front, 1.05, d);
+    m.lamp(Side::Front, 1.0, 2.2, d);
     m.chimney(4.4, 0.0, 8.0, 11.4);
     m.chimney(-4.4, 0.0, 8.0, 11.4);
     m
@@ -468,7 +704,7 @@ pub fn shed() -> Mesh {
     let wood = [0.3, 0.22, 0.15];
     let dark = [0.2, 0.14, 0.09];
     m.cuboid(
-        [-hx - 0.05, -0.5, -hz - 0.05],
+        [-hx - 0.05, -FOUNDATION, -hz - 0.05],
         [hx + 0.05, 0.15, hz + 0.05],
         [0.25, 0.24, 0.22],
     );

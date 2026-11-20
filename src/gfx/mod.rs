@@ -2348,12 +2348,24 @@ impl GlState {
                 if dist > FAR_CULL || (small && dist > SMALL_CULL) {
                     continue;
                 }
-                let r = inst[5];
+                // How far it reaches: trees carry their height, buildings
+                // only a scale (they are modelled in metres, up to about
+                // 12 m from their middle).
+                let r = if BUILDINGS.contains(&kind) {
+                    12.0 * inst[4]
+                } else {
+                    inst[5]
+                };
                 let foot = [inst[0], inst[1], inst[2]];
                 if !in_view([inst[0], inst[1] + 0.5 * r, inst[2]], r) {
                     // Out of view, only its shadow can show: close by, and
                     // only if it falls into view.
-                    if dist > KEEP_AROUND || !shadow_in_view(foot, r * 1.15, inst[4].max(1.0)) {
+                    let wide = if BUILDINGS.contains(&kind) {
+                        r
+                    } else {
+                        inst[4].max(1.0)
+                    };
+                    if dist > KEEP_AROUND || !shadow_in_view(foot, r * 1.15, wide) {
                         continue;
                     }
                     // Trees cast it without being drawn in the view: the same
@@ -3334,7 +3346,10 @@ impl GlState {
                     self.draw_cards(gl, "sh_card", f.sun);
                     std::mem::swap(&mut self.cards, &mut self.shadow_cards);
                 }
+                // Back to the objects' own program (the far cascade used the
+                // cards'), standing still.
                 let p = self.programs.get_mut("sh_object").unwrap();
+                gl.use_program(Some(p.id));
                 p.f1(gl, "u_wind", 0.0);
                 self.draw_instanced(gl, &[OBJ_ROCK, OBJ_POST, OBJ_PLANK, OBJ_RIDER]);
                 self.draw_instanced(gl, &BUILDINGS);

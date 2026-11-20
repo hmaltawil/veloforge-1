@@ -559,6 +559,8 @@ let sceneryU = null;
 let sceneryForest = null;
 function showModel(k) {
   const v = ride.shaders;
+  // Buildings stand back from the road, as in the app.
+  MODEL_AT.set(2, 0, ROOFS[k] ? -22 : -7);
   const arr = modelVerts(v, k);
   const n = arr.length;
   if (modelMesh) { scene.remove(modelMesh); modelMesh.geometry.dispose(); modelMesh.material.dispose(); modelMesh = null; }

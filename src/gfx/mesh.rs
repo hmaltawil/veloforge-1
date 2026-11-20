@@ -1766,9 +1766,13 @@ mod tests {
             ("pine far", pine_far(), 120),
             ("broadleaf far", broadleaf_far(), 300),
             // Few, but drawn as they are all the way out.
-            ("farmhouse", super::super::buildings::farmhouse(), 1200),
-            ("two-storey house", super::super::buildings::townhouse(), 1200),
-            ("barn", super::super::buildings::barn(), 1200),
+            ("farmhouse", super::super::buildings::farmhouse(), 1600),
+            (
+                "two-storey house",
+                super::super::buildings::townhouse(),
+                1600,
+            ),
+            ("barn", super::super::buildings::barn(), 1600),
             ("shed", super::super::buildings::shed(), 400),
         ] {
             let tris = m.vertex_count() / 3;

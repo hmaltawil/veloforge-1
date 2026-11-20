@@ -110,16 +110,17 @@ pub struct Sample {
     pub water: bool,
 }
 
-/// A farm building placed by `farmsteads`.
+/// A farm building, or a tree in its garden, placed by `farmsteads`.
 struct Building {
     kind: usize,
     x: f64,
     z: f64,
-    /// Height of the ground where it stands.
+    /// The height it stands at.
     h: f64,
     rot: f32,
-    scale: f32,
-    roof: [f32; 3],
+    /// Its scale (across, up), and its tint (a building's roof colour).
+    scale: (f32, f32),
+    tint: [f32; 3],
     /// How far it reaches from its centre (metres).
     reach: f64,
 }
@@ -472,7 +473,7 @@ impl RouteGeo {
             } else {
                 (HOUSE, 10.5)
             };
-            let mut place = |kind, (x, z): (f64, f64), rot, scale, roof, reach: f64| {
+            let mut place = |kind, (x, z): (f64, f64), rot, scale: f32, roof, reach: f64| {
                 if x < x0 || x > x0 + size || z < z0 || z > z0 + size {
                     return;
                 }
@@ -480,15 +481,28 @@ impl RouteGeo {
                 if smp.water || smp.dist < 15.0 {
                     return;
                 }
+                // It stands at the top of its ground, its footing showing
+                // on the downhill side; not on ground too steep for that.
+                let reach = reach * scale as f64;
+                let (mut lo, mut hi) = (smp.h, smp.h);
+                for k in 0..8 {
+                    let a = k as f64 * std::f64::consts::FRAC_PI_4;
+                    let g = self.sample(x + a.cos() * reach * 0.75, z + a.sin() * reach * 0.75);
+                    lo = lo.min(g.h);
+                    hi = hi.max(g.h);
+                }
+                if hi - lo > 3.0 {
+                    return;
+                }
                 out.push(Building {
                     kind,
                     x,
                     z,
-                    h: smp.h,
+                    h: hi - 0.1,
                     rot,
-                    scale,
-                    roof,
-                    reach: reach * scale as f64,
+                    scale: (scale, scale),
+                    tint: roof,
+                    reach,
                 });
             };
             place(kind, at(0.0, 0.0), facing, scale, roof, reach);
@@ -523,6 +537,35 @@ impl RouteGeo {
                     roof,
                     3.5,
                 );
+            }
+            // A fruit tree or two in the front garden, between the house
+            // and the road.
+            let fruit = if rng.next() < 0.75 {
+                1 + usize::from(rng.next() < 0.45)
+            } else {
+                0
+            };
+            for _ in 0..fruit {
+                let (x, z) = at((rng.next() - 0.5) * 18.0, -(7.0 + 4.0 * rng.next()));
+                let height = (5.0 + 2.5 * rng.next()) as f32;
+                let rot = (rng.next() * std::f64::consts::TAU) as f32;
+                if x < x0 || x > x0 + size || z < z0 || z > z0 + size {
+                    continue;
+                }
+                let smp = self.sample(x, z);
+                if smp.water || smp.dist < 11.0 {
+                    continue;
+                }
+                out.push(Building {
+                    kind: BROADLEAF,
+                    x,
+                    z,
+                    h: smp.h - 0.2,
+                    rot,
+                    scale: (height * 0.95, height),
+                    tint: [1.0, 1.04, 0.9],
+                    reach: 3.0,
+                });
             }
         }
         out
@@ -645,15 +688,7 @@ impl RouteGeo {
         for b in &farms {
             let (rx, rz) = rel(b.x, b.z);
             out[b.kind].extend_from_slice(&[
-                rx,
-                b.h as f32 - 0.1,
-                rz,
-                b.rot,
-                b.scale,
-                b.scale,
-                b.roof[0],
-                b.roof[1],
-                b.roof[2],
+                rx, b.h as f32, rz, b.rot, b.scale.0, b.scale.1, b.tint[0], b.tint[1], b.tint[2],
             ]);
             shadows.extend_from_slice(&[rx, b.h as f32 + 0.08, rz, b.reach as f32 * 0.8]);
         }
@@ -859,7 +894,11 @@ mod tests {
             }
             assert!(farms.len() >= 3, "{}: {} buildings", r.id, farms.len());
             assert!(farms.iter().any(|b| b.kind == BARN), "{}", r.id);
-            for b in &farms {
+            // The buildings (not the trees in their gardens).
+            for b in farms
+                .iter()
+                .filter(|b| [HOUSE, TOWNHOUSE, BARN, SHED].contains(&b.kind))
+            {
                 let smp = g.sample(b.x, b.z);
                 assert!(
                     smp.dist >= 15.0 && !smp.water,
