@@ -18,6 +18,7 @@ mod protocol;
 mod remote;
 mod ride;
 mod route;
+mod routegen;
 mod segment;
 mod sound;
 mod store;

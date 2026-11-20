@@ -64,7 +64,7 @@ impl SettingsPage {
                 "Bring the rides you plan on intervals.icu into your calendar, and upload your \
                  rides there automatically."
             }
-            SettingsPage::Routes => "Routes you imported from GPX files.",
+            SettingsPage::Routes => "Random routes, and routes you imported from GPX files.",
             SettingsPage::Data => "Where your rides and settings are kept.",
         }
     }
@@ -984,6 +984,96 @@ impl App {
     }
 
     fn settings_routes(&mut self, ui: &mut egui::Ui) {
+        let mut make = false;
+        let mut forget = None;
+        let mut changed = false;
+        let units = self.store.settings.units;
+        card(ui, "Random routes", |ui| {
+            ui.label(
+                RichText::new(
+                    "A new loop of road each time, with its own bends, hills, farms and forest. Make one here or from the route menu on the Ride tab (+ New random route).",
+                )
+                .weak()
+                .size(12.5),
+            );
+            let r = &mut self.store.settings.random_route;
+            changed |= row(ui, "Scenery", "", |ui| {
+                let mut c = false;
+                egui::ComboBox::from_id_salt("random-scenery")
+                    .selected_text(r.scenery.label())
+                    .show_ui(ui, |ui| {
+                        for option in route::Scenery::ALL {
+                            c |= ui
+                                .selectable_value(&mut r.scenery, option, option.label())
+                                .changed();
+                        }
+                    });
+                c
+            });
+            changed |= row(ui, "Length", "", |ui| {
+                let mut km = r.km as f64;
+                let lo = *crate::routegen::KM_RANGE.start() as f64;
+                let hi = *crate::routegen::KM_RANGE.end() as f64;
+                let c = ui
+                    .add(
+                        egui::Slider::new(&mut km, lo..=hi)
+                            .step_by(1.0)
+                            .custom_formatter(|v, _| units.route_name(&format!("{v:.0} km"))),
+                    )
+                    .changed();
+                r.km = km.round() as u32;
+                c
+            });
+            changed |= row(
+                ui,
+                "Hills",
+                "Flat: under 2 %. Rolling: up to 5 %. Hilly: up to 8.5 %. Mountains: long climbs up to 10 %.",
+                |ui| {
+                    let mut c = false;
+                    ui.horizontal(|ui| {
+                        for h in crate::routegen::Hills::ALL {
+                            c |= ui.selectable_value(&mut r.hills, h, h.label()).changed();
+                        }
+                    });
+                    c
+                },
+            );
+            row(ui, "", "", |ui| {
+                if ui.button("Make a new route and ride it").clicked() {
+                    make = true;
+                }
+            });
+            if !self.store.random_routes.is_empty() {
+                ui.add_space(6.0);
+                ui.label(RichText::new("Made so far").strong());
+            }
+            for (i, spec) in self.store.random_routes.iter().enumerate() {
+                let id = spec.id();
+                let name = self
+                    .routes
+                    .iter()
+                    .find(|r| r.id == id)
+                    .map(|r| units.route_name(&r.name))
+                    .unwrap_or_default();
+                row(ui, &name, spec.scenery.label(), |ui| {
+                    if ui.small_button("Remove").clicked() {
+                        forget = Some(i);
+                    }
+                });
+            }
+        });
+        if changed {
+            self.mark_dirty();
+        }
+        if make {
+            self.new_random_route();
+            self.tab = super::Tab::Ride;
+        }
+        if let Some(i) = forget {
+            self.store.random_routes.remove(i);
+            self.rebuild_routes();
+            self.mark_dirty();
+        }
         let mut remove = None;
         let mut rebuild = false;
         card(ui, "Imported routes", |ui| {

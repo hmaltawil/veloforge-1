@@ -72,7 +72,7 @@ pub struct GpxRoute {
 }
 
 impl Route {
-    fn from_points(
+    pub(crate) fn from_points(
         id: &str,
         name: &str,
         scenery: Scenery,
@@ -198,7 +198,7 @@ impl Route {
 }
 
 /// Close a heading sequence into a loop and integrate positions.
-fn integrate_loop(
+pub(crate) fn integrate_loop(
     n: usize,
     curvature: impl Fn(f64) -> f64,
     ele: impl Fn(f64) -> f64,

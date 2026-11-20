@@ -478,11 +478,37 @@ impl App {
         self.routes = route::builtin();
         self.routes
             .extend(self.store.gpx_routes.iter().map(|g| g.to_route()));
+        self.routes
+            .extend(self.store.random_routes.iter().map(|r| r.route()));
         self.route_idx = self
             .routes
             .iter()
             .position(|r| r.id == self.store.settings.route_id)
             .unwrap_or(0);
+    }
+
+    /// Make a new random route from the choices in Settings, add it to the
+    /// routes and ride it next.
+    pub(crate) fn new_random_route(&mut self) {
+        let spec = crate::routegen::RandomRoute {
+            seed: crate::routegen::fresh_seed(),
+            ..self.store.settings.random_route.clone()
+        };
+        let id = spec.id();
+        self.store.random_routes.push(spec);
+        self.store.settings.route_id = id;
+        self.rebuild_routes();
+        // A ghost belongs to the route it was ridden on.
+        if matches!(self.ride.companion, Some(ride::Companion::Ghost(_))) {
+            self.ride.companion = None;
+        }
+        self.mark_dirty();
+        let name = self
+            .store
+            .settings
+            .units
+            .route_name(&self.routes[self.route_idx].name);
+        self.notify(format!("New route: {name}"));
     }
 
     fn library(&self) -> Vec<Workout> {
@@ -3089,6 +3115,7 @@ impl App {
                 }
                 let mut ri = self.route_idx;
                 let units = self.store.settings.units;
+                let mut random = false;
                 egui::ComboBox::from_id_salt("ride-route")
                     .width(160.0)
                     .selected_text(units.route_name(&self.routes[ri].name))
@@ -3096,7 +3123,22 @@ impl App {
                         for (i, r) in self.routes.iter().enumerate() {
                             ui.selectable_value(&mut ri, i, units.route_name(&r.name));
                         }
+                        ui.separator();
+                        let r = &self.store.settings.random_route;
+                        random = ui
+                            .selectable_label(false, "+ New random route")
+                            .on_hover_text(format!(
+                                "{}, {} km, {} (change these in Settings → Routes)",
+                                r.scenery.label(),
+                                r.km,
+                                r.hills.label().to_lowercase()
+                            ))
+                            .clicked();
                     });
+                if random {
+                    self.new_random_route();
+                    ri = self.route_idx;
+                }
                 if ri != self.route_idx {
                     self.route_idx = ri;
                     self.store.settings.route_id = self.routes[ri].id.clone();

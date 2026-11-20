@@ -13,7 +13,7 @@ A free, local indoor-cycling app for Linux, Windows and macOS: smart trainer con
 - **Training plans and a calendar**. VeloForge generates a periodized plan (FTP builder, aerobic base or maintenance) on the days you ride: three build weeks, then a recovery week. Missed a key workout? It offers to move it to your next free day. Tired? It suggests an easier ride instead.
 - **Heart-rate rides**: pick a target heart rate and VeloForge sets the trainer's power to hold it.
 - **Ride with someone**: a pacer at a power you choose, or a ghost of your own best ride on the same route. Tuck in close behind and you **draft**: up to a third less air to push, so you go faster and the trainer gets easier.
-- **3D world** rendered on your graphics card: farmland, lakes, snowy mountains, an island coast road and a hairpin climb, by day, at sunset or at night, in sun, cloud, fog or rain. Trees cast shadows across the road, grass and wild flowers bend in the wind, clouds drift and shade the hills, and the low sun glitters on the water. Your rider is sculpted as one body with a real bike fit: they pedal with natural ankle movement, breathe harder as the effort rises, stand up on steep climbs and tuck on fast descents. Watch from behind, close up, alongside or from above (press **C**). Every climb is a timed **segment**: VeloForge finds them on each route (imported ones too), shows your time and your best as you ride, cheers a new personal record, and keeps a table of your records. Import any `.gpx` file to ride a real route. A **dashboard** view shows the numbers instead (press **V**).
+- **3D world** rendered on your graphics card: farmland, lakes, snowy mountains, an island coast road and a hairpin climb, by day, at sunset or at night, in sun, cloud, fog or rain. Trees cast shadows across the road, grass and wild flowers bend in the wind, clouds drift and shade the hills, and the low sun glitters on the water. Your rider is sculpted as one body with a real bike fit: they pedal with natural ankle movement, breathe harder as the effort rises, stand up on steep climbs and tuck on fast descents. Watch from behind, close up, alongside or from above (press **C**). Every climb is a timed **segment**: VeloForge finds them on each route (imported ones too), shows your time and your best as you ride, cheers a new personal record, and keeps a table of your records. Make a **random route** whenever you like (choose the scenery, length and how hilly; each has its own bends, climbs and name), or import any `.gpx` file to ride a real route. A **dashboard** view shows the numbers instead (press **V**).
 - **Metric or imperial**: km/h, km, metres and kg, or mph, miles, feet and pounds, everywhere in the app.
 - **Phone remote**: your phone shows the live numbers, the interval, the climb and drafting, and starts, pauses, skips steps, changes the intensity, the view or the camera, over your home Wi-Fi.
 - **intervals.icu**: the rides you plan there appear in your calendar, and finished rides upload by themselves.
@@ -171,7 +171,7 @@ Everything stays on your computer in `~/.local/share/veloforge/` (on Windows: `%
 
 | File | Contents |
 |---|---|
-| `state.json` | settings, calendar, history, custom workouts, imported routes, FTP history, segment times |
+| `state.json` | settings, calendar, history, custom workouts, imported and random routes, FTP history, segment times |
 | `credentials.json` | your intervals.icu athlete ID and API key (readable only by you) |
 | `strava.json` | your Strava app's ID and secret and the access it was given (readable only by you) |
 | `activities/*.fit`, `*.tcx` | your rides |
@@ -200,6 +200,7 @@ VeloForge is written in Rust with [egui](https://github.com/emilk/egui) for the 
 | `src/remote.rs` | Phone remote: a small web server on the local network |
 | `src/update.rs` | The check for a newer version |
 | `src/route.rs` | Built-in routes (including the hairpin climb) and GPX import |
+| `src/routegen.rs` | Random routes: bends, hills and names from a seed |
 | `src/segment.rs` | Climbs found on each route, timing and personal records |
 | `src/activity.rs` | Reading saved rides back (ride details, crash recovery) |
 | `src/gfx/` | OpenGL 3D world: terrain generation, meshes, shaders, renderer (shadow maps, HDR, post-processing) |

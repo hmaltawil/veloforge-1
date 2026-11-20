@@ -70,6 +70,8 @@ pub struct Settings {
     pub remote_token: String,
     /// Ask GitHub at start-up whether a newer version has been released.
     pub check_updates: bool,
+    /// What the next random route is made of (its seed is new each time).
+    pub random_route: crate::routegen::RandomRoute,
 }
 
 /// What heart rate zones are worked out from.
@@ -131,6 +133,7 @@ impl Default for Settings {
             remote_port: crate::remote::DEFAULT_PORT,
             remote_token: String::new(),
             check_updates: true,
+            random_route: Default::default(),
         }
     }
 }
@@ -143,6 +146,8 @@ pub struct Store {
     pub history: Vec<Summary>,
     pub custom_workouts: Vec<Workout>,
     pub gpx_routes: Vec<GpxRoute>,
+    /// Random routes made, kept by what they were made from.
+    pub random_routes: Vec<crate::routegen::RandomRoute>,
     /// FTP over time, one entry per day it changed.
     pub ftp_history: Vec<crate::progress::FtpEntry>,
     /// Every timed ride of a route's segments.
