@@ -218,7 +218,13 @@ impl RouteGeo {
                 .iter()
                 .map(|b| {
                     let (sum, n) = yard[&b.farm];
-                    (b.x, b.z, sum / n, b.reach * 0.95)
+                    // Houses' yards reach past their front gardens.
+                    let level = if [HOUSE, TOWNHOUSE].contains(&b.kind) {
+                        b.reach + 6.0
+                    } else {
+                        b.reach + 1.0
+                    };
+                    (b.x, b.z, sum / n, level)
                 })
                 .collect();
             geo.farms = geo.farmsteads(everywhere.0, everywhere.1, everywhere.2);
@@ -483,7 +489,27 @@ impl RouteGeo {
                 });
             }
         }
-        let (instances, shadows) = self.scatter(ox, oz, x0, z0, size);
+        // The height of the ground as drawn (triangles between the grid's
+        // points), for standing things on it: between the points, on steep
+        // ground, it can be a metre or more from the land's own height.
+        let ground = |x: f64, z: f64| -> f64 {
+            let (u, v) = ((x - x0) / cell, (z - z0) / cell);
+            let (i, j) = (
+                u.floor().clamp(0.0, (n - 2) as f64),
+                v.floor().clamp(0.0, (n - 2) as f64),
+            );
+            let (fx, fz) = (u - i, v - j);
+            let h =
+                |di: usize, dj: usize| samples[(j as usize + 1 + dj) * m + i as usize + 1 + di].h;
+            let (ha, hb, hc, hd) = (h(0, 0), h(1, 0), h(0, 1), h(1, 1));
+            // Each cell is two triangles, split from (i+1, j) to (i, j+1).
+            if fx + fz <= 1.0 {
+                ha + (hb - ha) * fx + (hc - ha) * fz
+            } else {
+                hd + (hc - hd) * (1.0 - fx) + (hb - hd) * (1.0 - fz)
+            }
+        };
+        let (instances, shadows) = self.scatter(ox, oz, x0, z0, size, &ground);
         TerrainData {
             tiles,
             ox,
@@ -662,6 +688,7 @@ impl RouteGeo {
         x0: f64,
         z0: f64,
         size: f64,
+        ground: &dyn Fn(f64, f64) -> f64,
     ) -> ([Vec<f32>; KINDS], Vec<f32>) {
         let mut out: [Vec<f32>; KINDS] = Default::default();
         let mut shadows = Vec::new();
@@ -682,6 +709,7 @@ impl RouteGeo {
                 let x = (gi as f64 + rng.next()) * cell;
                 let z = (gj as f64 + rng.next()) * cell;
                 let smp = self.sample(x, z);
+                let gh = ground(x, z) as f32;
                 if smp.water || smp.dist < 9.5 {
                     continue;
                 }
@@ -710,7 +738,7 @@ impl RouteGeo {
                         let rot = rng.next() * std::f64::consts::TAU;
                         out[t.kind].extend_from_slice(&[
                             rx,
-                            smp.h as f32 - 0.2,
+                            gh - 0.2,
                             rz,
                             rot as f32,
                             width as f32,
@@ -719,12 +747,7 @@ impl RouteGeo {
                             tint * (1.0 + 0.08 * warm),
                             tint * (0.9 - 0.3 * warm),
                         ]);
-                        shadows.extend_from_slice(&[
-                            rx,
-                            smp.h as f32 + 0.08,
-                            rz,
-                            width as f32 * 0.5,
-                        ]);
+                        shadows.extend_from_slice(&[rx, gh + 0.08, rz, width as f32 * 0.5]);
                     }
                     Some(Cover::Bush) => {
                         let height = 1.2 + 1.8 * rng.next();
@@ -733,7 +756,7 @@ impl RouteGeo {
                         let rot = rng.next() * std::f64::consts::TAU;
                         out[BUSH].extend_from_slice(&[
                             rx,
-                            smp.h as f32 - 0.15,
+                            gh - 0.15,
                             rz,
                             rot as f32,
                             width as f32,
@@ -742,12 +765,7 @@ impl RouteGeo {
                             tint,
                             tint * 0.9,
                         ]);
-                        shadows.extend_from_slice(&[
-                            rx,
-                            smp.h as f32 + 0.08,
-                            rz,
-                            width as f32 * 0.55,
-                        ]);
+                        shadows.extend_from_slice(&[rx, gh + 0.08, rz, width as f32 * 0.55]);
                     }
                     Some(Cover::Rock) => {
                         let size = 1.0 + 3.5 * rng.next().powi(2);
@@ -755,7 +773,7 @@ impl RouteGeo {
                         let rot = rng.next() * std::f64::consts::TAU;
                         out[ROCK].extend_from_slice(&[
                             rx,
-                            smp.h as f32 - size as f32 * 0.25,
+                            gh - size as f32 * 0.25,
                             rz,
                             rot as f32,
                             size as f32,
@@ -771,10 +789,11 @@ impl RouteGeo {
         }
         for b in farms {
             let (rx, rz) = rel(b.x, b.z);
+            let gh = ground(b.x, b.z) as f32;
             out[b.kind].extend_from_slice(&[
                 rx, b.h as f32, rz, b.rot, b.scale.0, b.scale.1, b.tint[0], b.tint[1], b.tint[2],
             ]);
-            shadows.extend_from_slice(&[rx, b.h as f32 + 0.08, rz, b.reach as f32 * 0.8]);
+            shadows.extend_from_slice(&[rx, gh + 0.08, rz, b.reach as f32 * 0.8]);
         }
         (out, shadows)
     }
@@ -1027,6 +1046,53 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn things_stand_on_the_ground_as_drawn() {
+        // On the lake route, whose banks are steep: every tree's foot is
+        // on the drawn triangles, not floating over or sunk below them.
+        let r = route::builtin()
+            .into_iter()
+            .find(|r| r.id == "lakeside")
+            .unwrap();
+        let g = RouteGeo::new(&r);
+        let p = r.at(2500.0);
+        let w = g.build_window(p.x, p.z, WINDOW_SIZE, WINDOW_VERTS);
+        let n = WINDOW_VERTS;
+        let cell = (WINDOW_SIZE / (n - 1) as f64) as f32;
+        let half = (WINDOW_SIZE / 2.0) as f32;
+        let vert = |i: usize, j: usize| w.verts[(j * n + i) * TERRAIN_STRIDE + 1];
+        let mut checked = 0;
+        for kind in [PINE, BROADLEAF, BIRCH] {
+            for inst in w.instances[kind].chunks(INSTANCE_STRIDE) {
+                // Render space: x east, z = -north, from the window's corner.
+                let (u, v) = ((inst[0] + half) / cell, (-inst[2] + half) / cell);
+                let (i, j) = (u.floor() as usize, v.floor() as usize);
+                if i + 1 >= n || j + 1 >= n {
+                    continue;
+                }
+                let (fx, fz) = (u - i as f32, v - j as f32);
+                let (ha, hb, hc, hd) = (
+                    vert(i, j),
+                    vert(i + 1, j),
+                    vert(i, j + 1),
+                    vert(i + 1, j + 1),
+                );
+                let h = if fx + fz <= 1.0 {
+                    ha + (hb - ha) * fx + (hc - ha) * fz
+                } else {
+                    hd + (hc - hd) * (1.0 - fx) + (hb - hd) * (1.0 - fz)
+                };
+                assert!(
+                    (inst[1] + 0.2 - h).abs() < 0.02,
+                    "a tree {:.2} m off the ground",
+                    inst[1] + 0.2 - h
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 1000);
     }
 
     #[test]
