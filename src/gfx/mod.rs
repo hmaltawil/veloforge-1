@@ -932,9 +932,7 @@ impl GpuWorld {
             }
             k += 1;
         }
-        let mut km = ((d - 10.0) / 1000.0).ceil() as i64;
-        while (km as f64) * 1000.0 < d + 500.0 {
-            let ks = km as f64 * 1000.0;
+        for (ks, text) in route.banners(d - 10.0, d + 500.0) {
             let p = route.at(ks);
             for side in [-1.0, 1.0] {
                 let pos = rp(
@@ -969,14 +967,7 @@ impl GpuWorld {
                 0.16,
                 0.03,
             ]);
-            let lap_pos = ks.rem_euclid(route.length);
-            let text = if lap_pos < 1.0 || route.length - lap_pos < 1.0 {
-                "START · FINISH".to_string()
-            } else {
-                format!("{:.0} KM", lap_pos / 1000.0)
-            };
             labels.push((add(centre, [0.0, 0.58, 0.0]), text));
-            km += 1;
         }
 
         // --- fences along the fields -----------------------------------------

@@ -8,7 +8,7 @@
 //! near itself, nor bends too tightly. Its hills are waves too, scaled so
 //! no slope is steeper than the hilliness allows.
 
-use crate::route::{integrate_loop, Route, Scenery, STEP};
+use crate::route::{integrate_loop, Route, RoutePt, Scenery, Shape, STEP};
 use serde::{Deserialize, Serialize};
 use std::f64::consts::TAU;
 
@@ -62,6 +62,9 @@ pub struct RandomRoute {
     pub scenery: Scenery,
     pub km: u32,
     pub hills: Hills,
+    /// A loop, or from one place to another.
+    #[serde(default)]
+    pub shape: Shape,
 }
 
 impl Default for RandomRoute {
@@ -71,6 +74,7 @@ impl Default for RandomRoute {
             scenery: Scenery::Hills,
             km: 20,
             hills: Hills::Rolling,
+            shape: Shape::Loop,
         }
     }
 }
@@ -151,19 +155,34 @@ impl RandomRoute {
         // for a hillside between, not a cliff.
         let mut found = None;
         const TRIES: usize = 120;
+        let looped = self.shape == Shape::Loop;
+        // Point to point, the road climbs (or drops) as a whole: to a summit
+        // in the mountains.
+        let net = (!looped).then(|| {
+            let climb = self.hills.climb_per_km() * km;
+            match self.hills {
+                Hills::Mountains => 0.55 * climb,
+                Hills::Hilly => 0.25 * climb,
+                _ => climb * 0.15 * (rng.next() * 2.0 - 1.0),
+            }
+        });
         for k in 0..TRIES {
             // Gentler with every try that fails.
             let calm = 1.0 - 0.65 * k as f64 / TRIES as f64;
-            let t = turns(&mut rng, km, self.scenery, n, calm);
-            let p = integrate_loop(n, |u| t[((u * n as f64) as usize).min(n - 1)], |_| 0.0);
+            let t = turns(&mut rng, km, self.scenery, n, calm, looped);
+            let p = if looped {
+                integrate_loop(n, |u| t[((u * n as f64) as usize).min(n - 1)], |_| 0.0)
+            } else {
+                integrate_open(&t, 0.0, 0.0, 0.0, 0.0)
+            };
             // Checked with the headings the route will have.
             let r = Route::from_points("", "", self.scenery, 0, p);
-            if !keeps_clear(r.points()) {
+            if !keeps_clear(r.points(), looped, 0) {
                 continue;
             }
             for _ in 0..6 {
-                let eles = heights(&mut rng, km, self.hills, n);
-                if gentle_between(r.points(), &eles) {
+                let eles = heights(&mut rng, km, self.hills, n, net);
+                if gentle_between(r.points(), &eles, looped, 0) {
                     found = Some((r.points().to_vec(), eles));
                     break;
                 }
@@ -172,9 +191,15 @@ impl RandomRoute {
                 break;
             }
         }
-        // A plain round loop, flat, never fails.
-        let (mut pts, eles) =
-            found.unwrap_or_else(|| (integrate_loop(n, |_| 1.0, |_| 0.0), vec![0.0; n + 1]));
+        // A plain round loop or straight road, flat, never fails.
+        let (mut pts, eles) = found.unwrap_or_else(|| {
+            let p = if looped {
+                integrate_loop(n, |_| 1.0, |_| 0.0)
+            } else {
+                integrate_open(&vec![0.0; n], 0.0, 0.0, 0.0, 0.0)
+            };
+            (p, vec![0.0; n + 1])
+        });
         let base = match self.scenery {
             Scenery::Hills => 110.0,
             Scenery::Lake => 40.0,
@@ -184,10 +209,23 @@ impl RandomRoute {
         for (p, e) in pts.iter_mut().zip(&eles) {
             p.ele = base + e;
         }
-        let mut route = Route::from_points(&self.id(), "", self.scenery, self.seed % 997, pts);
+        let mut route = if looped {
+            Route::from_points(&self.id(), "", self.scenery, self.seed % 997, pts)
+        } else {
+            let course = Route::from_points("", "", self.scenery, 0, pts);
+            let beyond = beyond(course.points(), self.scenery, self.seed % 997);
+            Route::point_to_point(
+                &self.id(),
+                "",
+                self.scenery,
+                self.seed % 997,
+                course.points().to_vec(),
+                beyond,
+            )
+        };
         route.name = format!(
             "{} · {:.0} km, {:.0} m climb",
-            name(&mut Rng(name_rng_seed), self.scenery),
+            name(&mut Rng(name_rng_seed), self.scenery, looped),
             route.length / 1000.0,
             route.ascent
         );
@@ -201,8 +239,11 @@ impl RandomRoute {
 /// radius, give the road its character. Bends to the left and right
 /// balance out; mountain and coast roads have more and tighter ones.
 /// `calm` (0..1) scales how much the lobes and bends turn.
-fn turns(rng: &mut Rng, km: f64, scenery: Scenery, n: usize, calm: f64) -> Vec<f64> {
+/// Point to point (not `looped`), the bends still balance out, but there is
+/// no one turn round in all: the road ends heading much as it began.
+fn turns(rng: &mut Rng, km: f64, scenery: Scenery, n: usize, calm: f64, looped: bool) -> Vec<f64> {
     let step_turn = TAU / n as f64;
+    let (base, whole) = if looped { (1.0, TAU) } else { (0.0, 0.0) };
     let lobes: Vec<Wave> = (0..2)
         .map(|k| Wave {
             times: if k == 0 {
@@ -218,7 +259,7 @@ fn turns(rng: &mut Rng, km: f64, scenery: Scenery, n: usize, calm: f64) -> Vec<f
     let mut t: Vec<f64> = (0..n)
         .map(|i| {
             let u = i as f64 / n as f64;
-            step_turn * (1.0 + lobes.iter().map(|w| w.at(u)).sum::<f64>())
+            step_turn * (base + lobes.iter().map(|w| w.at(u)).sum::<f64>())
         })
         .collect();
     let (per_km, angles, radii) = match scenery {
@@ -246,20 +287,25 @@ fn turns(rng: &mut Rng, km: f64, scenery: Scenery, n: usize, calm: f64) -> Vec<f
                 way * angle * STEP / (sigma * (TAU).sqrt()) * (-0.5 * (d / sigma).powi(2)).exp();
         }
     }
-    let mean = (t.iter().sum::<f64>() - TAU) / n as f64;
+    let mean = (t.iter().sum::<f64>() - whole) / n as f64;
     for v in t.iter_mut() {
         *v -= mean;
     }
     t
 }
 
-/// Whether a loop keeps clear of itself (no two stretches far apart along
-/// it come close) and bends no tighter than `TIGHTEST`.
-fn keeps_clear(pts: &[crate::route::RoutePt]) -> bool {
+/// Whether a road keeps clear of itself (no two stretches far apart along
+/// it come close) and bends no tighter than `TIGHTEST`: round a loop if
+/// `looped`, else from end to end. Only stretches from point `from` on are
+/// held to it (a road added to one that is as it is).
+fn keeps_clear(pts: &[RoutePt], looped: bool, from: usize) -> bool {
     let n = pts.len() - 1;
     // Bends, over 20 m.
     let k = 4;
-    for i in 0..n {
+    for i in from..n {
+        if !looped && i + k > n {
+            break;
+        }
         let a = pts[i];
         let b = pts[(i + k) % n];
         let mut turn = (b.heading - a.heading).rem_euclid(TAU);
@@ -284,7 +330,11 @@ fn keeps_clear(pts: &[crate::route::RoutePt]) -> bool {
     }
     let along = |i: usize, j: usize| {
         let d = i.abs_diff(j) as f64 * STEP;
-        d.min(n as f64 * STEP - d)
+        if looped {
+            d.min(n as f64 * STEP - d)
+        } else {
+            d
+        }
     };
     for i in (0..n).step_by(step) {
         let (cx, cz) = (
@@ -294,7 +344,8 @@ fn keeps_clear(pts: &[crate::route::RoutePt]) -> bool {
         for dx in -1..=1 {
             for dz in -1..=1 {
                 for &j in grid.get(&(cx + dx, cz + dz)).into_iter().flatten() {
-                    if along(i, j) > APART_ALONG
+                    if (i >= from || j >= from)
+                        && along(i, j) > APART_ALONG
                         && (pts[i].x - pts[j].x).hypot(pts[i].z - pts[j].z) < APART
                     {
                         return false;
@@ -309,7 +360,7 @@ fn keeps_clear(pts: &[crate::route::RoutePt]) -> bool {
 /// Whether, wherever the road passes within `NEAR_ENOUGH` of another stretch
 /// of itself (far from it along the road), the two differ in height little
 /// enough for the land between to be a hillside rather than a cliff.
-fn gentle_between(pts: &[crate::route::RoutePt], eles: &[f64]) -> bool {
+fn gentle_between(pts: &[RoutePt], eles: &[f64], looped: bool, from: usize) -> bool {
     const NEAR_ENOUGH: f64 = 600.0;
     // The steepest the land between may average.
     const SLOPE: f64 = 0.28;
@@ -334,9 +385,13 @@ fn gentle_between(pts: &[crate::route::RoutePt], eles: &[f64]) -> bool {
                 for &j in grid.get(&(cx + dx, cz + dz)).into_iter().flatten() {
                     let along = {
                         let d = i.abs_diff(j) as f64 * STEP;
-                        d.min(n as f64 * STEP - d)
+                        if looped {
+                            d.min(n as f64 * STEP - d)
+                        } else {
+                            d
+                        }
                     };
-                    if along < APART_ALONG {
+                    if along < APART_ALONG || (i < from && j < from) {
                         continue;
                     }
                     let d = (pts[i].x - pts[j].x).hypot(pts[i].z - pts[j].z);
@@ -354,7 +409,11 @@ fn gentle_between(pts: &[crate::route::RoutePt], eles: &[f64]) -> bool {
 /// Heights along a loop of `n` steps (metres above its lowest point): a
 /// long climb or two in the mountains, waves of hills elsewhere, scaled to
 /// the climbing aimed at and then held under the steepest slope allowed.
-fn heights(rng: &mut Rng, km: f64, hills: Hills, n: usize) -> Vec<f64> {
+///
+/// A loop (`net` None) ends where it began; otherwise the road ends `net`
+/// metres higher (or lower) than it starts.
+fn heights(rng: &mut Rng, km: f64, hills: Hills, n: usize, net: Option<f64>) -> Vec<f64> {
+    let target = net.unwrap_or(0.0);
     // Hills of every size, the longer ones higher, as land is: waves from
     // the whole loop's length down to about 600 m.
     let mut waves = Vec::new();
@@ -406,7 +465,7 @@ fn heights(rng: &mut Rng, km: f64, hills: Hills, n: usize) -> Vec<f64> {
         for r in rise.iter_mut() {
             *r = r.clamp(-limit, limit);
         }
-        let left: f64 = rise.iter().sum();
+        let left: f64 = rise.iter().sum::<f64>() - target;
         let free = rise.iter().filter(|r| r.abs() < limit).count();
         if left.abs() < 1e-6 || free == 0 {
             break;
@@ -425,27 +484,97 @@ fn heights(rng: &mut Rng, km: f64, hills: Hills, n: usize) -> Vec<f64> {
     }
     // Close any last gap, then smooth over about 60 m (round the loop) so
     // the slope changes gently.
-    let gap = h[n] - h[0];
+    let gap = h[n] - h[0] - target;
     for (i, v) in h.iter_mut().enumerate() {
         *v -= gap * i as f64 / n as f64;
     }
     let span = 6i64;
-    let smooth: Vec<f64> = (0..n)
-        .map(|i| {
-            (-span..=span)
-                .map(|j| h[(i as i64 + j).rem_euclid(n as i64) as usize])
-                .sum::<f64>()
-                / (2 * span + 1) as f64
-        })
+    let at = |i: i64| -> f64 {
+        if net.is_none() {
+            h[i.rem_euclid(n as i64) as usize]
+        } else {
+            h[i.clamp(0, n as i64) as usize]
+        }
+    };
+    let ends = if net.is_none() { n } else { n + 1 };
+    let smooth: Vec<f64> = (0..ends)
+        .map(|i| (-span..=span).map(|j| at(i as i64 + j)).sum::<f64>() / (2 * span + 1) as f64)
         .collect();
     let lowest = smooth.iter().cloned().fold(f64::MAX, f64::min);
     let mut out: Vec<f64> = smooth.iter().map(|v| v - lowest).collect();
-    out.push(out[0]);
+    if net.is_none() {
+        out.push(out[0]);
+    }
     out
 }
 
+/// A road from (`x`, `z`) heading `heading` (from north), turning by `t`
+/// radians at each step: its points, `STEP` apart, at height `ele`.
+fn integrate_open(t: &[f64], x: f64, z: f64, heading: f64, ele: f64) -> Vec<RoutePt> {
+    let mut pts = Vec::with_capacity(t.len() + 1);
+    let (mut x, mut z, mut heading) = (x, z, heading);
+    pts.push(RoutePt { x, z, ele, heading });
+    for &turn in t {
+        let mid = heading + turn / 2.0;
+        x += mid.sin() * STEP;
+        z += mid.cos() * STEP;
+        heading += turn;
+        pts.push(RoutePt { x, z, ele, heading });
+    }
+    pts
+}
+
+/// How far the road beyond a point-to-point route's finish runs: long
+/// enough for any workout still going.
+pub const BEYOND_KM: f64 = 40.0;
+
+/// The road beyond the finish of a point-to-point `course`: carrying on from
+/// its last point the way it was heading, bending like the scenery's roads,
+/// easing down off a climb and then rolling gently, keeping clear of the
+/// course (and of a cliff's height away from it). Its points follow the
+/// course's last, `STEP` apart.
+pub fn beyond(course: &[RoutePt], scenery: Scenery, seed: u64) -> Vec<RoutePt> {
+    let n = (BEYOND_KM * 1000.0 / STEP) as usize;
+    let end = course[course.len() - 1];
+    let before = course[course.len().saturating_sub(3)];
+    let heading = (end.x - before.x).atan2(end.z - before.z);
+    let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xB0_7D);
+    let from = course.len();
+    let make = |rng: &mut Rng, calm: f64| -> Vec<RoutePt> {
+        let mut t = turns(rng, BEYOND_KM, scenery, n, calm, false);
+        // Straight on for the first few hundred metres, past the finish.
+        for (i, v) in t.iter_mut().enumerate().take(80) {
+            *v *= i as f64 / 80.0;
+        }
+        let rolling = heights(rng, BEYOND_KM, Hills::Rolling, n, Some(0.0));
+        let mut pts = integrate_open(&t, end.x, end.z, heading, end.ele);
+        for (i, p) in pts.iter_mut().enumerate() {
+            let d = i as f64 * STEP;
+            // Down 2 % for the first 1.5 km, then rolling, easing in.
+            let ease = (d / 1500.0).min(1.0);
+            p.ele = end.ele - 0.02 * d.min(1500.0) + (rolling[i] - rolling[0]) * ease * 0.4;
+        }
+        pts
+    };
+    for k in 0..60 {
+        let calm = 1.0 - 0.7 * k as f64 / 60.0;
+        let road = make(&mut rng, calm);
+        let mut all: Vec<RoutePt> = course.to_vec();
+        all.extend_from_slice(&road[1..]);
+        let all = Route::from_points("", "", scenery, 0, all);
+        let eles: Vec<f64> = all.points().iter().map(|p| p.ele).collect();
+        if keeps_clear(all.points(), false, from)
+            && gentle_between(all.points(), &eles, false, from)
+        {
+            return road[1..].to_vec();
+        }
+    }
+    // Straight on, gently down then level.
+    make(&mut Rng(seed), 0.0)[1..].to_vec()
+}
+
 /// A name for a route, from words that suit its scenery.
-fn name(rng: &mut Rng, scenery: Scenery) -> String {
+fn name(rng: &mut Rng, scenery: Scenery, looped: bool) -> String {
     let (first, second): (&[&str], &[&str]) = match scenery {
         Scenery::Hills => (
             &[
@@ -490,7 +619,9 @@ fn name(rng: &mut Rng, scenery: Scenery) -> String {
         b = rng.pick(second);
     }
     // "Granite Pass Loop", not "Granite Pass Round".
-    let kind = if b.starts_with(' ') {
+    let kind = if !looped {
+        rng.pick(&["Road", "Way", "Run"])
+    } else if b.starts_with(' ') {
         rng.pick(&["Loop", "Circuit"])
     } else {
         rng.pick(&["Loop", "Circuit", "Round"])
@@ -508,6 +639,7 @@ mod tests {
             scenery,
             km,
             hills,
+            shape: Shape::Loop,
         }
     }
 
@@ -538,10 +670,13 @@ mod tests {
                 let r = spec(seed, scenery, km, Hills::Hilly).route();
                 assert!(r.is_loop(), "{seed} {scenery:?}");
                 assert!((r.length / 1000.0 - km as f64).abs() < 0.1);
-                assert!(keeps_clear(r.points()), "{seed} {scenery:?} {km} km");
+                assert!(
+                    keeps_clear(r.points(), true, 0),
+                    "{seed} {scenery:?} {km} km"
+                );
                 let eles: Vec<f64> = r.points().iter().map(|p| p.ele).collect();
                 assert!(
-                    gentle_between(r.points(), &eles),
+                    gentle_between(r.points(), &eles, true, 0),
                     "{seed} {scenery:?} {km} km: a cliff"
                 );
                 // Never the plain round loop kept for when every try fails.
@@ -554,6 +689,58 @@ mod tests {
                     })
                     .sum();
                 assert!(turning > 1.2 * TAU, "{seed} {scenery:?} {km} km: too round");
+            }
+        }
+    }
+
+    #[test]
+    fn point_to_point_routes_finish_away_from_the_start_and_carry_on() {
+        for seed in 0..25u64 {
+            for (scenery, km, hills) in [
+                (Scenery::Alpine, 14, Hills::Mountains),
+                (Scenery::Hills, 30, Hills::Rolling),
+                (Scenery::Coast, 20, Hills::Hilly),
+            ] {
+                let r = RandomRoute {
+                    shape: Shape::PointToPoint,
+                    ..spec(seed, scenery, km, hills)
+                }
+                .route();
+                let what = format!("{seed} {scenery:?} {km} km");
+                assert_eq!(r.shape(), Shape::PointToPoint);
+                assert!(!r.is_loop(), "{what}");
+                assert!((r.length / 1000.0 - km as f64).abs() < 0.1, "{what}");
+                // The road beyond: long enough for any workout, joined on.
+                assert!(r.span() >= r.length + BEYOND_KM * 1000.0 - STEP, "{what}");
+                let (f, a) = (r.at(r.length), r.at(r.length + STEP));
+                assert!((a.x - f.x).hypot(a.z - f.z) < STEP * 1.01, "{what}");
+                // Lookups do not wrap back to the start.
+                let past = r.at(r.span() + 500.0);
+                let last = r.points()[r.points().len() - 1];
+                assert!(past.x == last.x && past.z == last.z, "{what}");
+                let s = r.at(0.0);
+                let fin = r.at(r.length);
+                assert!(
+                    (s.x - fin.x).hypot(s.z - fin.z) > 500.0,
+                    "{what}: ends together"
+                );
+                let eles: Vec<f64> = r.points().iter().map(|p| p.ele).collect();
+                assert!(keeps_clear(r.points(), false, 0), "{what}");
+                assert!(
+                    gentle_between(r.points(), &eles, false, 0),
+                    "{what}: a cliff"
+                );
+                if hills == Hills::Mountains {
+                    assert!(
+                        fin.ele - s.ele > 0.3 * 30.0 * km as f64,
+                        "{what}: no summit"
+                    );
+                }
+                // Easing off past the finish: no climb steeper than 6 %.
+                for k in 0..200 {
+                    let d = r.length + 30.0 + k as f64 * 100.0;
+                    assert!(r.grade(d).abs() < 6.5, "{what}: {:.1}% at {d}", r.grade(d));
+                }
             }
         }
     }
@@ -591,7 +778,7 @@ mod tests {
         assert!(r.id.starts_with("random-"));
         for seed in 0..300 {
             for scenery in Scenery::ALL {
-                let n = name(&mut Rng(seed), scenery);
+                let n = name(&mut Rng(seed), scenery, true);
                 let lower = n.to_lowercase();
                 let doubled = lower
                     .as_bytes()
@@ -630,6 +817,7 @@ mod look {
                     scenery,
                     km,
                     hills,
+                    shape: Shape::Loop,
                 }
                 .route();
                 let ms = t.elapsed().as_millis();

@@ -200,11 +200,14 @@ pub fn elevation_profile(
     );
     let samples = (plot.width() / 2.5).clamp(60.0, 600.0) as usize;
     let prof = route.profile(samples);
-    let (lo, hi) = route.min_max_ele();
+    // The course's own heights (not those of the road beyond a finish).
+    let (lo, hi) = prof.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| {
+        (lo.min(p.1), hi.max(p.1))
+    });
     let span = (hi - lo).max(30.0);
     let x = |dist: f64| plot.left() + (dist / route.length) as f32 * plot.width();
     let y = |e: f64| plot.bottom() - 3.0 - ((e - lo) / span) as f32 * (plot.height() - 5.0);
-    let here = d.map(|d| d.rem_euclid(route.length));
+    let here = d.map(|d| route.along(d).min(route.length));
     let mut mesh = Mesh::default();
     let mut crest = Vec::with_capacity(prof.len());
     // Gradient over a few samples, so single bumps do not flicker in colour.
@@ -244,15 +247,16 @@ pub fn elevation_profile(
         crate::theme::medium(11.5),
         Color32::from_white_alpha(225),
     );
+    let per = if route.is_loop() { " per lap" } else { "" };
     let stats = match here {
         Some(h) => format!(
-            "{:.1} of {}  ·  {} climbing per lap",
+            "{:.1} of {}  ·  {} climbing{per}",
             units.distance(h),
             units.fmt_distance(route.length, 1),
             units.fmt_height(route.ascent)
         ),
         None => format!(
-            "{}  ·  {} climbing per lap",
+            "{}  ·  {} climbing{per}",
             units.fmt_distance(route.length, 1),
             units.fmt_height(route.ascent)
         ),

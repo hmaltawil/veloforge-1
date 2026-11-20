@@ -600,7 +600,7 @@ impl Ride {
                 };
                 let ele = route.at(self.route_pos()).ele;
                 if let Some(prev) = self.last_ele {
-                    // Ignore the jump when a point-to-point route wraps to its start.
+                    // Ignore any jump (a route changed mid-ride).
                     let climb = ele - prev;
                     if climb > 0.0 && climb < 5.0 && !flat {
                         self.ascent += climb;
@@ -1036,8 +1036,8 @@ mod tests {
     }
 
     #[test]
-    fn wrapping_point_to_point_route_does_not_add_fake_climbing() {
-        // A 1.1 km climb of ~55 m; riding past the end wraps to the bottom.
+    fn riding_past_a_point_to_point_finish_carries_on_down_the_road() {
+        // A 1.1 km climb of ~55 m; past its top the road beyond eases down.
         let mut xml = String::from("<gpx><trk><trkseg>");
         for i in 0..100 {
             xml += &format!(
@@ -1056,13 +1056,16 @@ mod tests {
             hr: None,
             speed_kmh: Some(36.0),
         };
-        // 36 km/h for 200 s = 2 km, i.e. almost two laps of the climb.
+        assert_eq!(r.shape(), route::Shape::PointToPoint);
+        // 36 km/h for 200 s = 2 km, well past the top.
         for _ in 0..2000 {
             ride.update(0.1, live, &r, phys(), 250.0, 0.5, true);
         }
         assert!(ride.distance > r.length * 1.5);
-        assert!(ride.ascent < 2.0 * 60.0, "{}", ride.ascent);
-        assert!(ride.ascent > 60.0, "{}", ride.ascent);
+        // The climb once, not again from the bottom.
+        assert!(ride.ascent > 45.0 && ride.ascent < 60.0, "{}", ride.ascent);
+        let top = r.at(r.length).ele;
+        assert!(r.at(ride.route_pos()).ele < top, "past the top, lower down");
     }
 
     #[test]

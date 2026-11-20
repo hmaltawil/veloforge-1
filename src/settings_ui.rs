@@ -1026,6 +1026,22 @@ impl App {
             });
             changed |= row(
                 ui,
+                "Shape",
+                "A loop is ridden lap after lap. Point to point finishes somewhere else; the road carries on past the finish if your workout is still going.",
+                |ui| {
+                    let mut c = false;
+                    ui.horizontal(|ui| {
+                        for shape in route::Shape::ALL {
+                            c |= ui
+                                .selectable_value(&mut r.shape, shape, shape.label())
+                                .changed();
+                        }
+                    });
+                    c
+                },
+            );
+            changed |= row(
+                ui,
                 "Hills",
                 "Flat: under 2 %. Rolling: up to 5 %. Hilly: up to 8.5 %. Mountains: long climbs up to 10 %.",
                 |ui| {
@@ -1088,7 +1104,8 @@ impl App {
                 ui.label(RichText::new("No imported routes yet.").italics());
             }
             for (i, g) in self.store.gpx_routes.iter_mut().enumerate() {
-                row(ui, &g.name, "", |ui| {
+                let name = g.name.clone();
+                row(ui, &name, "", |ui| {
                     ui.horizontal(|ui| {
                         let mut sc = g.scenery.unwrap_or(route::Scenery::Hills);
                         egui::ComboBox::from_id_salt(("scenery", i))
@@ -1102,6 +1119,18 @@ impl App {
                             && !(g.scenery.is_none() && sc == route::Scenery::Hills)
                         {
                             g.scenery = Some(sc);
+                            rebuild = true;
+                        }
+                        let mut shape = g.shape();
+                        egui::ComboBox::from_id_salt(("shape", i))
+                            .selected_text(shape.label())
+                            .show_ui(ui, |ui| {
+                                for option in route::Shape::ALL {
+                                    ui.selectable_value(&mut shape, option, option.label());
+                                }
+                            });
+                        if shape != g.shape() {
+                            g.shape = Some(shape);
                             rebuild = true;
                         }
                         if ui.small_button("Remove").clicked() {

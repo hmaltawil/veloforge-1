@@ -889,16 +889,7 @@ impl World {
                     }
                 }
             }
-            let km_lo = (s_near / 1000.0).ceil() as i64;
-            let km_hi = ((s_far - 1e-6) / 1000.0).floor() as i64;
-            for km in km_lo..=km_hi {
-                let ks = km as f64 * 1000.0;
-                let lap_pos = ks.rem_euclid(route.length);
-                let label = if lap_pos < 1.0 || route.length - lap_pos < 1.0 {
-                    "START · FINISH".to_string()
-                } else {
-                    format!("{:.0} KM", lap_pos / 1000.0)
-                };
+            for (ks, label) in route.banners(s_near, s_far) {
                 self.banner(
                     &mut cv,
                     &cam,

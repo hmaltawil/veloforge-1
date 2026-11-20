@@ -134,7 +134,8 @@ pub fn for_route(route: &Route) -> Vec<Segment> {
         },
         kind: Kind::Lap,
         start: START_LINE,
-        end: START_LINE,
+        // Point to point, the whole route ends at the finish.
+        end: if route.is_loop() { START_LINE } else { len },
         length: len,
         grade: 0.0,
     });

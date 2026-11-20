@@ -40,6 +40,27 @@ impl Scenery {
     }
 }
 
+/// Whether a route comes back to where it starts (ridden in laps) or runs
+/// from one place to another (it finishes there, and a road carries on
+/// beyond the finish for whoever is still riding).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Shape {
+    #[default]
+    Loop,
+    PointToPoint,
+}
+
+impl Shape {
+    pub const ALL: [Shape; 2] = [Shape::Loop, Shape::PointToPoint];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Shape::Loop => "Loop",
+            Shape::PointToPoint => "Point to point",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RoutePt {
     pub x: f64,
@@ -54,9 +75,14 @@ pub struct Route {
     pub name: String,
     pub scenery: Scenery,
     pub seed: u64,
+    /// The course's points, and for a point-to-point route the road beyond
+    /// its finish after them.
     pts: Vec<RoutePt>,
+    /// The course: a lap of a loop, or start to finish.
     pub length: f64,
     pub ascent: f64,
+    /// Point to point: the course finishes at `length` and the road goes on.
+    open: bool,
 }
 
 /// Points stored for user-imported routes.
@@ -69,6 +95,9 @@ pub struct GpxRoute {
     /// Chosen scenery (hills if unset).
     #[serde(default)]
     pub scenery: Option<Scenery>,
+    /// Loop or point to point (worked out from its ends if unset).
+    #[serde(default)]
+    pub shape: Option<Shape>,
 }
 
 impl Route {
@@ -101,7 +130,102 @@ impl Route {
             pts,
             length,
             ascent,
+            open: false,
         }
+    }
+
+    /// A point-to-point route: the `course` (its first point the start, its
+    /// last the finish), then the road `beyond` it (points after the
+    /// finish, `STEP` apart).
+    pub(crate) fn point_to_point(
+        id: &str,
+        name: &str,
+        scenery: Scenery,
+        seed: u64,
+        course: Vec<RoutePt>,
+        beyond: Vec<RoutePt>,
+    ) -> Route {
+        let finish = (course.len() - 1) as f64 * STEP;
+        let ascent = course
+            .windows(2)
+            .map(|w| (w[1].ele - w[0].ele).max(0.0))
+            .sum();
+        let mut pts = course;
+        pts.extend(beyond);
+        let mut r = Route::from_points(id, name, scenery, seed, pts);
+        r.length = finish;
+        r.ascent = ascent;
+        r.open = true;
+        r
+    }
+
+    pub fn shape(&self) -> Shape {
+        if self.open {
+            Shape::PointToPoint
+        } else {
+            Shape::Loop
+        }
+    }
+
+    /// How far the road runs: the lap of a loop, or for a point-to-point
+    /// route its course and the road beyond the finish.
+    pub fn span(&self) -> f64 {
+        (self.pts.len() - 1) as f64 * STEP
+    }
+
+    /// Where `d` (distance ridden from the start) is on the course: within
+    /// the lap of a loop; on a point-to-point route `d` itself, past
+    /// `length` once beyond the finish.
+    pub fn along(&self, d: f64) -> f64 {
+        if self.open {
+            d.max(0.0)
+        } else {
+            d.rem_euclid(self.length)
+        }
+    }
+
+    /// The banners over the road from `from` to `to` (distance ridden):
+    /// where each stands and what it says. A loop has one every kilometre
+    /// and START · FINISH on its line; a point-to-point route has START,
+    /// one every kilometre and FINISH, and none beyond.
+    pub fn banners(&self, from: f64, to: f64) -> Vec<(f64, String)> {
+        let mut out = Vec::new();
+        let mut km = (from / 1000.0)
+            .ceil()
+            .max(if self.open { 0.0 } else { f64::MIN }) as i64;
+        while (km as f64) * 1000.0 < to {
+            let ks = km as f64 * 1000.0;
+            km += 1;
+            if self.open {
+                if ks > self.length - 150.0 {
+                    break;
+                }
+                let text = if km == 1 {
+                    "START".to_string()
+                } else {
+                    format!("{:.0} KM", ks / 1000.0)
+                };
+                out.push((ks, text));
+                continue;
+            }
+            let lap_pos = ks.rem_euclid(self.length);
+            let text = if lap_pos < 1.0 || self.length - lap_pos < 1.0 {
+                "START · FINISH".to_string()
+            } else {
+                format!("{:.0} KM", lap_pos / 1000.0)
+            };
+            out.push((ks, text));
+        }
+        if self.open && self.length >= from && self.length < to {
+            out.push((self.length, "FINISH".to_string()));
+        }
+        out
+    }
+
+    /// The course's points: a lap, or start to finish.
+    pub fn course_points(&self) -> &[RoutePt] {
+        let n = ((self.length / STEP).round() as usize + 1).min(self.pts.len());
+        &self.pts[..n]
     }
 
     /// Centreline points, one every `STEP` metres.
@@ -111,13 +235,22 @@ impl Route {
 
     /// Whether the route ends where it starts (a loop rather than point to point).
     pub fn is_loop(&self) -> bool {
+        if self.open {
+            return false;
+        }
         let (a, b) = (self.pts[0], self.pts[self.pts.len() - 1]);
         ((a.x - b.x).powi(2) + (a.z - b.z).powi(2)).sqrt() < 30.0
     }
 
-    /// Sample the route at distance `d` (wraps around: every route is ridden as laps).
+    /// Sample the route at distance `d`: a loop wraps round, lap after lap;
+    /// a point-to-point route runs on past its finish to the end of the road
+    /// beyond, and stops there.
     pub fn at(&self, d: f64) -> RoutePt {
-        let d = d.rem_euclid(self.length);
+        let d = if self.open {
+            d.clamp(0.0, self.span())
+        } else {
+            d.rem_euclid(self.length)
+        };
         let f = d / STEP;
         let i = (f.floor() as usize).min(self.pts.len() - 2);
         let u = f - i as f64;
@@ -144,16 +277,20 @@ impl Route {
             // The road carries on round the start line.
             return (self.at(d + h).ele - self.at(d - h).ele) / (2.0 * h) * 100.0;
         }
-        let d = d.rem_euclid(self.length);
+        let (d, end) = if self.open {
+            (d.clamp(0.0, self.span()), self.span())
+        } else {
+            (d.rem_euclid(self.length), self.length)
+        };
         let mut a = d - h;
         let mut b = d + h;
         // Do not average across the start/finish seam of a non-loop route.
         if a < 0.0 {
             a = 0.0;
             b = 2.0 * h;
-        } else if b > self.length {
-            b = self.length;
-            a = self.length - 2.0 * h;
+        } else if b > end {
+            b = end;
+            a = end - 2.0 * h;
         }
         (self.at(b).ele - self.at(a).ele) / (b - a) * 100.0
     }
@@ -413,8 +550,21 @@ pub fn builtin() -> Vec<Route> {
 }
 
 impl GpxRoute {
+    /// Loop or point to point: as chosen, else a loop if it ends within
+    /// 30 m of where it starts.
+    pub fn shape(&self) -> Shape {
+        self.shape.unwrap_or_else(|| {
+            let (a, b) = (self.pts[0], self.pts[self.pts.len() - 1]);
+            if (a.2 - b.2).hypot(a.3 - b.3) < 30.0 {
+                Shape::Loop
+            } else {
+                Shape::PointToPoint
+            }
+        })
+    }
+
     pub fn to_route(&self) -> Route {
-        let pts = self
+        let mut pts: Vec<RoutePt> = self
             .pts
             .iter()
             .map(|&(_, ele, x, z)| RoutePt {
@@ -429,13 +579,30 @@ impl GpxRoute {
             .bytes()
             .fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64))
             % 97;
-        Route::from_points(
-            &self.id,
-            &self.name,
-            self.scenery.unwrap_or(Scenery::Hills),
-            seed,
-            pts,
-        )
+        let scenery = self.scenery.unwrap_or(Scenery::Hills);
+        match self.shape() {
+            Shape::Loop => {
+                // Ridden as a loop though its ends are apart: a straight road
+                // back to the start closes it.
+                let (a, b) = (pts[pts.len() - 1], pts[0]);
+                let gap = (b.x - a.x).hypot(b.z - a.z);
+                let steps = (gap / STEP).round() as usize;
+                for k in 1..=steps {
+                    let u = k as f64 / steps as f64;
+                    pts.push(RoutePt {
+                        x: a.x + (b.x - a.x) * u,
+                        z: a.z + (b.z - a.z) * u,
+                        ele: a.ele + (b.ele - a.ele) * u,
+                        heading: 0.0,
+                    });
+                }
+                Route::from_points(&self.id, &self.name, scenery, seed, pts)
+            }
+            Shape::PointToPoint => {
+                let beyond = crate::routegen::beyond(&pts, scenery, seed);
+                Route::point_to_point(&self.id, &self.name, scenery, seed, pts, beyond)
+            }
+        }
     }
 }
 
@@ -532,6 +699,7 @@ pub fn parse_gpx(xml: &str, id: &str, fallback_name: &str) -> Result<GpxRoute> {
         name,
         pts: out,
         scenery: None,
+        shape: None,
     })
 }
 

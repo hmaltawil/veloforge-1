@@ -229,6 +229,14 @@ pub struct App {
     demo: bool,
     /// `--bench`: measuring how fast the 3D view draws.
     bench: Option<Bench>,
+    /// The ride finishing by itself (its workout done, or a point-to-point
+    /// finish reached): since when, and why.
+    auto_finish: Option<(Instant, &'static str)>,
+    /// "Keep riding" was chosen: this ride finishes when you say.
+    keep_riding: bool,
+    /// Where along the route the ride was last frame, to see the finish
+    /// line crossed.
+    last_route_pos: f64,
     /// When this frame's `logic` started and the last `ui` ended.
     frame_marks: (Option<Instant>, Option<Instant>),
     /// `VELOFORGE_STILL=metres`, for comparing screenshots: the 3D view
@@ -356,6 +364,9 @@ impl App {
             curve_failed: Default::default(),
             demo: false,
             bench: None,
+            auto_finish: None,
+            keep_riding: false,
+            last_route_pos: 0.0,
             frame_marks: (None, None),
             still: std::env::var("VELOFORGE_STILL")
                 .ok()
@@ -637,7 +648,12 @@ impl App {
         if self.ride.state != ride::State::Running {
             return;
         }
-        let length = self.routes[self.route_idx].length;
+        // Climbs come round each lap; point to point, only once.
+        let route = &self.routes[self.route_idx];
+        let length = match route.shape() {
+            route::Shape::Loop => route.length,
+            route::Shape::PointToPoint => 1e12,
+        };
         let (pos, t) = (self.ride.route_pos(), self.ride.elapsed);
         let segs = self.route_segments().to_vec();
         let done = self.seg_tracker.update(&segs, length, pos, t, power, hr);
@@ -739,11 +755,22 @@ impl App {
         }
         // The next climb, within half a kilometre.
         let route = &self.routes[self.route_idx];
-        let pos = self.ride.route_pos().rem_euclid(route.length);
+        let pos = route.along(self.ride.route_pos());
+        let looped = route.is_loop();
         segs.iter()
             .filter(|s| s.kind == Kind::Climb)
-            .map(|s| (s, (s.start - pos).rem_euclid(route.length)))
-            .filter(|(_, ahead)| *ahead <= 500.0)
+            .map(|s| {
+                let ahead = s.start - pos;
+                (
+                    s,
+                    if looped {
+                        ahead.rem_euclid(route.length)
+                    } else {
+                        ahead
+                    },
+                )
+            })
+            .filter(|(_, ahead)| (0.0..=500.0).contains(ahead))
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(s, ahead)| {
                 vec![
@@ -1408,6 +1435,121 @@ impl App {
         self.links
             .get(SIM_ID)
             .is_some_and(|l| l.link == Link::Connected)
+    }
+
+    /// Seconds between the ride being done and it finishing by itself.
+    const AUTO_FINISH_SECS: f32 = 10.0;
+
+    /// Finish the ride by itself once its workout is done, or (riding
+    /// without one) once a point-to-point route's finish is crossed, unless
+    /// "Keep riding" was chosen. A workout still going at a point-to-point
+    /// finish carries on along the road beyond it.
+    fn check_auto_finish(&mut self) {
+        if !self.ride_active() {
+            self.auto_finish = None;
+            self.keep_riding = false;
+            self.last_route_pos = self.ride.route_pos();
+            return;
+        }
+        let route = &self.routes[self.route_idx];
+        let (looped, finish) = (route.is_loop(), route.length);
+        let pos = self.ride.route_pos();
+        let crossed = !looped && self.last_route_pos < finish && pos >= finish;
+        self.last_route_pos = pos;
+        let workout = self.ride.mode == Mode::Workout && self.ride.workout.is_some();
+        if crossed && workout && !self.ride.workout_done() {
+            self.notify("Finish line! The road carries on for the rest of your workout");
+        }
+        if self.keep_riding || self.ride.state != ride::State::Running {
+            return;
+        }
+        match self.auto_finish {
+            None => {
+                let why = if workout && self.ride.workout_done() {
+                    Some("Workout complete!")
+                } else if !workout && !looped && pos >= finish {
+                    Some("You reached the finish!")
+                } else {
+                    None
+                };
+                if let Some(why) = why {
+                    self.auto_finish = Some((Instant::now(), why));
+                }
+            }
+            Some((since, _)) if since.elapsed().as_secs_f32() >= Self::AUTO_FINISH_SECS => {
+                self.auto_finish = None;
+                self.finish_ride();
+            }
+            Some(_) => {}
+        }
+    }
+
+    /// The card counting down to the ride finishing by itself, with Finish
+    /// now and Keep riding.
+    fn auto_finish_card(&mut self, ctx: &egui::Context) {
+        let Some((since, why)) = self.auto_finish else {
+            return;
+        };
+        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        let left = (Self::AUTO_FINISH_SECS - since.elapsed().as_secs_f32())
+            .ceil()
+            .max(0.0);
+        let practice = self.ride_simulated || self.demo;
+        let mut finish = false;
+        let mut keep = false;
+        egui::Area::new(egui::Id::unique("auto-finish"))
+            .anchor(Align2::CENTER_CENTER, [0.0, -60.0])
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style())
+                    .inner_margin(18)
+                    .show(ui, |ui| {
+                        ui.set_min_width(320.0);
+                        ui.vertical_centered(|ui| {
+                            ui.label(
+                                RichText::new(why)
+                                    .size(22.0)
+                                    .strong()
+                                    .color(Color32::from_rgb(120, 220, 140)),
+                            );
+                            ui.add_space(4.0);
+                            ui.label(RichText::new(if practice {
+                                format!("Finishing in {left:.0} s")
+                            } else {
+                                format!("Saving your ride in {left:.0} s")
+                            }));
+                            ui.add_space(10.0);
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            RichText::new("Finish now").color(Color32::WHITE),
+                                        )
+                                        .fill(Color32::from_rgb(44, 112, 196)),
+                                    )
+                                    .clicked()
+                                {
+                                    finish = true;
+                                }
+                                if ui
+                                    .button("Keep riding")
+                                    .on_hover_text(
+                                        "Cool down or ride on; press Finish when you are done",
+                                    )
+                                    .clicked()
+                                {
+                                    keep = true;
+                                }
+                            });
+                        });
+                    });
+            });
+        if finish {
+            self.auto_finish = None;
+            self.finish_ride();
+        } else if keep {
+            self.auto_finish = None;
+            self.keep_riding = true;
+        }
     }
 
     fn finish_ride(&mut self) {
@@ -2583,6 +2725,7 @@ impl eframe::App for App {
         self.frame_marks.0 = Some(now);
         self.pump_events();
         self.tick_ride();
+        self.check_auto_finish();
         self.pump_icu();
         self.pump_strava();
         self.pump_update();
@@ -2704,6 +2847,7 @@ impl App {
             Tab::Settings => self.settings_tab(ui),
         });
         self.modals(&ctx);
+        self.auto_finish_card(&ctx);
 
         if let Some((msg, at)) = &self.toast {
             if at.elapsed().as_secs_f32() < 4.0 {
@@ -3787,7 +3931,11 @@ impl App {
                 painter.text(
                     mid + Vec2::new(0.0, h2 * 0.32),
                     Align2::CENTER_CENTER,
-                    format!("{} — keep spinning to cool down, then press Finish", w.name),
+                    if self.keep_riding {
+                        format!("{} — keep spinning to cool down, then press Finish", w.name)
+                    } else {
+                        format!("{} — well done", w.name)
+                    },
                     small.clone(),
                     Color32::from_gray(200),
                 );
@@ -3921,7 +4069,15 @@ impl App {
             _ => {
                 let route = &self.routes[self.route_idx];
                 let lap = (self.ride.route_pos() / route.length).floor() as u32 + 1;
-                let along = self.ride.route_pos().rem_euclid(route.length);
+                let along = route.along(self.ride.route_pos()).min(route.length);
+                // Laps of a loop; point to point, the way to the finish.
+                let stage = if route.is_loop() {
+                    format!("Lap {lap}")
+                } else if self.ride.route_pos() < route.length {
+                    "To the finish".to_string()
+                } else {
+                    "Past the finish".to_string()
+                };
                 let (mode, g) = if self.ride.mode == Mode::Slope {
                     ("Manual slope".to_string(), self.ride.manual_grade as f64)
                 } else {
@@ -3958,7 +4114,7 @@ impl App {
                 painter.text(
                     mid + Vec2::new(0.0, h2 * 0.08),
                     Align2::CENTER_CENTER,
-                    format!("Lap {lap}"),
+                    stage,
                     big.clone(),
                     Color32::WHITE,
                 );

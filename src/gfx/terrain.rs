@@ -608,7 +608,7 @@ impl RouteGeo {
         let spacing = 320.0;
         let house_roofs = [[0.55, 0.22, 0.15], [0.35, 0.33, 0.32], [0.45, 0.28, 0.18]];
         let barn_roofs = [[0.4, 0.4, 0.4], [0.45, 0.2, 0.12], [0.28, 0.27, 0.26]];
-        for k in 0..(route.length / spacing) as i64 {
+        for k in 0..(route.span() / spacing) as i64 {
             let mut rng = Rng(hash2(k, 0, s + 991));
             if rng.next() > 0.55 {
                 continue;
@@ -891,7 +891,7 @@ impl RouteGeo {
         let inside = |x: f64, z: f64, pad: f64| {
             x > x0 - pad && x < x0 + size + pad && z > z0 - pad && z < z0 + size + pad
         };
-        let stretches = (route.length / STRETCH).ceil() as i64;
+        let stretches = (route.span() / STRETCH).ceil() as i64;
         for &side in sides {
             for k in 0..stretches {
                 let pick = super::terrain_hash(k, side as i64, route.seed) % 5;
@@ -901,7 +901,7 @@ impl RouteGeo {
                 };
                 let (s0, s1) = (
                     k as f64 * STRETCH,
-                    ((k + 1) as f64 * STRETCH).min(route.length),
+                    ((k + 1) as f64 * STRETCH).min(route.span()),
                 );
                 if !walled
                     || !inside(point(s0, side).0, point(s0, side).1, STRETCH)
@@ -1560,6 +1560,7 @@ mod tests {
                         scenery,
                         km: 20,
                         hills: crate::routegen::Hills::Rolling,
+                        shape: route::Shape::Loop,
                     }
                     .route(),
                 );

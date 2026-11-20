@@ -122,7 +122,11 @@ impl App {
                 return vec![
                     ("Workout complete!".into(), 24.0, theme::GOOD, true),
                     (
-                        "Keep spinning to cool down, then press Finish".into(),
+                        if self.keep_riding {
+                            "Keep spinning to cool down, then press Finish".into()
+                        } else {
+                            format!("Well done: {}", w.name)
+                        },
                         13.0,
                         dim,
                         false,
@@ -601,7 +605,8 @@ impl App {
     /// The route seen from above, with what you have ridden and where you are.
     fn hud_map(&self, painter: &egui::Painter, r: Rect) {
         let route = &self.routes[self.route_idx];
-        let pts = route.points();
+        // The course only, not the road beyond a point-to-point finish.
+        let pts = route.course_points();
         if pts.len() < 2 {
             return;
         }
@@ -624,7 +629,7 @@ impl App {
             )
         };
         let step = (pts.len() / 240).max(1);
-        let here = self.ride.route_pos().rem_euclid(route.length);
+        let here = route.along(self.ride.route_pos()).min(route.length);
         let split = ((here / route::STEP) as usize).min(pts.len() - 1);
         let line = |range: std::ops::Range<usize>| -> Vec<Pos2> {
             let mut v: Vec<Pos2> = range
