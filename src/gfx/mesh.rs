@@ -935,6 +935,220 @@ fn birch_crown_masses(
     );
 }
 
+const OAK_BARK: V3 = [0.088, 0.072, 0.058];
+const OAK_GREEN: V3 = [0.05, 0.11, 0.03];
+const MAPLE_GREEN: V3 = [0.078, 0.158, 0.036];
+
+/// Bark that is rough: each vertex a little lighter or darker, so the
+/// furrows show even from afar.
+fn rough(col: V3, seed: u32) -> impl Fn(usize, usize) -> V3 {
+    move |ring, side| scale(col, 0.78 + 0.4 * rnd(seed, ring as u32, side as u32))
+}
+
+/// One of a tree's limbs: the path it sweeps along, the twig it carries,
+/// and the centre and half sizes of the leaf masses on each.
+struct Limb {
+    path: [(V3, f32); 4],
+    twig: [(V3, f32); 3],
+    leaves: (V3, V3),
+    twig_leaves: (V3, V3),
+}
+
+/// Unit-height oak: a short, thick trunk that splits low into four
+/// crooked limbs reaching out more than up, each with a twig of its own,
+/// under a wide, flat-topped, broken crown of dark leaves. Drawn wider than
+/// tall (`flora`), it is the big tree that stands alone in the fields.
+pub fn oak() -> Mesh {
+    let mut m = Mesh::default();
+    m.sweep(
+        &[
+            ([0.0, 0.0, 0.0], 0.1),
+            ([0.006, 0.04, 0.004], 0.068),
+            ([0.016, 0.13, 0.01], 0.058),
+            ([0.008, 0.22, -0.002], 0.055),
+            ([0.014, 0.3, 0.004], 0.05),
+        ],
+        8,
+        rough(OAK_BARK, 5),
+    );
+    let whole = Crown {
+        c: [0.0, 0.64, 0.0],
+        r: 0.5,
+    };
+    let limbs = oak_limbs();
+    for (k, l) in limbs.iter().enumerate() {
+        m.sweep(&l.path, 5, rough(OAK_BARK, 9 + k as u32));
+        m.sweep(&l.twig, 4, rough(OAK_BARK, 19 + k as u32));
+    }
+    m.mat = MAT_LEAF;
+    oak_crown_masses(&mut m, &limbs, whole);
+    m
+}
+
+fn oak_limbs() -> Vec<Limb> {
+    [(0.35, 0.29), (1.95, 0.27), (3.45, 0.3), (5.0, 0.28)]
+        .iter()
+        .enumerate()
+        .map(|(k, &(a, y))| {
+            let q = |n: u32| rnd(61, k as u32, n);
+            let a = a + 0.3 * (q(1) - 0.5);
+            let dir = [a.cos(), 0.0, a.sin()];
+            let side = [-dir[2], 0.0, dir[0]];
+            let bend = 0.04 * (q(2) - 0.5);
+            let from = [0.01, y, 0.0];
+            // Out at a low angle, a crook, then up towards the light.
+            let elbow = add(from, add(scale(dir, 0.11), [0.0, 0.09, 0.0]));
+            let knee = add(
+                from,
+                add(
+                    add(scale(dir, 0.19), scale(side, bend)),
+                    [0.0, 0.17 + 0.03 * q(3), 0.0],
+                ),
+            );
+            let end = add(from, add(scale(dir, 0.25), [0.0, 0.3 + 0.05 * q(4), 0.0]));
+            // A twig from the crook, off to one side and up.
+            let turn = if k % 2 == 0 { 0.85 } else { -0.85 };
+            let tdir = [(a + turn).cos(), 0.0, (a + turn).sin()];
+            let tip = add(
+                elbow,
+                add(scale(tdir, 0.17), [0.0, 0.26 + 0.04 * q(5), 0.0]),
+            );
+            let tmid = add(elbow, add(scale(tdir, 0.1), [0.0, 0.1, 0.0]));
+            Limb {
+                path: [(from, 0.04), (elbow, 0.032), (knee, 0.022), (end, 0.011)],
+                twig: [(elbow, 0.016), (tmid, 0.011), (tip, 0.006)],
+                leaves: (
+                    add(end, add(scale(dir, 0.03), [0.0, 0.03, 0.0])),
+                    [0.165, 0.115, 0.155],
+                ),
+                twig_leaves: (add(tip, [0.0, 0.03, 0.0]), [0.14, 0.1, 0.13]),
+            }
+        })
+        .collect()
+}
+
+fn oak_crown_masses(m: &mut Mesh, limbs: &[Limb], whole: Crown) {
+    for (k, l) in limbs.iter().enumerate() {
+        m.leaf_mass(
+            l.leaves.0,
+            l.leaves.1,
+            5,
+            (0.085, 0.13),
+            (0.7, 1.0),
+            OAK_GREEN,
+            101 + k as u32,
+            whole,
+            (4, 6),
+        );
+        m.leaf_mass(
+            l.twig_leaves.0,
+            l.twig_leaves.1,
+            4,
+            (0.08, 0.12),
+            (0.65, 0.95),
+            OAK_GREEN,
+            111 + k as u32,
+            whole,
+            (3, 5),
+        );
+    }
+    // The low, flat top.
+    m.leaf_mass(
+        [0.02, 0.84, 0.01],
+        [0.19, 0.1, 0.18],
+        4,
+        (0.085, 0.12),
+        (0.65, 0.95),
+        OAK_GREEN,
+        121,
+        whole,
+        (4, 6),
+    );
+}
+
+/// Unit-height maple: a straight trunk, limbs rising steeply from it in a
+/// vase, and a dense, rounded crown of fresh green in two tiers of leaf
+/// masses packed close, with one on top: a full dome rather than the
+/// broadleaf's loose clouds.
+pub fn maple() -> Mesh {
+    let mut m = Mesh::default();
+    m.sweep(
+        &[
+            ([0.0, 0.0, 0.0], 0.07),
+            ([0.003, 0.04, 0.0], 0.046),
+            ([0.006, 0.2, 0.004], 0.038),
+            ([0.004, 0.36, 0.0], 0.032),
+            ([0.0, 0.52, 0.002], 0.022),
+        ],
+        8,
+        rough([0.12, 0.1, 0.085], 7),
+    );
+    let whole = Crown {
+        c: [0.0, 0.66, 0.0],
+        r: 0.42,
+    };
+    let golden = std::f32::consts::PI * (3.0 - 5f32.sqrt());
+    // Lower tier: four limbs; upper tier: three, each carrying a mass:
+    // where the limb starts and ends, and the leaves' centre.
+    let masses: Vec<(V3, V3, V3)> = (0..7)
+        .map(|k| {
+            let q = |n: u32| rnd(67, k as u32, n);
+            let upper = k >= 4;
+            let a = k as f32 * golden * 2.0 + 0.4 * q(1);
+            let dir = [a.cos(), 0.0, a.sin()];
+            let from = [0.004, if upper { 0.42 } else { 0.28 } + 0.03 * q(2), 0.0];
+            let reach = if upper { 0.13 } else { 0.2 } + 0.025 * q(3);
+            let h = if upper { 0.74 } else { 0.5 } + 0.04 * q(4);
+            let end = [dir[0] * reach, h, dir[2] * reach];
+            let c = add(end, add(scale(dir, 0.03), [0.0, 0.04, 0.0]));
+            (from, end, c)
+        })
+        .collect();
+    for (k, &(from, end, _)) in masses.iter().enumerate() {
+        let mid = add(scale(add(from, end), 0.5), [0.0, -0.02, 0.0]);
+        m.sweep(
+            &[(from, 0.022), (mid, 0.015), (end, 0.007)],
+            5,
+            rough([0.12, 0.1, 0.085], 23 + k as u32),
+        );
+    }
+    m.mat = MAT_LEAF;
+    maple_crown_masses(&mut m, &masses, whole);
+    m
+}
+
+fn maple_crown_masses(m: &mut Mesh, masses: &[(V3, V3, V3)], whole: Crown) {
+    for (k, &(_, _, c)) in masses.iter().enumerate() {
+        let (r, clumps) = if k >= 4 {
+            ([0.18, 0.15, 0.17], 4)
+        } else {
+            ([0.19, 0.16, 0.18], 5)
+        };
+        m.leaf_mass(
+            c,
+            r,
+            clumps,
+            (0.09, 0.13),
+            (0.6, 0.9),
+            MAPLE_GREEN,
+            131 + k as u32,
+            whole,
+            (4, 6),
+        );
+    }
+    m.leaf_mass(
+        [0.0, 0.9, 0.0],
+        [0.17, 0.12, 0.17],
+        4,
+        (0.085, 0.12),
+        (0.6, 0.9),
+        MAPLE_GREEN,
+        141,
+        whole,
+        (4, 6),
+    );
+}
+
 /// Unit-height bush.
 pub fn bush() -> Mesh {
     let mut m = Mesh {
@@ -1599,6 +1813,8 @@ mod tests {
             pine(),
             broadleaf(),
             birch(),
+            oak(),
+            maple(),
             bush(),
             pine_far(),
             broadleaf_far(),
@@ -1643,7 +1859,7 @@ mod tests {
     #[test]
     fn trees_keep_their_trunks_still() {
         // Only leaves flutter: trunks must not use the leaf material.
-        for m in [pine(), broadleaf(), birch()] {
+        for m in [pine(), broadleaf(), birch(), oak(), maple()] {
             let first = &m.v[..VERTEX_STRIDE];
             assert_eq!(first[9], MAT_MATT);
             assert!(m.v.chunks(VERTEX_STRIDE).any(|v| v[9] == MAT_LEAF));
@@ -1765,6 +1981,8 @@ mod tests {
             ("pine", pine(), 1000),
             ("broadleaf", broadleaf(), 2000),
             ("birch", birch(), 1500),
+            ("oak", oak(), 2000),
+            ("maple", maple(), 2000),
             ("pine far", pine_far(), 120),
             ("broadleaf far", broadleaf_far(), 300),
             // Few (a handful in view), but drawn as they are all the way out.

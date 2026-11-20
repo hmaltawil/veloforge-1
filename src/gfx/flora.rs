@@ -7,7 +7,7 @@
 //! New kinds (a maple, a palm) are added here: a model, its size and colour,
 //! its share in each palette and what land it likes; nothing else changes.
 
-use super::terrain::{BIRCH, BROADLEAF, PINE};
+use super::terrain::{BIRCH, BROADLEAF, MAPLE, OAK, PINE};
 use crate::route::Scenery;
 
 /// What a spot of land is like. Kinds that care about more (height above
@@ -64,6 +64,36 @@ fn forest_edge(s: &Spot) -> f64 {
     1.3 - s.forest
 }
 
+/// Oaks like open land: alone in a meadow, by the road, at the forest's
+/// edge; seldom deep in it.
+fn open_land(s: &Spot) -> f64 {
+    (1.25 - 1.4 * s.forest).clamp(0.1, 1.0)
+}
+
+const fn oak(share: f64) -> TreeKind {
+    TreeKind {
+        kind: OAK,
+        share,
+        likes: open_land,
+        height: 13.0,
+        width: 1.2,
+        warm: 0.45,
+    }
+}
+
+/// Maples grow among the other broadleaves, a little more by the forest's
+/// edge, and turn warmer than any.
+const fn maple(share: f64) -> TreeKind {
+    TreeKind {
+        kind: MAPLE,
+        share,
+        likes: forest_edge,
+        height: 12.0,
+        width: 0.88,
+        warm: 1.0,
+    }
+}
+
 const fn pine(share: f64) -> TreeKind {
     TreeKind {
         kind: PINE,
@@ -97,14 +127,22 @@ const BROADLEAF_TREE: TreeKind = TreeKind {
 
 impl Palette {
     pub fn of(scenery: Scenery) -> Palette {
-        let (pines, birches, bushes) = match scenery {
-            Scenery::Alpine => (0.95, 0.3, 0.02),
-            Scenery::Hills => (0.35, 0.3, 0.05),
-            Scenery::Lake => (0.45, 0.4, 0.05),
-            Scenery::Coast => (0.7, 0.15, 0.07),
+        // Shares of the trees left after the kinds before them: pines, then
+        // birches, oaks and maples; the rest broadleaves.
+        let (pines, birches, oaks, maples, bushes) = match scenery {
+            Scenery::Alpine => (0.95, 0.3, 0.0, 0.25, 0.02),
+            Scenery::Hills => (0.35, 0.3, 0.35, 0.3, 0.05),
+            Scenery::Lake => (0.45, 0.4, 0.25, 0.35, 0.05),
+            Scenery::Coast => (0.7, 0.15, 0.3, 0.15, 0.07),
         };
         Palette {
-            trees: vec![pine(pines), birch(birches), BROADLEAF_TREE],
+            trees: vec![
+                pine(pines),
+                birch(birches),
+                oak(oaks),
+                maple(maples),
+                BROADLEAF_TREE,
+            ],
             bushes,
             rocks: if scenery == Scenery::Alpine {
                 0.05

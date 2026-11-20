@@ -190,7 +190,8 @@ pub extern "C" fn joints_ptr() -> *const f32 {
 }
 
 /// Build one of the scenery models: 0 pine, 1 broadleaf, 2 birch, 3 bush,
-/// 4 rock, 5 house, 6 far pine, 7 far broadleaf. Returns the float count.
+/// 4 rock, 5 house, 6 far pine, 7 far broadleaf, 11 barn, 12 shed,
+/// 13 two-storey house, 14 oak, 15 maple. Returns the float count.
 #[no_mangle]
 pub extern "C" fn model(kind: u32) -> u32 {
     LAB.with(|l| {
@@ -227,6 +228,10 @@ pub extern "C" fn model(kind: u32) -> u32 {
             13 => buildings::townhouse(),
             #[cfg(not(lab_buildings))]
             11..=13 => mesh::house(),
+            #[cfg(lab_oak)]
+            14 => mesh::oak(),
+            #[cfg(lab_oak)]
+            15 => mesh::maple(),
             _ => mesh::birch(),
         };
         l.model = m.v;
@@ -259,7 +264,8 @@ pub extern "C" fn model_ptr() -> *const f32 {
     LAB.with(|l| l.borrow().model.as_ptr())
 }
 
-/// Make the card pictures of tree `kind` (0 pine, 1 broadleaf, 2 birch) as
+/// Make the card pictures of tree `kind` (0 pine, 1 broadleaf, 2 birch,
+/// 3 oak, 4 maple) as
 /// the app does (`impostor::bake`). Returns the number of mipmap levels;
 /// `card_size`, `card_albedo`, `card_normal` and `card_depth` give each.
 #[no_mangle]
@@ -269,6 +275,10 @@ pub extern "C" fn card_bake(kind: u32) -> u32 {
         let m = match kind {
             0 => mesh::pine(),
             1 => mesh::broadleaf(),
+            #[cfg(lab_oak)]
+            3 => mesh::oak(),
+            #[cfg(lab_oak)]
+            4 => mesh::maple(),
             _ => mesh::birch(),
         };
         let a = impostor::bake(&m.v);

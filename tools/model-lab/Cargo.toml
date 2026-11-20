@@ -18,4 +18,4 @@ panic = "abort"
 [workspace]
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(lab_mid)', 'cfg(lab_buildings)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(lab_mid)', 'cfg(lab_buildings)', 'cfg(lab_oak)'] }

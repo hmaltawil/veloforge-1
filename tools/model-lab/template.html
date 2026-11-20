@@ -139,6 +139,8 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
           <button data-m="0" class="on">Pine</button>
           <button data-m="1">Broadleaf</button>
           <button data-m="2">Birch</button>
+          <button data-m="14">Oak</button>
+          <button data-m="15">Maple</button>
           <button data-m="3">Bush</button>
           <button data-m="4">Rock</button>
           <button data-m="5">Farmhouse</button>
@@ -549,7 +551,13 @@ for (const b of document.querySelectorAll("#cams button")) b.addEventListener("c
 // ---- scenery ----------------------------------------------------------
 let mode = "rider", modelMesh = null;
 // Unit-sized scenery is drawn at about the size the app uses it.
-const HEIGHTS = { 0: 11, 1: 9, 2: 10, 3: 1.4, 4: 1.2, 5: 7.6, 6: 11, 7: 9, 11: 10, 12: 3, 13: 11 };
+const HEIGHTS = { 0: 11, 1: 9, 2: 10, 3: 1.4, 4: 1.2, 5: 7.6, 6: 11, 7: 9, 11: 10, 12: 3, 13: 11, 14: 12, 15: 11 };
+// How much wider than tall each tree is drawn (flora.rs).
+const WIDTHS = { 0: 0.72, 1: 1.0, 2: 0.7, 14: 1.2, 15: 0.88 };
+// The kinds of tree, in the app's order (TREES in gfx/mod.rs): their models.
+const TREE_MODELS = [0, 1, 2, 14, 15];
+// The middle-distance model of tree `t`, in releases that had them.
+const midModel = (t) => (t < 3 ? 8 + t : TREE_MODELS[t]);
 // Buildings' roofs take their instance's tint: show them with one the app
 // gives them.
 const ROOFS = { 5: [0.55, 0.22, 0.15], 11: [0.4, 0.4, 0.4], 12: [0.45, 0.28, 0.18], 13: [0.35, 0.33, 0.32] };
@@ -565,14 +573,15 @@ function showModel(k) {
   const n = arr.length;
   if (modelMesh) { scene.remove(modelMesh); modelMesh.geometry.dispose(); modelMesh.material.dispose(); modelMesh = null; }
   if (sceneryForest) { scene.remove(sceneryForest.group); sceneryForest = null; }
-  $("walk").hidden = k > 2;
-  if (k <= 2) {
+  const tree = TREE_MODELS.indexOf(k);
+  $("walk").hidden = tree < 0;
+  if (tree >= 0) {
     if (!sceneryU) sceneryU = rideUniforms();
     let lo = Infinity, hi = -Infinity;
     for (let i = 1; i < n; i += 10) { lo = Math.min(lo, arr[i]); hi = Math.max(hi, arr[i]); }
     const s = HEIGHTS[k] / (hi - lo);
-    const trees = [[], [], []];
-    trees[k] = [MODEL_AT.x, MODEL_AT.y, MODEL_AT.z, 0.6, s, s, 1, 1, 1];
+    const trees = TREE_MODELS.map(() => []);
+    trees[tree] = [MODEL_AT.x, MODEL_AT.y, MODEL_AT.z, 0.6, s * WIDTHS[k], s, 1, 1, 1];
     sceneryForest = new Forest(trees, sceneryU);
     scene.add(sceneryForest.group);
     modelHeight = HEIGHTS[k];
@@ -853,7 +862,7 @@ function unitHash(a, b) {
 let cardTex = null;
 function cardTextures() {
   if (cardTex) return cardTex;
-  cardTex = [0, 1, 2].map((k) => {
+  cardTex = TREE_MODELS.map((_, k) => {
     const levels = wasm.card_bake(k);
     const sizes = [];
     for (let i = 0; i < levels; i++) sizes.push(wasm.card_size(i));
@@ -957,7 +966,7 @@ function fill(d, list) {
   d.mesh.visible = n > 0;
 }
 
-// Trees of the three kinds (pine, broadleaf, birch: instances of 9 floats
+// Trees of each kind (TREE_MODELS: instances of 9 floats
 // as the app keeps them), drawn as the app would.
 class Forest {
   constructor(trees, uniforms) {
@@ -970,16 +979,16 @@ class Forest {
     this.counts = [0, 0, 0, 0];
     for (const v of ride.versionsSame ? ["now"] : ["now", "base"]) {
       const set = [];
-      for (let t = 0; t < 3; t++) {
+      for (let t = 0; t < TREE_MODELS.length; t++) {
         const cap = trees[t].length / 9;
         const far = t === 0 ? 6 : 7;
         const k = {
-          full: dynamicObjects(modelVerts(v, t), cap, false, v, this.u),
-          mid: dynamicObjects(modelVerts(v, 8 + t), cap, false, v, this.u),
+          full: dynamicObjects(modelVerts(v, TREE_MODELS[t]), cap, false, v, this.u),
+          mid: dynamicObjects(modelVerts(v, midModel(t)), cap, false, v, this.u),
         };
         if (LOD_RULES[v].cards) {
-          k.fullFade = dynamicObjects(modelVerts(v, t), cap, true, v, this.u);
-          k.midFade = dynamicObjects(modelVerts(v, 8 + t), cap, true, v, this.u);
+          k.fullFade = dynamicObjects(modelVerts(v, TREE_MODELS[t]), cap, true, v, this.u);
+          k.midFade = dynamicObjects(modelVerts(v, midModel(t)), cap, true, v, this.u);
           k.card = dynamicCards(t, cap, this.u);
         } else {
           k.far = dynamicObjects(modelVerts(v, far), cap, false, v, this.u);
@@ -999,7 +1008,7 @@ class Forest {
       for (const k of set) for (const d of Object.values(k)) if (w !== v) d.mesh.visible = false;
     }
     this.counts = [0, 0, 0, 0];
-    for (let t = 0; t < 3; t++) {
+    for (let t = 0; t < TREE_MODELS.length; t++) {
       const list = this.trees[t], k = this.sets[v][t];
       const out = { full: [], mid: [], fullFade: [], midFade: [], card: [], far: [] };
       for (let i = 0; i < list.length; i += 9) {
@@ -1052,7 +1061,7 @@ function pickShaders(v) {
 function setupVersions() {
   let modelsSame = !wasmBase;
   if (wasmBase) {
-    modelsSame = [0, 1, 2, 3, 6, 7].every((k) => {
+    modelsSame = [0, 1, 2, 3, 6, 7, 14, 15].every((k) => {
       const a = modelVerts("now", k), b = modelVerts("base", k);
       return a.length === b.length && a.every((x, i) => x === b[i]);
     });
@@ -1144,9 +1153,11 @@ function buildRide() {
   // Trees along both sides, placed, sized and tinted as the app does
   // (terrain.rs), for this build and the released app.
   const kinds = [
-    { m: 0, h: 14, w: 0.72, warm: 0.25, seed: 91, share: 0.4 },
-    { m: 1, h: 10.5, w: 1.0, warm: 0.7, seed: 57, share: 0.4 },
-    { m: 2, h: 11, w: 0.7, warm: 0.7, seed: 23, share: 0.2 },
+    { m: 0, h: 14, w: 0.72, warm: 0.25, seed: 91, share: 0.35 },
+    { m: 1, h: 10.5, w: 1.0, warm: 0.7, seed: 57, share: 0.25 },
+    { m: 2, h: 11, w: 0.7, warm: 0.7, seed: 23, share: 0.15 },
+    { m: 14, h: 13, w: 1.2, warm: 0.45, seed: 41, share: 0.15 },
+    { m: 15, h: 12, w: 0.88, warm: 1.0, seed: 77, share: 0.15 },
   ];
   const forestTrees = [];
   for (const kind of kinds) {

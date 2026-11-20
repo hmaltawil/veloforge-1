@@ -24,7 +24,7 @@ pub struct Tile {
 pub const INSTANCE_STRIDE: usize = 9;
 
 /// Kinds of scattered object, indexing [`TerrainData::instances`].
-pub const KINDS: usize = 9;
+pub const KINDS: usize = 11;
 pub const PINE: usize = 0;
 pub const BROADLEAF: usize = 1;
 pub const ROCK: usize = 2;
@@ -34,6 +34,8 @@ pub const BUSH: usize = 5;
 pub const BARN: usize = 6;
 pub const SHED: usize = 7;
 pub const TOWNHOUSE: usize = 8;
+pub const OAK: usize = 9;
+pub const MAPLE: usize = 10;
 
 fn smoothstep(a: f64, b: f64, x: f64) -> f64 {
     let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
@@ -1064,7 +1066,7 @@ mod tests {
         let half = (WINDOW_SIZE / 2.0) as f32;
         let vert = |i: usize, j: usize| w.verts[(j * n + i) * TERRAIN_STRIDE + 1];
         let mut checked = 0;
-        for kind in [PINE, BROADLEAF, BIRCH] {
+        for kind in [PINE, BROADLEAF, BIRCH, OAK, MAPLE] {
             for inst in w.instances[kind].chunks(INSTANCE_STRIDE) {
                 // Render space: x east, z = -north, from the window's corner.
                 let (u, v) = ((inst[0] + half) / cell, (-inst[2] + half) / cell);
@@ -1121,7 +1123,11 @@ mod tests {
         assert_eq!(w.indices.len(), 60 * 60 * 6);
         let (pines, broad) = (
             w.instances[PINE].len() / INSTANCE_STRIDE,
-            (w.instances[BROADLEAF].len() + w.instances[BIRCH].len()) / INSTANCE_STRIDE,
+            [BROADLEAF, BIRCH, OAK, MAPLE]
+                .iter()
+                .map(|&k| w.instances[k].len())
+                .sum::<usize>()
+                / INSTANCE_STRIDE,
         );
         assert!(!w.instances[BUSH].is_empty());
         assert!(pines + broad > 50);

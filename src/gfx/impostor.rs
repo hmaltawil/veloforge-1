@@ -326,6 +326,8 @@ mod tests {
             ("pine", mesh::pine()),
             ("broadleaf", mesh::broadleaf()),
             ("birch", mesh::birch()),
+            ("oak", mesh::oak()),
+            ("maple", mesh::maple()),
         ] {
             let a = bake(&m.v);
             assert_eq!(a.levels[0].size, SIZE);
@@ -404,6 +406,8 @@ mod tests {
             ("pine", mesh::pine()),
             ("broadleaf", mesh::broadleaf()),
             ("birch", mesh::birch()),
+            ("oak", mesh::oak()),
+            ("maple", mesh::maple()),
         ] {
             let a = bake(&m.v);
             std::fs::write(format!("{dir}/{name}-albedo.rgba"), &a.levels[0].albedo).unwrap();

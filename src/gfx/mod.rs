@@ -547,7 +547,7 @@ impl Stance {
 /// a 3D view exists (it takes a moment), then handed to the graphics card.
 static SKIN: std::sync::OnceLock<body::Skin> = std::sync::OnceLock::new();
 
-/// Pictures of the pine, broadleaf and birch for distant trees' cards
+/// Pictures of each kind of tree (`TREES`) for distant trees' cards
 /// (`impostor.rs`), made on a background thread too.
 static CARDS: std::sync::OnceLock<Vec<impostor::Atlas>> = std::sync::OnceLock::new();
 
@@ -562,9 +562,8 @@ fn start_sculpting() {
         let _ = std::thread::Builder::new()
             .name("bake-trees".into())
             .spawn(|| {
-                let atlases = [mesh::pine(), mesh::broadleaf(), mesh::birch()]
-                    .iter()
-                    .map(|m| impostor::bake(&m.v))
+                let atlases = (0..TREE_COUNT)
+                    .map(|t| impostor::bake(&tree_mesh(t).v))
                     .collect();
                 let _ = CARDS.set(atlases);
             });
@@ -1514,7 +1513,7 @@ struct GlState {
     noise_tex: Option<glow::Texture>,
     /// Card shadows of trees out of view that would be cards in it.
     shadow_cards: Vec<Buffers>,
-    card_tex: Option<[[glow::Texture; 3]; 3]>,
+    card_tex: Option<Vec<[glow::Texture; 3]>>,
     card_tex_failed: bool,
     /// Each tree's level of detail, by where it stands in the world (in
     /// tenths of a metre), and the frame count for forgetting trees no
@@ -1649,7 +1648,7 @@ fn bytes_u32(v: &[u32]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, std::mem::size_of_val(v)) }
 }
 
-// The first nine match the kinds in `terrain`.
+// The first `KINDS` match the kinds in `terrain`.
 const OBJ_PINE: usize = terrain::PINE;
 const OBJ_BROAD: usize = terrain::BROADLEAF;
 const OBJ_ROCK: usize = terrain::ROCK;
@@ -1659,20 +1658,55 @@ const OBJ_BUSH: usize = terrain::BUSH;
 const OBJ_BARN: usize = terrain::BARN;
 const OBJ_SHED: usize = terrain::SHED;
 const OBJ_TOWNHOUSE: usize = terrain::TOWNHOUSE;
-const OBJ_POST: usize = 9;
-const OBJ_PLANK: usize = 10;
-const OBJ_RIDER: usize = 11;
-const OBJ_PINE_FAR: usize = 12;
-const OBJ_BROAD_FAR: usize = 13;
-const OBJ_REFLECTOR: usize = 14;
+const OBJ_OAK: usize = terrain::OAK;
+const OBJ_MAPLE: usize = terrain::MAPLE;
+const OBJ_POST: usize = KINDS;
+const OBJ_PLANK: usize = KINDS + 1;
+const OBJ_RIDER: usize = KINDS + 2;
+const OBJ_PINE_FAR: usize = KINDS + 3;
+const OBJ_BROAD_FAR: usize = KINDS + 4;
+const OBJ_REFLECTOR: usize = KINDS + 5;
+/// Each kind of tree, in the order of its cards, its meshes for trees
+/// dissolving between levels and its meshes casting shadows only.
+const TREES: [usize; 5] = [OBJ_PINE, OBJ_BROAD, OBJ_BIRCH, OBJ_OAK, OBJ_MAPLE];
+const TREE_COUNT: usize = TREES.len();
 /// The trees' meshes again, for trees dissolving into or out of cards.
-const OBJ_PINE_FADE: usize = 15;
-const OBJ_BROAD_FADE: usize = 16;
-const OBJ_BIRCH_FADE: usize = 17;
-// Trees out of view whose shadow falls into it: drawn only into the shadows.
-const OBJ_PINE_SHADOW: usize = 18;
-const OBJ_BROAD_SHADOW: usize = 19;
-const OBJ_BIRCH_SHADOW: usize = 20;
+const TREE_FADES: [usize; TREE_COUNT] = run(KINDS + 6);
+/// Trees out of view whose shadow falls into it: drawn only into the shadows.
+const TREE_SHADOWS: [usize; TREE_COUNT] = run(KINDS + 6 + TREE_COUNT);
+/// Every tree object casting shadows: the trees, then fading, then
+/// shadow-only ones.
+const TREE_CASTERS: [usize; 3 * TREE_COUNT] = {
+    let mut a = [0; 3 * TREE_COUNT];
+    let mut i = 0;
+    while i < TREE_COUNT {
+        a[i] = TREES[i];
+        a[TREE_COUNT + i] = TREE_FADES[i];
+        a[2 * TREE_COUNT + i] = TREE_SHADOWS[i];
+        i += 1;
+    }
+    a
+};
+/// `N` object numbers in a row from `first`.
+const fn run<const N: usize>(first: usize) -> [usize; N] {
+    let mut a = [0; N];
+    let mut i = 0;
+    while i < N {
+        a[i] = first + i;
+        i += 1;
+    }
+    a
+}
+/// The full mesh of tree `t` (in the order of `TREES`).
+fn tree_mesh(t: usize) -> mesh::Mesh {
+    [
+        mesh::pine,
+        mesh::broadleaf,
+        mesh::birch,
+        mesh::oak,
+        mesh::maple,
+    ][t]()
+}
 /// The farm buildings, drawn like the houses.
 const BUILDINGS: [usize; 4] = [OBJ_HOUSE, OBJ_BARN, OBJ_SHED, OBJ_TOWNHOUSE];
 /// Distances where trees change level of detail (`Quality::tree_lod`).
@@ -1775,10 +1809,6 @@ const UNIT_NOISE: u32 = 12;
 /// every this many cells of the finest noise, 24 m of tarmac grain.
 const NOISE_SIZE: usize = 1024;
 
-/// Each kind of tree's mesh again (pine, broadleaf, birch), for trees
-/// dissolving into or out of cards.
-const TREE_FADES: [usize; 3] = [OBJ_PINE_FADE, OBJ_BROAD_FADE, OBJ_BIRCH_FADE];
-const TREE_SHADOWS: [usize; 3] = [OBJ_PINE_SHADOW, OBJ_BROAD_SHADOW, OBJ_BIRCH_SHADOW];
 /// Objects further than this are hidden in the haze anyway.
 const FAR_CULL: f32 = 1600.0;
 /// Distant forest thins out from here on.
@@ -2050,29 +2080,28 @@ impl GlState {
 
             self.road = Some(Self::buffers(gl, &[(3, 0), (2, 3)], 5, &[], None)?);
             self.water = Some(Self::buffers(gl, &[(3, 0)], 3, &[], None)?);
-            let meshes = [
-                mesh::pine(),
-                mesh::broadleaf(),
-                mesh::rock(),
-                buildings::farmhouse(),
-                mesh::birch(),
-                mesh::bush(),
-                buildings::barn(),
-                buildings::shed(),
-                buildings::townhouse(),
+            let mut meshes: Vec<mesh::Mesh> = (0..KINDS)
+                .map(|kind| match kind {
+                    OBJ_ROCK => mesh::rock(),
+                    OBJ_HOUSE => buildings::farmhouse(),
+                    OBJ_BUSH => mesh::bush(),
+                    OBJ_BARN => buildings::barn(),
+                    OBJ_SHED => buildings::shed(),
+                    OBJ_TOWNHOUSE => buildings::townhouse(),
+                    tree => tree_mesh(TREES.iter().position(|&k| k == tree).expect("a tree")),
+                })
+                .collect();
+            meshes.extend([
                 mesh::post(),
                 mesh::plank(),
                 mesh::Mesh::default(),
                 mesh::pine_far(),
                 mesh::broadleaf_far(),
                 mesh::reflector(),
-                mesh::pine(),
-                mesh::broadleaf(),
-                mesh::birch(),
-                mesh::pine(),
-                mesh::broadleaf(),
-                mesh::birch(),
-            ];
+            ]);
+            meshes.extend((0..TREE_COUNT).map(tree_mesh));
+            meshes.extend((0..TREE_COUNT).map(tree_mesh));
+            debug_assert_eq!(meshes.len(), TREE_SHADOWS[TREE_COUNT - 1] + 1);
             for (i, m) in meshes.iter().enumerate() {
                 // Trees changing level carry how far they are through it.
                 let fading = TREE_FADES.contains(&i);
@@ -2309,11 +2338,11 @@ impl GlState {
         let frame = self.lod_frame;
         let mut states = std::mem::take(&mut self.tree_states);
         let mut near: [Vec<f32>; KINDS] = Default::default();
-        let mut near_fade: [Vec<f32>; 3] = Default::default();
+        let mut near_fade: [Vec<f32>; TREE_COUNT] = Default::default();
         let mut far: [Vec<f32>; 2] = Default::default();
-        let mut card: [Vec<f32>; 3] = Default::default();
-        let mut shadow_card: [Vec<f32>; 3] = Default::default();
-        let mut shadow_mesh: [Vec<f32>; 3] = Default::default();
+        let mut card: [Vec<f32>; TREE_COUNT] = Default::default();
+        let mut shadow_card: [Vec<f32>; TREE_COUNT] = Default::default();
+        let mut shadow_mesh: [Vec<f32>; TREE_COUNT] = Default::default();
         // Whether something of radius `r` at `p` is in view (or partly).
         let in_view = |p: V3, r: f32| {
             if dot(sub(p, f.cam), fwd) < -r {
@@ -2335,12 +2364,7 @@ impl GlState {
                 .any(|k| in_view(add(p, scale(s, k)), r))
         };
         for (kind, list) in self.scattered.iter().enumerate() {
-            let tree = match kind {
-                OBJ_PINE => Some(0),
-                OBJ_BROAD => Some(1),
-                OBJ_BIRCH => Some(2),
-                _ => None,
-            };
+            let tree = TREES.iter().position(|&k| k == kind);
             let small = matches!(kind, OBJ_BUSH | OBJ_ROCK);
             for inst in list.as_chunks::<INSTANCE_STRIDE>().0 {
                 let rel = sub([inst[0], inst[1], inst[2]], f.cam);
@@ -2486,7 +2510,7 @@ impl GlState {
         };
         let mut shadowed = [[0i32; 2]; KINDS];
         for (kind, list) in near.iter_mut().enumerate() {
-            let tree = matches!(kind, OBJ_PINE | OBJ_BROAD | OBJ_BIRCH);
+            let tree = TREES.contains(&kind);
             shadowed[kind] = order(list, INSTANCE_STRIDE, tree);
         }
         for list in far.iter_mut() {
@@ -2588,18 +2612,18 @@ impl GlState {
                 made.push([set[0].unwrap(), set[1].unwrap(), set[2].unwrap()]);
             }
             gl.bind_texture(glow::TEXTURE_2D, None);
-            if gl.get_error() != glow::NO_ERROR || made.len() != 3 {
+            if gl.get_error() != glow::NO_ERROR || made.len() != TREE_COUNT {
                 self.card_tex_failed = true;
                 return;
             }
-            self.card_tex = Some([made[0], made[1], made[2]]);
+            self.card_tex = Some(made);
         }
     }
 
     /// Draw the cards of distant trees, with `program` ("card", or
     /// "sh_card" facing the sun for shadows).
     unsafe fn draw_cards(&mut self, gl: &glow::Context, program: &'static str, face: V3) {
-        let Some(tex) = self.card_tex else {
+        let Some(tex) = self.card_tex.clone() else {
             return;
         };
         unsafe {
@@ -3315,21 +3339,7 @@ impl GlState {
                 // Trees dissolving between levels cast their shadow with
                 // both: the shapes are alike, so it hardly shows. Only the
                 // trees whose shadow can fall into this cascade.
-                self.draw_shadowed(
-                    gl,
-                    &[
-                        OBJ_PINE,
-                        OBJ_BROAD,
-                        OBJ_BIRCH,
-                        OBJ_PINE_FADE,
-                        OBJ_BROAD_FADE,
-                        OBJ_BIRCH_FADE,
-                        OBJ_PINE_SHADOW,
-                        OBJ_BROAD_SHADOW,
-                        OBJ_BIRCH_SHADOW,
-                    ],
-                    k,
-                );
+                self.draw_shadowed(gl, &TREE_CASTERS, k);
                 self.draw_instanced(gl, &[OBJ_BUSH]);
                 if k == 1 {
                     self.draw_instanced(gl, &[OBJ_PINE_FAR, OBJ_BROAD_FAR]);
@@ -3705,23 +3715,14 @@ impl GlState {
             let p = self.programs.get_mut("object").unwrap();
             p.f1(gl, "u_obj_time", f.time);
             p.f1(gl, "u_wind", f.look.wind);
-            self.draw_instanced(
-                gl,
-                &[
-                    OBJ_PINE,
-                    OBJ_BROAD,
-                    OBJ_BIRCH,
-                    OBJ_BUSH,
-                    OBJ_PINE_FAR,
-                    OBJ_BROAD_FAR,
-                ],
-            );
+            self.draw_instanced(gl, &TREES);
+            self.draw_instanced(gl, &[OBJ_BUSH, OBJ_PINE_FAR, OBJ_BROAD_FAR]);
             // Trees changing level: each level in its share of the pixels.
             self.common(gl, "object_fade", f);
             let p = self.programs.get_mut("object_fade").unwrap();
             p.f1(gl, "u_obj_time", f.time);
             p.f1(gl, "u_wind", f.look.wind);
-            self.draw_instanced(gl, &[OBJ_PINE_FADE, OBJ_BROAD_FADE, OBJ_BIRCH_FADE]);
+            self.draw_instanced(gl, &TREE_FADES);
             // Distant trees as cards, with edges smoothed by the
             // multisampling where there is some.
             if self.card_tex.is_some() {
