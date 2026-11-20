@@ -360,28 +360,39 @@ impl RouteGeo {
             while end < near.len() && near[end] - near[end - 1] <= 8 {
                 end += 1;
             }
-            let (mut best, mut ele, mut grade) = (f64::MAX, 0.0, 0.0);
-            for &i in &near[start..end] {
-                let i = i as usize;
-                for j in [i.saturating_sub(1), i] {
-                    if j + 1 >= n {
-                        continue;
-                    }
+            // Every stretch of the run the spot is square on to (or nearest
+            // to, round a bend) holds the ground down: the two legs of a
+            // hairpin are one run joined by its bend, and the spot may be
+            // nearer the one than the other all the way round.
+            let pass: Vec<(f64, f64, f64, bool)> = near[start..end]
+                .iter()
+                .filter(|&&i| (i as usize) + 1 < n)
+                .map(|&i| {
+                    let j = i as usize;
                     let ((ax, az), (bx, bz)) = (self.pts[j], self.pts[j + 1]);
                     let (dx, dz) = (bx - ax, bz - az);
                     let l2 = (dx * dx + dz * dz).max(1e-9);
-                    let t = (((x - ax) * dx + (z - az) * dz) / l2).clamp(0.0, 1.0);
+                    let along = ((x - ax) * dx + (z - az) * dz) / l2;
+                    let t = along.clamp(0.0, 1.0);
                     let d = (x - ax - dx * t).hypot(z - az - dz * t);
-                    if d < best {
-                        best = d;
-                        ele = self.eles[j] + (self.eles[j + 1] - self.eles[j]) * t;
-                        grade = (self.eles[j + 1] - self.eles[j]) / l2.sqrt();
-                    }
+                    let ele = self.eles[j] + (self.eles[j + 1] - self.eles[j]) * t;
+                    let square = (0.0..1.0).contains(&along);
+                    (
+                        d,
+                        ele,
+                        (self.eles[j + 1] - self.eles[j]) / l2.sqrt(),
+                        square,
+                    )
+                })
+                .collect();
+            for k in 0..pass.len() {
+                let d = pass[k].0;
+                let before = k == 0 || pass[k - 1].0 >= d;
+                let after = k + 1 == pass.len() || pass[k + 1].0 >= d;
+                if (pass[k].3 || before && after) && d < reach {
+                    let here = pass[k].1 - pass[k].2.abs() * 4.0;
+                    cap = Some(cap.map_or(here, |c: f64| c.min(here)));
                 }
-            }
-            if best < reach {
-                let here = ele - grade.abs() * 4.0;
-                cap = Some(cap.map_or(here, |c: f64| c.min(here)));
             }
             start = end;
         }
@@ -2021,6 +2032,8 @@ mod tests {
     fn no_land_rises_over_any_road() {
         let mut routes = vec![route::builtin()[0].clone(), route::builtin()[4].clone()];
         routes.push(hairpin_climb(40.0));
+        // Legs closer than two roads' width and verges.
+        routes.push(hairpin_climb(26.0));
         for r in routes {
             let g = RouteGeo::new(&r);
             let (mut checked, mut worst) = (0, f64::MIN);
@@ -2176,5 +2189,115 @@ mod tests {
             pines + broad
         );
         assert!(w.verts.iter().all(|v| v.is_finite()));
+    }
+}
+
+#[cfg(test)]
+mod survey {
+    use super::*;
+
+    /// Survey a saved route (`VELOFORGE_ROUTE_JSON`): land over the road,
+    /// road over the land, every 800 m.
+    #[test]
+    #[ignore]
+    fn survey_route() {
+        let json = std::fs::read_to_string(std::env::var("VELOFORGE_ROUTE_JSON").unwrap()).unwrap();
+        let g: crate::route::GpxRoute = serde_json::from_str(&json).unwrap();
+        let r = g.to_route();
+        let geo = RouteGeo::new(&r);
+        let mut c = 0.0;
+        while c < r.length {
+            let p = r.at(c);
+            let w = geo.build_window(p.x, p.z, WINDOW_SIZE, WINDOW_VERTS);
+            let (mut over, mut over_at, mut gap, mut gap_at) = (f64::MIN, 0.0, f64::MIN, 0.0);
+            let mut d = (c - 400.0).max(0.0);
+            while d < (c + 400.0).min(r.length) {
+                let q = r.at(d);
+                for k in -6..=6 {
+                    let lat = k as f64 * 5.6 / 6.0;
+                    let (x, z) = (q.x + lat * q.heading.cos(), q.z - lat * q.heading.sin());
+                    let surface = q.ele - if lat.abs() > 4.6 { 0.25 } else { 0.0 };
+                    if let Some(h) = w.ground(x, z) {
+                        if h - surface > over {
+                            over = h - surface;
+                            over_at = d;
+                        }
+                    }
+                }
+                for side in [-1.0, 1.0] {
+                    let lat = side * 6.5;
+                    let (x, z) = (q.x + lat * q.heading.cos(), q.z - lat * q.heading.sin());
+                    if let Some(h) = w.ground(x, z) {
+                        if q.ele - h > gap {
+                            gap = q.ele - h;
+                            gap_at = d;
+                        }
+                    }
+                }
+                d += 2.5;
+            }
+            println!(
+                "{:5.0} m: land over road {:5.2} (at {:5.0}), road over land beside it {:5.1} (at {:5.0})",
+                c, over, over_at, gap, gap_at
+            );
+            c += 800.0;
+        }
+        if let Ok(at) = std::env::var("VELOFORGE_TURNS") {
+            let d0: f64 = at.parse().unwrap();
+            let pts = r.points();
+            let i0 = (d0 / crate::route::STEP) as usize;
+            for i in i0..i0 + 30 {
+                let (a, b, c) = (pts[i - 1], pts[i], pts[i + 1]);
+                let h1 = (b.x - a.x).atan2(b.z - a.z);
+                let h2 = (c.x - b.x).atan2(c.z - b.z);
+                let mut t = h2 - h1;
+                if t > std::f64::consts::PI {
+                    t -= std::f64::consts::TAU;
+                }
+                if t < -std::f64::consts::PI {
+                    t += std::f64::consts::TAU;
+                }
+                println!(
+                    "{:6.0} turn {:+6.1} deg  heading {:+.2}  ele {:.1}",
+                    i as f64 * 5.0,
+                    t.to_degrees(),
+                    b.heading,
+                    b.ele
+                );
+            }
+        }
+        if let Ok(at) = std::env::var("VELOFORGE_AT") {
+            let d: f64 = at.parse().unwrap();
+            let q = r.at(d);
+            let w = geo.build_window(q.x, q.z, WINDOW_SIZE, WINDOW_VERTS);
+            let cell = WINDOW_SIZE / (WINDOW_VERTS - 1) as f64;
+            let reach = ROAD_HALF_WIDTH + cell * std::f64::consts::SQRT_2;
+            println!("road at {d}: ele {:.1} heading {:.2}", q.ele, q.heading);
+            for k in -6..=6 {
+                let lat = k as f64 * 5.6 / 6.0;
+                let (x, z) = (q.x + lat * q.heading.cos(), q.z - lat * q.heading.sin());
+                println!(
+                    "  lat {lat:+.1}: ground {:.2} bed {:?} near {:.1}",
+                    w.ground(x, z).unwrap(),
+                    geo.road_bed(x, z, reach),
+                    geo.nearest(x, z).dist
+                );
+            }
+            // The window's points around.
+            let n = WINDOW_VERTS;
+            let half = WINDOW_SIZE / 2.0;
+            let (u, v) = ((q.x - w.ox + half) / cell, (q.z - w.oz + half) / cell);
+            for j in (v as usize).saturating_sub(1)..=(v as usize + 2) {
+                for i in (u as usize).saturating_sub(1)..=(u as usize + 2) {
+                    let (x, z) = (w.ox - half + i as f64 * cell, w.oz - half + j as f64 * cell);
+                    let h = w.verts[(j * n + i) * TERRAIN_STRIDE + 1];
+                    println!(
+                        "  vertex ({i},{j}): h {h:.2} bed {:?} near {:.1}",
+                        geo.road_bed(x, z, reach),
+                        geo.nearest(x, z).dist
+                    );
+                }
+            }
+        }
     }
 }

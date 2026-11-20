@@ -833,18 +833,42 @@ impl GpuWorld {
                 }
             }
             let right = [h.cos() as f32, 0.0, h.sin() as f32];
-            let tone =
-                0.85 + 0.3 * (terrain_hash((s / 2.5) as i64, 3, route.seed) % 100) as f32 / 100.0;
-            let stone = scale([0.2, 0.19, 0.17], tone);
+            // Masonry close by: courses of stone, each block a shade of its
+            // own, under a paler coping; further off one dark face.
+            let courses: &[(f32, f32)] = if s < d + 250.0 {
+                &[
+                    (0.0, 0.3),
+                    (0.3, 0.8),
+                    (0.8, 1.3),
+                    (1.3, 1.8),
+                    (1.8, 2.3),
+                    (2.3, 2.8),
+                    (2.8, 3.4),
+                    (3.4, 25.0),
+                ]
+            } else {
+                &[(0.0, 25.0)]
+            };
             for (k, out) in [(0usize, scale(right, -1.0)), (3, right)] {
                 let (a, b) = (
                     add(prev[k].0, [0.0, -0.03, 0.0]),
                     add(cur[k].0, [0.0, -0.03, 0.0]),
                 );
-                let drop = [0.0, -25.0, 0.0];
-                let quad = [a, b, add(b, drop), add(a, drop)];
-                for i in [0, 1, 2, 0, 2, 3] {
-                    walls.push(quad[i], out, stone);
+                for (row, &(top, bottom)) in courses.iter().enumerate() {
+                    let hash =
+                        terrain_hash((s / 2.5) as i64 * 31 + k as i64, row as i64, route.seed);
+                    let shade = 0.7 + 0.6 * (hash % 100) as f32 / 100.0;
+                    // Weathered grey stone, darker low down where it is damp.
+                    let stone = if row == 0 && courses.len() > 1 {
+                        scale([0.13, 0.125, 0.115], shade)
+                    } else {
+                        scale([0.075, 0.072, 0.066], shade * (1.0 - 0.04 * row as f32))
+                    };
+                    let (t, u) = ([0.0, -top, 0.0], [0.0, -bottom, 0.0]);
+                    let quad = [add(a, t), add(b, t), add(b, u), add(a, u)];
+                    for i in [0, 1, 2, 0, 2, 3] {
+                        walls.push(quad[i], out, stone);
+                    }
                 }
             }
             for k in 0..3 {

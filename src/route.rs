@@ -256,17 +256,38 @@ impl Route {
         let u = f - i as f64;
         let a = self.pts[i];
         let b = self.pts[i + 1];
-        let mut dh = b.heading - a.heading;
-        if dh > std::f64::consts::PI {
-            dh -= TAU;
-        } else if dh < -std::f64::consts::PI {
-            dh += TAU;
-        }
+        // Between points the road follows a smooth curve leaving each point
+        // the way the road heads there (a cubic Hermite curve), so a bend
+        // is a curve, not a run of corners.
+        let chord = (b.x - a.x).hypot(b.z - a.z);
+        let (ma, mb) = (
+            (a.heading.sin() * chord, a.heading.cos() * chord),
+            (b.heading.sin() * chord, b.heading.cos() * chord),
+        );
+        let (u2, u3) = (u * u, u * u * u);
+        let (h00, h10, h01, h11) = (
+            2.0 * u3 - 3.0 * u2 + 1.0,
+            u3 - 2.0 * u2 + u,
+            -2.0 * u3 + 3.0 * u2,
+            u3 - u2,
+        );
+        let (d00, d10, d01, d11) = (
+            6.0 * u2 - 6.0 * u,
+            3.0 * u2 - 4.0 * u + 1.0,
+            -6.0 * u2 + 6.0 * u,
+            3.0 * u2 - 2.0 * u,
+        );
+        let dx = d00 * a.x + d10 * ma.0 + d01 * b.x + d11 * mb.0;
+        let dz = d00 * a.z + d10 * ma.1 + d01 * b.z + d11 * mb.1;
         RoutePt {
-            x: a.x + (b.x - a.x) * u,
-            z: a.z + (b.z - a.z) * u,
+            x: h00 * a.x + h10 * ma.0 + h01 * b.x + h11 * mb.0,
+            z: h00 * a.z + h10 * ma.1 + h01 * b.z + h11 * mb.1,
             ele: a.ele + (b.ele - a.ele) * u,
-            heading: a.heading + dh * u,
+            heading: if dx.hypot(dz) > 1e-9 {
+                dx.atan2(dz)
+            } else {
+                a.heading
+            },
         }
     }
 
@@ -610,14 +631,14 @@ impl GpxRoute {
 /// The tightest bend a cleaned track keeps (radius of its centre line,
 /// metres): about a real hairpin's, and wider than the road's half width, so
 /// its edges never fold over.
-pub const TIGHTEST_BEND: f64 = 9.0;
+pub const TIGHTEST_BEND: f64 = 11.0;
 /// The steepest a cleaned track climbs or falls (percent).
 pub const STEEPEST_GRADE: f64 = 20.0;
 
 /// A road from a GPS track (points `STEP` apart), as a road engineer would
 /// lay it: the track's jitter and its corners at single points smoothed
 /// away, every bend at least `TIGHTEST_BEND` round where the track allows,
-/// keeping close to the track; its heights smoothed over about 100 m and
+/// keeping close to the track; its heights smoothed over about 200 m and
 /// no steeper than `STEEPEST_GRADE`. Its ends stay where they are.
 pub(crate) fn clean_track(track: &[RoutePt]) -> Vec<RoutePt> {
     let n = track.len();
@@ -644,36 +665,112 @@ pub(crate) fn clean_track(track: &[RoutePt]) -> Vec<RoutePt> {
         .collect();
     pts[0] = track[0];
     pts[n - 1] = track[n - 1];
-    // Bends: wherever the road turns tighter than it may (over 10 m either
-    // side), ease it, a little at a time, until none is left or it cannot
-    // be eased further.
-    let radius = |p: &[RoutePt], i: usize| -> f64 {
-        let (a, b, c) = (p[i - 2], p[i], p[i + 2]);
-        let (ab, bc, ca) = (
-            (a.x - b.x).hypot(a.z - b.z),
-            (b.x - c.x).hypot(b.z - c.z),
-            (c.x - a.x).hypot(c.z - a.z),
-        );
-        let area = ((b.x - a.x) * (c.z - a.z) - (c.x - a.x) * (b.z - a.z)).abs() / 2.0;
-        if area < 1e-9 {
-            f64::INFINITY
-        } else {
-            ab * bc * ca / (4.0 * area)
-        }
-    };
-    for _ in 0..400 {
-        let tight: Vec<usize> = (2..n - 2)
-            .filter(|&i| radius(&pts, i) < TIGHTEST_BEND)
-            .collect();
-        if tight.is_empty() {
-            break;
-        }
-        for &i in &tight {
-            for j in i - 1..=i + 1 {
-                let (a, b) = (pts[j - 1], pts[j + 1]);
-                pts[j].x = 0.5 * pts[j].x + 0.25 * (a.x + b.x);
-                pts[j].z = 0.5 * pts[j].z + 0.25 * (a.z + b.z);
+    // Bends ease in and out rather than start at a point.
+    for _ in 0..2 {
+        let prev = pts.clone();
+        for i in 2..n - 2 {
+            let (mut x, mut z) = (0.0, 0.0);
+            for (k, w) in weights.iter().enumerate() {
+                let p = prev[i + k - 2];
+                x += w * p.x;
+                z += w * p.z;
             }
+            pts[i].x = x;
+            pts[i].z = z;
+        }
+    }
+    // Bends: no tighter than `TIGHTEST_BEND`, as a road is laid out. The
+    // road turns at most so much at each point; what a tight bend turns
+    // beyond that is passed to its neighbours, spreading the bend round a
+    // wider curve. The road is laid again from those headings through each
+    // bend and joined back onto the track after it.
+    let max_turn = STEP / TIGHTEST_BEND;
+    let wrap = |a: f64| (a + std::f64::consts::PI).rem_euclid(TAU) - std::f64::consts::PI;
+    // A few times over: joining a bend back onto the track bends it a
+    // little again.
+    for _round in 0..5 {
+        let seg: Vec<f64> = (1..n)
+            .map(|i| (pts[i].x - pts[i - 1].x).hypot(pts[i].z - pts[i - 1].z))
+            .collect();
+        let head: Vec<f64> = (1..n)
+            .map(|i| (pts[i].x - pts[i - 1].x).atan2(pts[i].z - pts[i - 1].z))
+            .collect();
+        // turn[k]: the turn from step k to step k + 1.
+        let mut turn: Vec<f64> = (1..head.len())
+            .map(|k| wrap(head[k] - head[k - 1]))
+            .collect();
+        let mut changed = vec![false; turn.len()];
+        for _ in 0..2000 {
+            let mut any = false;
+            for k in 0..turn.len() {
+                // As much as the road may turn over the distance about here.
+                let max_turn = max_turn * (seg[k] + seg[k + 1]) / (2.0 * STEP);
+                if turn[k].abs() > max_turn + 1e-9 {
+                    let excess = turn[k] - max_turn * turn[k].signum();
+                    turn[k] -= excess;
+                    changed[k] = true;
+                    any = true;
+                    match (k > 0, k + 1 < turn.len()) {
+                        (true, true) => {
+                            turn[k - 1] += excess / 2.0;
+                            turn[k + 1] += excess / 2.0;
+                            changed[k - 1] = true;
+                            changed[k + 1] = true;
+                        }
+                        (true, false) => {
+                            turn[k - 1] += excess;
+                            changed[k - 1] = true;
+                        }
+                        (false, true) => {
+                            turn[k + 1] += excess;
+                            changed[k + 1] = true;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if !any {
+                break;
+            }
+        }
+        // Each stretch of changed turns, with a little road either side, is
+        // laid again from its headings; what it misses the track by at its end
+        // is spread along it, so it joins back on.
+        let m_turns = turn.len();
+        let mut k = 0;
+        while k < m_turns {
+            if !changed[k] {
+                k += 1;
+                continue;
+            }
+            let mut e = k;
+            while e + 1 < m_turns && (changed[e + 1] || changed[(e + 2).min(m_turns - 1)]) {
+                e += 1;
+            }
+            // Points a..=b are laid again (point i sits after step i - 1).
+            let a = k.saturating_sub(6);
+            let b = (e + 30).min(n - 1);
+            let mut h = head[a];
+            let mut laid = vec![pts[a]];
+            for i in a + 1..=b {
+                // Step i - 1 runs from point i - 1 to point i.
+                if i - 1 > a {
+                    h += turn[i - 2];
+                }
+                let p = laid[laid.len() - 1];
+                laid.push(RoutePt {
+                    x: p.x + h.sin() * seg[i - 1],
+                    z: p.z + h.cos() * seg[i - 1],
+                    ..pts[i]
+                });
+            }
+            let miss = (pts[b].x - laid[b - a].x, pts[b].z - laid[b - a].z);
+            for (j, p) in laid.iter().enumerate() {
+                let u = j as f64 / (b - a) as f64;
+                pts[a + j].x = p.x + miss.0 * u;
+                pts[a + j].z = p.z + miss.1 * u;
+            }
+            k = e + 1;
         }
     }
     // Back to points `STEP` apart along the eased road (easing shortens
@@ -701,10 +798,12 @@ pub(crate) fn clean_track(track: &[RoutePt]) -> Vec<RoutePt> {
             heading: 0.0,
         });
     }
-    // Heights: averaged over about 100 m, then no step steeper than allowed
+    // Heights: averaged over about 200 m, then no step steeper than allowed
     // (eased from both ends so neither is favoured).
     let m = out.len();
-    let reach = 10i64;
+    // (GPS and map heights along a road on a steep slope jump about: the
+    // slope's height, not the road's, leaks in.)
+    let reach = 20i64;
     let eles: Vec<f64> = out.iter().map(|p| p.ele).collect();
     for (i, p) in out.iter_mut().enumerate() {
         let (mut sum, mut wsum) = (0.0, 0.0);
@@ -970,6 +1069,52 @@ mod tests {
     }
 
     #[test]
+    fn hairpins_are_laid_round_and_stay_on_the_track() {
+        // Legs 30 m apart joined by hairpins far tighter than a road: a
+        // V at each end.
+        let mut track = Vec::new();
+        let (mut x, mut z) = (0.0f64, 0.0f64);
+        for leg in 0..6 {
+            let dir = if leg % 2 == 0 { 1.0 } else { -1.0 };
+            for _ in 0..80 {
+                z += dir * STEP;
+                track.push(RoutePt {
+                    x,
+                    z,
+                    ele: 0.0,
+                    heading: 0.0,
+                });
+            }
+            for _ in 0..6 {
+                x += STEP;
+                track.push(RoutePt {
+                    x,
+                    z,
+                    ele: 0.0,
+                    heading: 0.0,
+                });
+            }
+        }
+        let road = clean_track(&track);
+        let wrap = |a: f64| (a + std::f64::consts::PI).rem_euclid(TAU) - std::f64::consts::PI;
+        // (Spacing the points evenly again after laying adds a little.)
+        let max_step = (STEP / TIGHTEST_BEND).to_degrees() * 1.25;
+        for i in 2..road.len() {
+            let h1 = (road[i - 1].x - road[i - 2].x).atan2(road[i - 1].z - road[i - 2].z);
+            let h2 = (road[i].x - road[i - 1].x).atan2(road[i].z - road[i - 1].z);
+            let t = wrap(h2 - h1).abs().to_degrees();
+            assert!(t <= max_step, "{t:.1} degrees at {i}");
+        }
+        for p in &road {
+            let off = track
+                .iter()
+                .map(|t| (t.x - p.x).hypot(t.z - p.z))
+                .fold(f64::MAX, f64::min);
+            assert!(off < 10.0, "{off:.1} m off the track");
+        }
+    }
+
+    #[test]
     fn builtin_loops_close() {
         for r in builtin() {
             let a = r.at(0.0);
@@ -1102,5 +1247,86 @@ mod gpx_out {
             r.shape()
         );
         std::fs::write(out, serde_json::to_string(&g).unwrap()).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod grades {
+    #[test]
+    #[ignore]
+    fn print_grades() {
+        let json = std::fs::read_to_string(std::env::var("VELOFORGE_ROUTE_JSON").unwrap()).unwrap();
+        let g: super::GpxRoute = serde_json::from_str(&json).unwrap();
+        let r = g.to_route();
+        let mut worst = (0.0f64, 0.0);
+        let mut d = 0.0;
+        while d < r.length {
+            let gr = r.grade(d);
+            if gr.abs() > worst.0.abs() {
+                worst = (gr, d);
+            }
+            d += 10.0;
+        }
+        println!(
+            "steepest {:.1} % at {:.0} m; {:.2} km, {:.0} m climb",
+            worst.0,
+            worst.1,
+            r.length / 1000.0,
+            r.ascent
+        );
+        // How far the road strays from the track, and how near stretches
+        // far apart along it come.
+        let track: Vec<(f64, f64)> = g.pts.iter().map(|p| (p.2, p.3)).collect();
+        let course = r.course_points();
+        let stray = course
+            .iter()
+            .map(|p| {
+                track
+                    .iter()
+                    .map(|t| (t.0 - p.x).hypot(t.1 - p.z))
+                    .fold(f64::MAX, f64::min)
+            })
+            .fold(0.0, f64::max);
+        let mut closest = f64::MAX;
+        for i in (0..course.len()).step_by(2) {
+            for j in (i + 40..course.len()).step_by(2) {
+                closest = closest.min((course[i].x - course[j].x).hypot(course[i].z - course[j].z));
+            }
+        }
+        println!("strays up to {stray:.1} m from the track; stretches 200 m+ apart along come within {closest:.1} m");
+        let pts = r.points();
+        let mut i = 2;
+        while i + 12 < pts.len() {
+            let mut t = pts[i + 12].heading - pts[i].heading;
+            while t > std::f64::consts::PI {
+                t -= std::f64::consts::TAU;
+            }
+            while t < -std::f64::consts::PI {
+                t += std::f64::consts::TAU;
+            }
+            if t.abs() > 2.4 {
+                let step = (i..i + 12)
+                    .map(|k| {
+                        let mut u = pts[k + 1].heading - pts[k].heading;
+                        while u > std::f64::consts::PI {
+                            u -= std::f64::consts::TAU;
+                        }
+                        while u < -std::f64::consts::PI {
+                            u += std::f64::consts::TAU;
+                        }
+                        u.abs().to_degrees()
+                    })
+                    .fold(0.0, f64::max);
+                println!(
+                    "hairpin at {:.0} m: {:.0} deg in 60 m, up to {:.1} deg a step",
+                    i as f64 * 5.0,
+                    t.to_degrees(),
+                    step
+                );
+                i += 20;
+            } else {
+                i += 1;
+            }
+        }
     }
 }
