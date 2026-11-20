@@ -368,12 +368,24 @@ impl RouteGeo {
         for j in (0..n).step_by(step) {
             let (px, pz) = self.pts[j];
             let d = ((px - x).powi(2) + (pz - z).powi(2)).sqrt();
-            // The offset keeps the slope between two nearby roads gentle.
-            let w = 1.0 / ((d - 9.0).max(0.0) + 20.0).powi(3);
+            // Each point of road weighs as one over its distance to the
+            // power 2.5: summed along a road, nearly one over the distance to
+            // the road, so between two stretches of road (the legs of a
+            // hairpin climb) the land rises nearly evenly from one to the
+            // other rather than steepest in the middle. Roads further than
+            // 1.5 km fade out (only the faintest weight is left, should
+            // nothing be nearer); the offset keeps it smooth close by.
+            let dd = (d - 9.0).max(0.0) + 12.0;
+            let far = 1e-6 / (dd * dd * dd);
+            let w = if d >= 1500.0 {
+                far
+            } else {
+                (1.0 - smoothstep(800.0, 1500.0, d)) / (dd * dd * dd.sqrt()) + far
+            };
             sw += w;
             se += w * self.eles[j];
         }
-        exact + (se / sw - exact) * smoothstep(9.0, 30.0, near.dist)
+        exact + (se / sw - exact) * smoothstep(9.0, 24.0, near.dist)
     }
 
     /// What the land is like at (x, z): its height, how far the road is,
@@ -1544,6 +1556,80 @@ mod tests {
                 assert_eq!(bales, 0, "{id}: bales outside farmland");
             }
         }
+    }
+
+    #[test]
+    fn the_land_between_the_legs_of_a_hairpin_rises_evenly() {
+        // Two legs 140 m apart, 60 m apart in height, joined by a hairpin:
+        // the land between climbs from one to the other as one slope.
+        let mut pts = Vec::new();
+        let leg = 1000.0;
+        let n = (leg / STEP) as usize;
+        let rise = 60.0;
+        for i in 0..=n {
+            let u = i as f64 / n as f64;
+            pts.push(route::RoutePt {
+                x: 0.0,
+                z: u * leg,
+                ele: 500.0 + 0.5 * rise * u,
+                heading: 0.0,
+            });
+        }
+        for k in 1..28 {
+            let a = k as f64 / 28.0 * std::f64::consts::PI;
+            pts.push(route::RoutePt {
+                x: 70.0 - 70.0 * a.cos(),
+                z: leg + 70.0 * a.sin(),
+                ele: 500.0 + 0.5 * rise,
+                heading: 0.0,
+            });
+        }
+        for i in 0..=n {
+            let u = i as f64 / n as f64;
+            pts.push(route::RoutePt {
+                x: 140.0,
+                z: leg - u * leg,
+                ele: 500.0 + 0.5 * rise + 0.5 * rise * u,
+                heading: 0.0,
+            });
+        }
+        let (course, beyond) = (pts, Vec::new());
+        let mut course = course;
+        // The road beyond: straight on south.
+        let last = *course.last().unwrap();
+        let mut beyond = beyond;
+        for i in 1..400 {
+            beyond.push(route::RoutePt {
+                x: 140.0,
+                z: last.z - i as f64 * STEP,
+                ele: last.ele,
+                heading: 0.0,
+            });
+        }
+        course.dedup_by(|a, b| (a.x - b.x).hypot(a.z - b.z) < 1.0);
+        let r = Route::point_to_point("hairpin", "Hairpin", Scenery::Alpine, 3, course, beyond);
+        let g = RouteGeo::new(&r);
+        // Across the gap near the bottom, where the legs differ most.
+        let z = 150.0;
+        let (lo, hi) = (
+            g.base_height(12.0, z, &g.nearest(12.0, z)),
+            g.base_height(128.0, z, &g.nearest(128.0, z)),
+        );
+        let mean = (hi - lo).abs() / 116.0;
+        let mut steepest = 0.0f64;
+        for k in 0..58 {
+            let (x0, x1) = (12.0 + k as f64 * 2.0, 14.0 + k as f64 * 2.0);
+            let (h0, h1) = (
+                g.base_height(x0, z, &g.nearest(x0, z)),
+                g.base_height(x1, z, &g.nearest(x1, z)),
+            );
+            steepest = steepest.max((h1 - h0).abs() / 2.0);
+        }
+        assert!(hi - lo > 0.6 * 0.47 * rise, "{lo:.1} to {hi:.1}");
+        assert!(
+            steepest < 1.35 * mean,
+            "steepest {steepest:.2} against {mean:.2} on average"
+        );
     }
 
     #[test]
