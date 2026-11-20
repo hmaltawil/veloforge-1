@@ -147,6 +147,8 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
           <button data-m="13">Two-storey house</button>
           <button data-m="11">Barn</button>
           <button data-m="12">Shed</button>
+          <button data-m="16">Stone wall</button>
+          <button data-m="17">Hay bales</button>
           <button data-m="6">Pine (far)</button>
           <button data-m="7">Broadleaf (far)</button>
         </div>
@@ -561,6 +563,31 @@ const midModel = (t) => (t < 3 ? 8 + t : TREE_MODELS[t]);
 // Buildings' roofs take their instance's tint: show them with one the app
 // gives them.
 const ROOFS = { 5: [0.55, 0.22, 0.15], 11: [0.4, 0.4, 0.4], 12: [0.45, 0.28, 0.18], 13: [0.35, 0.33, 0.32] };
+// Walls and bales are shown as the app places them (terrain.rs): pieces of
+// wall end to end, every other one turned end for end and each a shade of
+// its own, stepping down a gentle slope, with a gateway; bales lying in a
+// row the field's way, some end to end, of each sort.
+const FIELD_GROUPS = {
+  16: () => {
+    const out = [], piece = 3.3, rot = 0.0;
+    for (let n = 0; n < 9; n++) {
+      if (n === 5) continue; // a gateway
+      const x = MODEL_AT.x - 13 + n * piece, tone = 0.9 + 0.2 * ((n * 37) % 10) / 10;
+      out.push(x, -0.03 - 0.12 * n, MODEL_AT.z, rot + (n % 2 ? Math.PI : 0), 1, 1, tone, tone * 0.99, tone * 0.96);
+    }
+    return out;
+  },
+  17: () => {
+    const out = [], sorts = [[0.55, 0.45, 0.24], [0.55, 0.45, 0.24], [0.78, 0.8, 0.77], [0.2, 0.3, 0.17], [0.05, 0.05, 0.055]];
+    sorts.forEach((c, n) => {
+      const rot = 0.35 + 0.1 * Math.sin(n * 3.1);
+      const x = MODEL_AT.x - 8 + n * 4, z = MODEL_AT.z - 3 + (n % 2) * 3;
+      out.push(x, -0.06, z, rot, 1, 1, ...c);
+      if (n === 1) out.push(x + 1.28 * Math.cos(rot), -0.06, z - 1.28 * Math.sin(rot), rot, 1, 1, ...c.map((v) => v * 0.95));
+    });
+    return out;
+  },
+};
 // Uniforms for scenery drawn with the app's shaders (updated each frame).
 let sceneryU = null;
 // A tree in the Scenery tab, drawn as the app would at the camera's distance.
@@ -586,6 +613,14 @@ function showModel(k) {
     scene.add(sceneryForest.group);
     modelHeight = HEIGHTS[k];
     $("stats").textContent = `${(n / 30).toLocaleString()} triangles close by · ${HEIGHTS[k]} m tall`;
+    return;
+  }
+  if (FIELD_GROUPS[k]) {
+    if (!sceneryU) sceneryU = rideUniforms();
+    modelMesh = appObjects(arr, FIELD_GROUPS[k](), v, sceneryU);
+    modelHeight = 2.5;
+    scene.add(modelMesh);
+    $("stats").textContent = `${(n / 30).toLocaleString()} triangles each · ${FIELD_GROUPS[k]().length / 9} as the app places them`;
     return;
   }
   let lo = Infinity, hi = -Infinity;

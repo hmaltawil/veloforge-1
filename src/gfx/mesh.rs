@@ -1994,6 +1994,9 @@ mod tests {
             ),
             ("barn", super::super::buildings::barn(), 1600),
             ("shed", super::super::buildings::shed(), 400),
+            // Many in view along the fields, though small.
+            ("wall piece", super::super::fields::stone_wall(), 1300),
+            ("bale", super::super::fields::hay_bale(), 700),
         ] {
             let tris = m.vertex_count() / 3;
             println!("{name}: {tris} triangles");

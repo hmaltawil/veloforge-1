@@ -10,6 +10,10 @@ mod body;
 #[cfg(lab_buildings)]
 #[path = "../../../src/gfx/buildings.rs"]
 mod buildings;
+// Walls and bales (build.sh sets lab_fields when the code has them).
+#[cfg(lab_fields)]
+#[path = "../../../src/gfx/fields.rs"]
+mod fields;
 #[path = "../../../src/gfx/impostor.rs"]
 mod impostor;
 #[path = "../../../src/gfx/math.rs"]
@@ -191,7 +195,8 @@ pub extern "C" fn joints_ptr() -> *const f32 {
 
 /// Build one of the scenery models: 0 pine, 1 broadleaf, 2 birch, 3 bush,
 /// 4 rock, 5 house, 6 far pine, 7 far broadleaf, 11 barn, 12 shed,
-/// 13 two-storey house, 14 oak, 15 maple. Returns the float count.
+/// 13 two-storey house, 14 oak, 15 maple, 16 a piece of stone wall,
+/// 17 a bale. Returns the float count.
 #[no_mangle]
 pub extern "C" fn model(kind: u32) -> u32 {
     LAB.with(|l| {
@@ -232,6 +237,10 @@ pub extern "C" fn model(kind: u32) -> u32 {
             14 => mesh::oak(),
             #[cfg(lab_oak)]
             15 => mesh::maple(),
+            #[cfg(lab_fields)]
+            16 => fields::stone_wall(),
+            #[cfg(lab_fields)]
+            17 => fields::hay_bale(),
             _ => mesh::birch(),
         };
         l.model = m.v;

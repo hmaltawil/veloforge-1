@@ -45,6 +45,8 @@ pub struct Palette {
     pub rocks: f64,
     /// Farmhouses along the road.
     pub farmhouses: bool,
+    /// The share of fields with bales of hay in them.
+    pub bales: f64,
 }
 
 /// What stands on a spot.
@@ -150,6 +152,12 @@ impl Palette {
                 0.006
             },
             farmhouses: scenery != Scenery::Alpine,
+            bales: match scenery {
+                Scenery::Hills => 0.1,
+                Scenery::Lake => 0.07,
+                Scenery::Coast => 0.05,
+                Scenery::Alpine => 0.03,
+            },
         }
     }
 

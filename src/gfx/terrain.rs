@@ -2,6 +2,7 @@
 //! distance to the road (the road sits in a valley), forests, rocks,
 //! bushes, houses and lakes. Windows of terrain are built on a worker thread.
 
+use super::fields;
 use super::flora::{Cover, Palette, Spot};
 use crate::route::{Route, Scenery, STEP};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -24,7 +25,7 @@ pub struct Tile {
 pub const INSTANCE_STRIDE: usize = 9;
 
 /// Kinds of scattered object, indexing [`TerrainData::instances`].
-pub const KINDS: usize = 11;
+pub const KINDS: usize = 13;
 pub const PINE: usize = 0;
 pub const BROADLEAF: usize = 1;
 pub const ROCK: usize = 2;
@@ -36,6 +37,16 @@ pub const SHED: usize = 7;
 pub const TOWNHOUSE: usize = 8;
 pub const OAK: usize = 9;
 pub const MAPLE: usize = 10;
+pub const BALE: usize = 11;
+pub const WALL: usize = 12;
+
+/// Bales in one cell of a field: where each lies from the cell's spot,
+/// which way, and their colour.
+struct Bales {
+    at: Vec<(f64, f64)>,
+    rot: f32,
+    tint: [f32; 3],
+}
 
 fn smoothstep(a: f64, b: f64, x: f64) -> f64 {
     let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
@@ -683,6 +694,190 @@ impl RouteGeo {
         out
     }
 
+    /// A bale (or two side by side) in the cell `gi`, `gj` at `x`, `z`, if
+    /// that cell lies in a mown field: fields are 66 m squares, some with
+    /// bales, each lying in rows the field's own way, all of one sort
+    /// (straw, or wrapped white, green or black).
+    fn bale(
+        &self,
+        palette: &Palette,
+        gi: i64,
+        gj: i64,
+        x: f64,
+        z: f64,
+        spot: &Spot,
+    ) -> Option<Bales> {
+        if palette.bales <= 0.0 || spot.forest > 0.08 || spot.dist < 17.0 {
+            return None;
+        }
+        let (fi, fj) = (gi.div_euclid(6), gj.div_euclid(6));
+        let mut field = Rng(hash2(fi, fj, self.seed + 4111));
+        if field.next() >= palette.bales {
+            return None;
+        }
+        let mut cell = Rng(hash2(gi, gj, self.seed + 4127));
+        if cell.next() >= 0.25 {
+            return None;
+        }
+        let rot = (field.next() * std::f64::consts::PI) as f32;
+        let tint = match field.next() {
+            r if r < 0.55 => [0.55, 0.45, 0.24],
+            r if r < 0.8 => [0.78, 0.8, 0.77],
+            r if r < 0.92 => [0.2, 0.3, 0.17],
+            _ => [0.05, 0.05, 0.055],
+        };
+        let shade = (0.9 + 0.2 * cell.next()) as f32;
+        let rot = rot + (0.12 * (cell.next() - 0.5)) as f32;
+        let mut at = vec![(0.0, 0.0)];
+        if cell.next() < 0.3 {
+            // A second one end to end along its axis (x, turned by `rot`).
+            // (World z is north; the turn is about render space's -z.)
+            at.push((1.28 * rot.cos() as f64, 1.28 * rot.sin() as f64));
+        }
+        // Not in the farmyards, nor in the water.
+        let clear = at.iter().all(|&(dx, dz)| {
+            let (bx, bz) = (x + dx, z + dz);
+            !self.sample(bx, bz).water
+                && self
+                    .farms
+                    .iter()
+                    .all(|b| (bx - b.x).powi(2) + (bz - b.z).powi(2) > (b.reach + 6.0).powi(2))
+        });
+        clear.then_some(Bales {
+            at,
+            rot,
+            tint: tint.map(|c| c * shade),
+        })
+    }
+
+    /// Dry-stone walls along the fields beside the road, piece by piece,
+    /// standing on the ground as drawn: on stretches of 140 m where no wooden
+    /// fence stands (see the fences in `gfx`), on the land side, broken by
+    /// a gateway now and then and wherever a farmyard, water, thick forest
+    /// or another stretch of road is in the way.
+    fn walls(
+        &self,
+        x0: f64,
+        z0: f64,
+        size: f64,
+        rel: &dyn Fn(f64, f64) -> (f32, f32),
+        ground: &dyn Fn(f64, f64) -> f64,
+        out: &mut Vec<f32>,
+    ) {
+        let route = &self.route;
+        let sides: &[f64] = match route.scenery {
+            Scenery::Hills | Scenery::Alpine => &[-1.0, 1.0],
+            Scenery::Lake | Scenery::Coast => {
+                if self.water_side > 0.0 {
+                    &[-1.0]
+                } else {
+                    &[1.0]
+                }
+            }
+        };
+        const STRETCH: f64 = 140.0;
+        const LATERAL: f64 = 8.8;
+        let piece = fields::WALL_PIECE as f64;
+        let point = |s: f64, side: f64| {
+            let p = route.at(s);
+            (
+                p.x + side * LATERAL * p.heading.cos(),
+                p.z - side * LATERAL * p.heading.sin(),
+            )
+        };
+        let inside = |x: f64, z: f64, pad: f64| {
+            x > x0 - pad && x < x0 + size + pad && z > z0 - pad && z < z0 + size + pad
+        };
+        let stretches = (route.length / STRETCH).ceil() as i64;
+        for &side in sides {
+            for k in 0..stretches {
+                let pick = super::terrain_hash(k, side as i64, route.seed) % 5;
+                let walled = match route.scenery {
+                    Scenery::Coast => pick < 2,
+                    _ => pick == 2,
+                };
+                let (s0, s1) = (
+                    k as f64 * STRETCH,
+                    ((k + 1) as f64 * STRETCH).min(route.length),
+                );
+                if !walled
+                    || !inside(point(s0, side).0, point(s0, side).1, STRETCH)
+                        && !inside(point(s1, side).0, point(s1, side).1, STRETCH)
+                {
+                    continue;
+                }
+                // A gateway somewhere along half the stretches.
+                let gate =
+                    (super::terrain_hash(k, 31 + side as i64, route.seed) % 1000) as f64 / 1000.0;
+                let gate_at = s0 + 20.0 + (STRETCH - 40.0) * gate;
+                let has_gate = gate < 0.5;
+                let mut s = s0;
+                let mut a = point(s, side);
+                let mut n = 0u32;
+                while s < s1 {
+                    // The point along the road whose wall point is a piece's
+                    // length from the last: a few secant steps.
+                    let mut t = s + piece;
+                    for _ in 0..4 {
+                        let b = point(t, side);
+                        let d = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+                        if d < 1e-6 {
+                            break;
+                        }
+                        t = s + (t - s) * piece / d;
+                    }
+                    if t > s1 + 0.5 {
+                        break;
+                    }
+                    let b = point(t, side);
+                    let (cx, cz) = ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+                    let gap = has_gate && (s - gate_at).abs() < 2.6;
+                    if !gap && inside(cx, cz, 0.0) && self.wall_fits(cx, cz) {
+                        let (rx, rz) = rel(cx, cz);
+                        let rot = (b.1 - a.1).atan2(b.0 - a.0) as f32;
+                        // Every other piece turned end for end, and each a
+                        // shade of its own, so the pieces do not repeat.
+                        let flip = if n % 2 == 1 {
+                            std::f32::consts::PI
+                        } else {
+                            0.0
+                        };
+                        let tone =
+                            0.9 + 0.2 * (hash2(k, n as i64, route.seed) % 100) as f32 / 100.0;
+                        out.extend_from_slice(&[
+                            rx,
+                            ground(cx, cz) as f32 - 0.03,
+                            rz,
+                            rot + flip,
+                            1.0,
+                            1.0,
+                            tone,
+                            tone * 0.99,
+                            tone * 0.96,
+                        ]);
+                    }
+                    s = t;
+                    a = b;
+                    n += 1;
+                }
+            }
+        }
+    }
+
+    /// Whether a piece of wall may stand at `x`, `z`: on dry land, out of
+    /// thick forest, clear of the road (where it bends back on itself) and
+    /// of the farmyards.
+    fn wall_fits(&self, x: f64, z: f64) -> bool {
+        let smp = self.sample(x, z);
+        !smp.water
+            && smp.forest < 0.45
+            && smp.dist > 7.5
+            && self
+                .farms
+                .iter()
+                .all(|b| (x - b.x).powi(2) + (z - b.z).powi(2) > (b.reach + 3.0).powi(2))
+    }
+
     fn scatter(
         &self,
         ox: f64,
@@ -726,6 +921,29 @@ impl RouteGeo {
                     forest: smp.forest,
                     dist: smp.dist,
                 };
+                // Bales lie in mown fields, open and away from the road; with
+                // numbers of their own, so the trees stay where they were.
+                if let Some(b) = self.bale(&palette, gi, gj, x, z, &spot) {
+                    let (rx, rz) = rel(x, z);
+                    for (dx, dz) in b.at {
+                        let (bx, bz) = (x + dx, z + dz);
+                        let (px, pz) = rel(bx, bz);
+                        let h = ground(bx, bz) as f32;
+                        out[BALE].extend_from_slice(&[
+                            px,
+                            h - 0.06,
+                            pz,
+                            b.rot,
+                            1.0,
+                            1.0,
+                            b.tint[0],
+                            b.tint[1],
+                            b.tint[2],
+                        ]);
+                    }
+                    shadows.extend_from_slice(&[rx, gh + 0.08, rz, 1.1]);
+                    continue;
+                }
                 let r = rng.next();
                 let (rx, rz) = rel(x, z);
                 match palette.cover(&spot, r) {
@@ -789,6 +1007,7 @@ impl RouteGeo {
                 }
             }
         }
+        self.walls(x0, z0, size, &rel, ground, &mut out[WALL]);
         for b in farms {
             let (rx, rz) = rel(b.x, b.z);
             let gh = ground(b.x, b.z) as f32;
@@ -1066,7 +1285,16 @@ mod tests {
         let half = (WINDOW_SIZE / 2.0) as f32;
         let vert = |i: usize, j: usize| w.verts[(j * n + i) * TERRAIN_STRIDE + 1];
         let mut checked = 0;
-        for kind in [PINE, BROADLEAF, BIRCH, OAK, MAPLE] {
+        // How far below the ground each kind is set.
+        for (kind, sunk) in [
+            (PINE, 0.2),
+            (BROADLEAF, 0.2),
+            (BIRCH, 0.2),
+            (OAK, 0.2),
+            (MAPLE, 0.2),
+            (BALE, 0.06),
+            (WALL, 0.03),
+        ] {
             for inst in w.instances[kind].chunks(INSTANCE_STRIDE) {
                 // Render space: x east, z = -north, from the window's corner.
                 let (u, v) = ((inst[0] + half) / cell, (-inst[2] + half) / cell);
@@ -1087,14 +1315,56 @@ mod tests {
                     hd + (hc - hd) * (1.0 - fx) + (hb - hd) * (1.0 - fz)
                 };
                 assert!(
-                    (inst[1] + 0.2 - h).abs() < 0.02,
-                    "a tree {:.2} m off the ground",
-                    inst[1] + 0.2 - h
+                    (inst[1] + sunk - h).abs() < 0.02,
+                    "kind {kind} {:.2} m off the ground",
+                    inst[1] + sunk - h
                 );
                 checked += 1;
             }
         }
         assert!(checked > 1000);
+    }
+
+    #[test]
+    fn walls_run_along_the_fields_and_bales_lie_in_them() {
+        let r = &route::builtin()[0];
+        let g = RouteGeo::new(r);
+        let (mut walls, mut joined, mut bales) = (0, 0, 0);
+        for at in [1500.0, 5000.0, 9000.0] {
+            let p = r.at(at);
+            let w = g.build_window(p.x, p.z, WINDOW_SIZE, WINDOW_VERTS);
+            let world = |inst: &[f32]| (inst[0] as f64 + w.ox, w.oz - inst[2] as f64);
+            let pieces: Vec<(f64, f64)> = w.instances[WALL]
+                .chunks(INSTANCE_STRIDE)
+                .map(world)
+                .collect();
+            for &(x, z) in &pieces {
+                let smp = g.sample(x, z);
+                assert!(!smp.water && smp.dist > 7.5, "a wall at {x:.0}, {z:.0}");
+                // Pieces stand end to end: one a piece's length away.
+                let piece = fields::WALL_PIECE as f64;
+                if pieces
+                    .iter()
+                    .any(|&(a, b)| ((a - x).hypot(b - z) - piece).abs() < 0.15)
+                {
+                    joined += 1;
+                }
+            }
+            walls += pieces.len();
+            for inst in w.instances[BALE].chunks(INSTANCE_STRIDE) {
+                let (x, z) = world(inst);
+                let smp = g.sample(x, z);
+                assert!(!smp.water && smp.dist > 16.0, "a bale at {x:.0}, {z:.0}");
+                bales += 1;
+            }
+        }
+        println!("{walls} pieces of wall, {joined} joined, {bales} bales");
+        assert!(walls > 100, "{walls} pieces of wall");
+        assert!(
+            joined as f64 > 0.95 * walls as f64,
+            "{joined} of {walls} joined"
+        );
+        assert!(bales > 10, "{bales} bales");
     }
 
     #[test]

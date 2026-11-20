@@ -9,6 +9,7 @@
 
 mod body;
 mod buildings;
+mod fields;
 mod flora;
 mod impostor;
 mod math;
@@ -1660,6 +1661,9 @@ const OBJ_SHED: usize = terrain::SHED;
 const OBJ_TOWNHOUSE: usize = terrain::TOWNHOUSE;
 const OBJ_OAK: usize = terrain::OAK;
 const OBJ_MAPLE: usize = terrain::MAPLE;
+const OBJ_BALE: usize = terrain::BALE;
+/// Dry-stone walls along the fields, piece by piece.
+const OBJ_WALL: usize = terrain::WALL;
 const OBJ_POST: usize = KINDS;
 const OBJ_PLANK: usize = KINDS + 1;
 const OBJ_RIDER: usize = KINDS + 2;
@@ -2088,6 +2092,8 @@ impl GlState {
                     OBJ_BARN => buildings::barn(),
                     OBJ_SHED => buildings::shed(),
                     OBJ_TOWNHOUSE => buildings::townhouse(),
+                    OBJ_BALE => fields::hay_bale(),
+                    OBJ_WALL => fields::stone_wall(),
                     tree => tree_mesh(TREES.iter().position(|&k| k == tree).expect("a tree")),
                 })
                 .collect();
@@ -2365,7 +2371,7 @@ impl GlState {
         };
         for (kind, list) in self.scattered.iter().enumerate() {
             let tree = TREES.iter().position(|&k| k == kind);
-            let small = matches!(kind, OBJ_BUSH | OBJ_ROCK);
+            let small = matches!(kind, OBJ_BUSH | OBJ_ROCK | OBJ_BALE | OBJ_WALL);
             for inst in list.as_chunks::<INSTANCE_STRIDE>().0 {
                 let rel = sub([inst[0], inst[1], inst[2]], f.cam);
                 let dist = len(rel);
@@ -2377,6 +2383,8 @@ impl GlState {
                 // 12 m from their middle).
                 let r = if BUILDINGS.contains(&kind) {
                     12.0 * inst[4]
+                } else if kind == OBJ_WALL {
+                    fields::WALL_PIECE * 0.6
                 } else {
                     inst[5]
                 };
@@ -3361,7 +3369,10 @@ impl GlState {
                 let p = self.programs.get_mut("sh_object").unwrap();
                 gl.use_program(Some(p.id));
                 p.f1(gl, "u_wind", 0.0);
-                self.draw_instanced(gl, &[OBJ_ROCK, OBJ_POST, OBJ_PLANK, OBJ_RIDER]);
+                self.draw_instanced(
+                    gl,
+                    &[OBJ_ROCK, OBJ_BALE, OBJ_WALL, OBJ_POST, OBJ_PLANK, OBJ_RIDER],
+                );
                 self.draw_instanced(gl, &BUILDINGS);
                 let p = self.programs.get_mut("sh_skinned").unwrap();
                 gl.use_program(Some(p.id));
@@ -3749,6 +3760,8 @@ impl GlState {
                     OBJ_BARN,
                     OBJ_SHED,
                     OBJ_TOWNHOUSE,
+                    OBJ_BALE,
+                    OBJ_WALL,
                     OBJ_POST,
                     OBJ_REFLECTOR,
                     OBJ_PLANK,
