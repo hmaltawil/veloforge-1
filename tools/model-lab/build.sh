@@ -11,6 +11,7 @@ now_cfg=""
 if [ -f "$here/../../src/gfx/buildings.rs" ]; then now_cfg="--cfg lab_buildings"; fi
 if grep -q "pub fn oak" "$here/../../src/gfx/mesh.rs"; then now_cfg="$now_cfg --cfg lab_oak"; fi
 if [ -f "$here/../../src/gfx/fields.rs" ]; then now_cfg="$now_cfg --cfg lab_fields"; fi
+if grep -q "pub fn church" "$here/../../src/gfx/buildings.rs"; then now_cfg="$now_cfg --cfg lab_church"; fi
 RUSTFLAGS="$now_cfg" cargo build --release --target wasm32-unknown-unknown --quiet
 wasm="$here/target/wasm32-unknown-unknown/release/model_lab.wasm"
 # The released models too (main's model code with this page's exports), so
@@ -32,6 +33,7 @@ if grep -q "pub fn broadleaf_mid" "$base_dir/src/gfx/mesh.rs"; then base_cfg="--
 if [ -f "$base_dir/src/gfx/buildings.rs" ]; then base_cfg="$base_cfg --cfg lab_buildings"; fi
 if grep -q "pub fn oak" "$base_dir/src/gfx/mesh.rs"; then base_cfg="$base_cfg --cfg lab_oak"; fi
 if git -C "$here" cat-file -e main:src/gfx/fields.rs 2>/dev/null; then base_cfg="$base_cfg --cfg lab_fields"; fi
+if grep -q "pub fn church" "$base_dir/src/gfx/buildings.rs" 2>/dev/null; then base_cfg="$base_cfg --cfg lab_church"; fi
 (cd "$base_dir/tools/model-lab" && CARGO_TARGET_DIR="$here/target-base" RUSTFLAGS="$base_cfg" \
     cargo build --release --target wasm32-unknown-unknown --quiet)
 wasm_base="$here/target-base/wasm32-unknown-unknown/release/model_lab.wasm"

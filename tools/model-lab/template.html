@@ -147,6 +147,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
           <button data-m="13">Two-storey house</button>
           <button data-m="11">Barn</button>
           <button data-m="12">Shed</button>
+          <button data-m="18">Church</button>
           <button data-m="16">Stone wall</button>
           <button data-m="17">Hay bales</button>
           <button data-m="6">Pine (far)</button>
@@ -562,7 +563,7 @@ const TREE_MODELS = [0, 1, 2, 14, 15];
 const midModel = (t) => (t < 3 ? 8 + t : TREE_MODELS[t]);
 // Buildings' roofs take their instance's tint: show them with one the app
 // gives them.
-const ROOFS = { 5: [0.55, 0.22, 0.15], 11: [0.4, 0.4, 0.4], 12: [0.45, 0.28, 0.18], 13: [0.35, 0.33, 0.32] };
+const ROOFS = { 5: [0.55, 0.22, 0.15], 11: [0.4, 0.4, 0.4], 12: [0.45, 0.28, 0.18], 13: [0.35, 0.33, 0.32], 18: [0.3, 0.31, 0.34] };
 // Walls and bales are shown as the app places them (terrain.rs): pieces of
 // wall end to end, every other one turned end for end and each a shade of
 // its own, stepping down a gentle slope, with a gateway; bales lying in a
@@ -595,7 +596,7 @@ let sceneryForest = null;
 function showModel(k) {
   const v = ride.shaders;
   // Buildings stand back from the road, as in the app.
-  MODEL_AT.set(2, 0, ROOFS[k] ? -22 : -7);
+  MODEL_AT.set(2, 0, k === 18 ? -34 : ROOFS[k] ? -22 : -7);
   const arr = modelVerts(v, k);
   const n = arr.length;
   if (modelMesh) { scene.remove(modelMesh); modelMesh.geometry.dispose(); modelMesh.material.dispose(); modelMesh = null; }
