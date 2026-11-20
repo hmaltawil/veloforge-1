@@ -40,6 +40,23 @@ pub const MAPLE: usize = 10;
 pub const BALE: usize = 11;
 pub const WALL: usize = 12;
 
+/// How wide, for its size, each kind is where it meets the ground (radius):
+/// a tree's trunk for its width, a bush's base, a rock's, a bale's.
+pub(super) const TREE_FOOT: f64 = 0.1;
+pub(super) const BUSH_FOOT: f64 = 0.3;
+pub(super) const ROCK_FOOT: f64 = 0.35;
+pub(super) const BALE_FOOT: f64 = 0.7;
+
+/// The lowest the `ground` is under something standing at `x`, `z` with
+/// a base `r` across (radius): its middle and eight points round its edge.
+/// Set there (and a little lower), no side of it stands over the slope.
+pub(super) fn lowest(ground: &dyn Fn(f64, f64) -> f64, x: f64, z: f64, r: f64) -> f64 {
+    (0..8).fold(ground(x, z), |lo, k| {
+        let a = k as f64 * std::f64::consts::FRAC_PI_4;
+        lo.min(ground(x + a.cos() * r, z + a.sin() * r))
+    })
+}
+
 /// The farmland patchwork the ground shader paints (`TERRAIN_FS`, where
 /// the scenery is farmland or a lake): fields 150 by 105 m on a grid turned
 /// a little from north, each with its own crop. Worked out here exactly as
@@ -966,7 +983,7 @@ impl RouteGeo {
                             0.9 + 0.2 * (hash2(k, n as i64, route.seed) % 100) as f32 / 100.0;
                         out.extend_from_slice(&[
                             rx,
-                            ground(cx, cz) as f32 - 0.03,
+                            lowest(ground, cx, cz, 0.4) as f32 - 0.03,
                             rz,
                             rot + flip,
                             1.0,
@@ -1074,7 +1091,7 @@ impl RouteGeo {
                     for (dx, dz) in b.at {
                         let (bx, bz) = (x + dx, z + dz);
                         let (px, pz) = rel(bx, bz);
-                        let h = ground(bx, bz) as f32;
+                        let h = lowest(ground, bx, bz, BALE_FOOT) as f32;
                         out[BALE].extend_from_slice(&[
                             px,
                             h - 0.06,
@@ -1106,9 +1123,10 @@ impl RouteGeo {
                         let tint = 0.78 + 0.44 * rng.next() as f32;
                         let warm = (rng.next() as f32).powi(2) * t.warm;
                         let rot = rng.next() * std::f64::consts::TAU;
+                        let foot = lowest(ground, x, z, TREE_FOOT * width) as f32;
                         out[t.kind].extend_from_slice(&[
                             rx,
-                            gh - 0.2,
+                            foot - 0.2,
                             rz,
                             rot as f32,
                             width as f32,
@@ -1124,9 +1142,10 @@ impl RouteGeo {
                         let width = height * (1.2 + 0.8 * rng.next());
                         let tint = 0.8 + 0.4 * rng.next() as f32;
                         let rot = rng.next() * std::f64::consts::TAU;
+                        let foot = lowest(ground, x, z, BUSH_FOOT * width) as f32;
                         out[BUSH].extend_from_slice(&[
                             rx,
-                            gh - 0.15,
+                            foot - 0.15,
                             rz,
                             rot as f32,
                             width as f32,
@@ -1141,9 +1160,10 @@ impl RouteGeo {
                         let size = 1.0 + 3.5 * rng.next().powi(2);
                         let g = 0.8 + 0.3 * rng.next() as f32;
                         let rot = rng.next() * std::f64::consts::TAU;
+                        let foot = lowest(ground, x, z, ROCK_FOOT * size) as f32;
                         out[ROCK].extend_from_slice(&[
                             rx,
-                            gh - size as f32 * 0.25,
+                            foot - size as f32 * 0.25,
                             rz,
                             rot as f32,
                             size as f32,
@@ -1161,8 +1181,14 @@ impl RouteGeo {
         for b in farms {
             let (rx, rz) = rel(b.x, b.z);
             let gh = ground(b.x, b.z) as f32;
+            // Garden trees stand on the ground as drawn, like the rest.
+            let h = if [BROADLEAF, OAK, MAPLE, PINE, BIRCH].contains(&b.kind) {
+                lowest(ground, b.x, b.z, TREE_FOOT * b.scale.0 as f64) as f32 - 0.2
+            } else {
+                b.h as f32
+            };
             out[b.kind].extend_from_slice(&[
-                rx, b.h as f32, rz, b.rot, b.scale.0, b.scale.1, b.tint[0], b.tint[1], b.tint[2],
+                rx, h, rz, b.rot, b.scale.0, b.scale.1, b.tint[0], b.tint[1], b.tint[2],
             ]);
             shadows.extend_from_slice(&[rx, gh + 0.08, rz, b.reach as f32 * 0.8]);
         }
@@ -1421,8 +1447,9 @@ mod tests {
 
     #[test]
     fn things_stand_on_the_ground_as_drawn() {
-        // On the lake route, whose banks are steep: every tree's foot is
-        // on the drawn triangles, not floating over or sunk below them.
+        // On the lake route, whose banks are steep: everything stands on the
+        // drawn triangles, its base set into the ground all round, so no
+        // side of it floats over a slope, and no deeper than it needs.
         let r = route::builtin()
             .into_iter()
             .find(|r| r.id == "lakeside")
@@ -1430,49 +1457,60 @@ mod tests {
         let g = RouteGeo::new(&r);
         let p = r.at(2500.0);
         let w = g.build_window(p.x, p.z, WINDOW_SIZE, WINDOW_VERTS);
-        let n = WINDOW_VERTS;
-        let cell = (WINDOW_SIZE / (n - 1) as f64) as f32;
-        let half = (WINDOW_SIZE / 2.0) as f32;
-        let vert = |i: usize, j: usize| w.verts[(j * n + i) * TERRAIN_STRIDE + 1];
+        let ground = drawn(&w);
         let mut checked = 0;
-        // How far below the ground each kind is set.
-        for (kind, sunk) in [
-            (PINE, 0.2),
-            (BROADLEAF, 0.2),
-            (BIRCH, 0.2),
-            (OAK, 0.2),
-            (MAPLE, 0.2),
-            (BALE, 0.06),
-            (WALL, 0.03),
-        ] {
+        let mut on_slopes = 0;
+        // How far below the ground each kind is set, and its base's radius.
+        type Foot = fn(&[f32]) -> f64;
+        let kinds: [(usize, f64, Foot); 9] = [
+            (PINE, 0.2, |i| TREE_FOOT * i[4] as f64),
+            (BROADLEAF, 0.2, |i| TREE_FOOT * i[4] as f64),
+            (BIRCH, 0.2, |i| TREE_FOOT * i[4] as f64),
+            (OAK, 0.2, |i| TREE_FOOT * i[4] as f64),
+            (MAPLE, 0.2, |i| TREE_FOOT * i[4] as f64),
+            (BUSH, 0.15, |i| BUSH_FOOT * i[4] as f64),
+            (ROCK, 0.0, |i| ROCK_FOOT * i[4] as f64),
+            (BALE, 0.06, |_| BALE_FOOT),
+            (WALL, 0.03, |_| 0.4),
+        ];
+        for (kind, sunk, foot) in kinds {
             for inst in w.instances[kind].chunks(INSTANCE_STRIDE) {
-                // Render space: x east, z = -north, from the window's corner.
-                let (u, v) = ((inst[0] + half) / cell, (-inst[2] + half) / cell);
-                let (i, j) = (u.floor() as usize, v.floor() as usize);
-                if i + 1 >= n || j + 1 >= n {
-                    continue;
-                }
-                let (fx, fz) = (u - i as f32, v - j as f32);
-                let (ha, hb, hc, hd) = (
-                    vert(i, j),
-                    vert(i + 1, j),
-                    vert(i, j + 1),
-                    vert(i + 1, j + 1),
-                );
-                let h = if fx + fz <= 1.0 {
-                    ha + (hb - ha) * fx + (hc - ha) * fz
+                let (x, z) = (inst[0] as f64 + w.ox, w.oz - inst[2] as f64);
+                let sunk = if kind == ROCK {
+                    inst[4] as f64 * 0.25
                 } else {
-                    hd + (hc - hd) * (1.0 - fx) + (hb - hd) * (1.0 - fz)
+                    sunk
                 };
+                let base = inst[1] as f64 + sunk;
+                let r = foot(inst);
+                let mut lo = ground(x, z);
+                for k in 0..16 {
+                    let a = k as f64 * std::f64::consts::TAU / 16.0;
+                    lo = lo.min(ground(x + a.cos() * r, z + a.sin() * r));
+                }
+                // Its model's bottom is in the ground all round its base:
+                // a bale's rests 2 cm up, a wall's footing reaches 55 cm
+                // down; the others start at their foot.
+                let bottom = inst[1] as f64
+                    + match kind {
+                        BALE => 0.02,
+                        WALL => -0.55,
+                        _ => 0.0,
+                    };
                 assert!(
-                    (inst[1] + sunk - h).abs() < 0.02,
-                    "kind {kind} {:.2} m off the ground",
-                    inst[1] + sunk - h
+                    bottom <= lo + 0.01,
+                    "kind {kind} {:.2} m over the ground",
+                    bottom - lo
                 );
+                assert!(base >= lo - 0.3, "kind {kind} {:.2} m too deep", lo - base);
+                if ground(x, z) - lo > 0.1 {
+                    on_slopes += 1;
+                }
                 checked += 1;
             }
         }
-        assert!(checked > 1000);
+        assert!(checked > 1000, "{checked}");
+        assert!(on_slopes > 50, "{on_slopes} on slopes");
     }
 
     /// The ground as drawn in a window (the triangles between its vertices).
