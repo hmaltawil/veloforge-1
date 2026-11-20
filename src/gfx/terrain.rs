@@ -24,13 +24,16 @@ pub struct Tile {
 pub const INSTANCE_STRIDE: usize = 9;
 
 /// Kinds of scattered object, indexing [`TerrainData::instances`].
-pub const KINDS: usize = 6;
+pub const KINDS: usize = 9;
 pub const PINE: usize = 0;
 pub const BROADLEAF: usize = 1;
 pub const ROCK: usize = 2;
 pub const HOUSE: usize = 3;
 pub const BIRCH: usize = 4;
 pub const BUSH: usize = 5;
+pub const BARN: usize = 6;
+pub const SHED: usize = 7;
+pub const TOWNHOUSE: usize = 8;
 
 fn smoothstep(a: f64, b: f64, x: f64) -> f64 {
     let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
@@ -105,6 +108,20 @@ pub struct Sample {
     pub dist: f64,
     pub forest: f64,
     pub water: bool,
+}
+
+/// A farm building placed by `farmsteads`.
+struct Building {
+    kind: usize,
+    x: f64,
+    z: f64,
+    /// Height of the ground where it stands.
+    h: f64,
+    rot: f32,
+    scale: f32,
+    roof: [f32; 3],
+    /// How far it reaches from its centre (metres).
+    reach: f64,
 }
 
 /// Coarse grid of the nearest route point index, refined on lookup.
@@ -412,6 +429,105 @@ impl RouteGeo {
     }
 
     /// Trees, rocks and houses inside the window, plus blob shadows.
+    /// Farmsteads along the road, inside the square from (x0, z0), `size`
+    /// across: every 320 m or so, a house facing the road, often a barn
+    /// behind it and sometimes a shed beside it.
+    fn farmsteads(&self, x0: f64, z0: f64, size: f64) -> Vec<Building> {
+        let mut out = Vec::new();
+        let s = self.seed;
+        let route = &self.route;
+        let spacing = 320.0;
+        let house_roofs = [[0.55, 0.22, 0.15], [0.35, 0.33, 0.32], [0.45, 0.28, 0.18]];
+        let barn_roofs = [[0.4, 0.4, 0.4], [0.45, 0.2, 0.12], [0.28, 0.27, 0.26]];
+        for k in 0..(route.length / spacing) as i64 {
+            let mut rng = Rng(hash2(k, 0, s + 991));
+            if rng.next() > 0.55 {
+                continue;
+            }
+            let d = k as f64 * spacing + rng.next() * 100.0;
+            let p = route.at(d);
+            let side = if rng.next() < 0.5 { -1.0 } else { 1.0 };
+            let lateral = side * (24.0 + 26.0 * rng.next());
+            // Along the road, away from it, and the turn that faces a
+            // building's front (+z) towards it (heading is from north).
+            let along = (p.heading.sin(), p.heading.cos());
+            let away = (side * p.heading.cos(), -side * p.heading.sin());
+            let facing = (std::f64::consts::FRAC_PI_2 - p.heading
+                + if side > 0.0 {
+                    std::f64::consts::PI
+                } else {
+                    0.0
+                }) as f32;
+            let at = |a: f64, w: f64| {
+                (
+                    p.x + away.0 * (lateral.abs() + w) + along.0 * a,
+                    p.z + away.1 * (lateral.abs() + w) + along.1 * a,
+                )
+            };
+            let two_storey = rng.next() < 0.3;
+            let roof = house_roofs[(rng.next() * 3.0) as usize % 3];
+            let scale = (0.9 + 0.2 * rng.next()) as f32;
+            let (kind, reach) = if two_storey {
+                (TOWNHOUSE, 7.5)
+            } else {
+                (HOUSE, 10.5)
+            };
+            let mut place = |kind, (x, z): (f64, f64), rot, scale, roof, reach: f64| {
+                if x < x0 || x > x0 + size || z < z0 || z > z0 + size {
+                    return;
+                }
+                let smp = self.sample(x, z);
+                if smp.water || smp.dist < 15.0 {
+                    return;
+                }
+                out.push(Building {
+                    kind,
+                    x,
+                    z,
+                    h: smp.h,
+                    rot,
+                    scale,
+                    roof,
+                    reach: reach * scale as f64,
+                });
+            };
+            place(kind, at(0.0, 0.0), facing, scale, roof, reach);
+            // A barn behind the house, along the road or end on to it.
+            if rng.next() < 0.6 {
+                let end_on = rng.next() < 0.4;
+                let behind = if end_on { 23.0 } else { 18.0 };
+                let shift = (rng.next() - 0.5) * 16.0;
+                let turn = if end_on {
+                    std::f32::consts::FRAC_PI_2
+                } else {
+                    0.0
+                };
+                let roof = barn_roofs[(rng.next() * 3.0) as usize % 3];
+                place(
+                    BARN,
+                    at(shift, behind),
+                    facing + turn,
+                    (0.85 + 0.25 * rng.next()) as f32,
+                    roof,
+                    11.0,
+                );
+            }
+            // A shed beside the house, at the end without the woodshed.
+            if rng.next() < 0.5 {
+                let gap = if two_storey { 11.0 } else { 13.0 };
+                place(
+                    SHED,
+                    at(-side * gap, 1.5),
+                    facing,
+                    (0.9 + 0.2 * rng.next()) as f32,
+                    roof,
+                    3.5,
+                );
+            }
+        }
+        out
+    }
+
     fn scatter(
         &self,
         ox: f64,
@@ -428,6 +544,11 @@ impl RouteGeo {
         let (gi0, gj0) = ((x0 / cell).floor() as i64, (z0 / cell).floor() as i64);
         let cells = (size / cell).ceil() as i64;
         let palette = Palette::of(self.route.scenery);
+        let farms = if palette.farmhouses {
+            self.farmsteads(x0, z0, size)
+        } else {
+            Vec::new()
+        };
         for gj in gj0..gj0 + cells {
             for gi in gi0..gi0 + cells {
                 let mut rng = Rng(hash2(gi, gj, s + 77));
@@ -435,6 +556,13 @@ impl RouteGeo {
                 let z = (gj as f64 + rng.next()) * cell;
                 let smp = self.sample(x, z);
                 if smp.water || smp.dist < 9.5 {
+                    continue;
+                }
+                // Nothing grows where a building stands.
+                if farms
+                    .iter()
+                    .any(|b| (x - b.x).powi(2) + (z - b.z).powi(2) < (b.reach + 2.0).powi(2))
+                {
                     continue;
                 }
                 let spot = Spot {
@@ -514,48 +642,20 @@ impl RouteGeo {
                 }
             }
         }
-        // Farmhouses along the road.
-        if palette.farmhouses {
-            let spacing = 320.0;
-            let route = &self.route;
-            let k_max = (route.length / spacing) as i64;
-            for k in 0..k_max {
-                let mut rng = Rng(hash2(k, 0, s + 991));
-                if rng.next() > 0.55 {
-                    continue;
-                }
-                let d = k as f64 * spacing + rng.next() * 100.0;
-                let p = route.at(d);
-                let side = if rng.next() < 0.5 { -1.0 } else { 1.0 };
-                let lateral = side * (24.0 + 26.0 * rng.next());
-                let x = p.x + lateral * p.heading.cos();
-                let z = p.z - lateral * p.heading.sin();
-                if x < x0 || x > x0 + size || z < z0 || z > z0 + size {
-                    continue;
-                }
-                let smp = self.sample(x, z);
-                if smp.water || smp.dist < 15.0 {
-                    continue;
-                }
-                let (rx, rz) = rel(x, z);
-                let length = 11.0 + 6.0 * rng.next();
-                let roof = [[0.55, 0.22, 0.15], [0.35, 0.33, 0.32], [0.45, 0.28, 0.18]]
-                    [(rng.next() * 3.0) as usize % 3];
-                // Long side parallel to the road (heading is measured from north).
-                let rot = (std::f64::consts::FRAC_PI_2 - p.heading) as f32;
-                out[HOUSE].extend_from_slice(&[
-                    rx,
-                    smp.h as f32 - 0.3,
-                    rz,
-                    rot,
-                    length as f32,
-                    length as f32 * 0.75,
-                    roof[0],
-                    roof[1],
-                    roof[2],
-                ]);
-                shadows.extend_from_slice(&[rx, smp.h as f32 + 0.08, rz, length as f32 * 0.8]);
-            }
+        for b in &farms {
+            let (rx, rz) = rel(b.x, b.z);
+            out[b.kind].extend_from_slice(&[
+                rx,
+                b.h as f32 - 0.1,
+                rz,
+                b.rot,
+                b.scale,
+                b.scale,
+                b.roof[0],
+                b.roof[1],
+                b.roof[2],
+            ]);
+            shadows.extend_from_slice(&[rx, b.h as f32 + 0.08, rz, b.reach as f32 * 0.8]);
         }
         (out, shadows)
     }
@@ -746,6 +846,43 @@ mod tests {
             assert_eq!(n.side, 1.0);
             let on_road = geo.sample(p.x, p.z);
             assert!((on_road.h - (p.ele - 0.25)).abs() < 0.05);
+        }
+    }
+
+    #[test]
+    fn farm_buildings_face_the_road_and_keep_off_it() {
+        for r in route::builtin() {
+            let g = RouteGeo::new(&r);
+            let farms = g.farmsteads(-1e6, -1e6, 2e6);
+            if r.scenery == Scenery::Alpine {
+                continue;
+            }
+            assert!(farms.len() >= 3, "{}: {} buildings", r.id, farms.len());
+            assert!(farms.iter().any(|b| b.kind == BARN), "{}", r.id);
+            for b in &farms {
+                let smp = g.sample(b.x, b.z);
+                assert!(
+                    smp.dist >= 15.0 && !smp.water,
+                    "{}: building at {:.0} m from the road",
+                    r.id,
+                    smp.dist
+                );
+                // Houses and sheds turn their front (+z) to the road:
+                // towards where it is nearer, a few metres ahead.
+                if b.kind == BARN {
+                    continue;
+                }
+                let (c, s) = (b.rot.cos() as f64, b.rot.sin() as f64);
+                // The front in world (east, north), as the object shader
+                // turns it (render z is minus north).
+                let front = (s, -c);
+                let ahead = g.sample(b.x + front.0 * 5.0, b.z + front.1 * 5.0);
+                assert!(
+                    ahead.dist < smp.dist - 3.0,
+                    "{}: a building turns its back to the road",
+                    r.id
+                );
+            }
         }
     }
 

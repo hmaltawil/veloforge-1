@@ -8,6 +8,7 @@
 //! (see [`GpuWorld::error`]).
 
 mod body;
+mod buildings;
 mod flora;
 mod impostor;
 mod math;
@@ -1648,27 +1649,32 @@ fn bytes_u32(v: &[u32]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, std::mem::size_of_val(v)) }
 }
 
-// The first six match the kinds in `terrain`.
+// The first nine match the kinds in `terrain`.
 const OBJ_PINE: usize = terrain::PINE;
 const OBJ_BROAD: usize = terrain::BROADLEAF;
 const OBJ_ROCK: usize = terrain::ROCK;
 const OBJ_HOUSE: usize = terrain::HOUSE;
 const OBJ_BIRCH: usize = terrain::BIRCH;
 const OBJ_BUSH: usize = terrain::BUSH;
-const OBJ_POST: usize = 6;
-const OBJ_PLANK: usize = 7;
-const OBJ_RIDER: usize = 8;
-const OBJ_PINE_FAR: usize = 9;
-const OBJ_BROAD_FAR: usize = 10;
-const OBJ_REFLECTOR: usize = 11;
+const OBJ_BARN: usize = terrain::BARN;
+const OBJ_SHED: usize = terrain::SHED;
+const OBJ_TOWNHOUSE: usize = terrain::TOWNHOUSE;
+const OBJ_POST: usize = 9;
+const OBJ_PLANK: usize = 10;
+const OBJ_RIDER: usize = 11;
+const OBJ_PINE_FAR: usize = 12;
+const OBJ_BROAD_FAR: usize = 13;
+const OBJ_REFLECTOR: usize = 14;
 /// The trees' meshes again, for trees dissolving into or out of cards.
-const OBJ_PINE_FADE: usize = 12;
-const OBJ_BROAD_FADE: usize = 13;
-const OBJ_BIRCH_FADE: usize = 14;
+const OBJ_PINE_FADE: usize = 15;
+const OBJ_BROAD_FADE: usize = 16;
+const OBJ_BIRCH_FADE: usize = 17;
 // Trees out of view whose shadow falls into it: drawn only into the shadows.
-const OBJ_PINE_SHADOW: usize = 15;
-const OBJ_BROAD_SHADOW: usize = 16;
-const OBJ_BIRCH_SHADOW: usize = 17;
+const OBJ_PINE_SHADOW: usize = 18;
+const OBJ_BROAD_SHADOW: usize = 19;
+const OBJ_BIRCH_SHADOW: usize = 20;
+/// The farm buildings, drawn like the houses.
+const BUILDINGS: [usize; 4] = [OBJ_HOUSE, OBJ_BARN, OBJ_SHED, OBJ_TOWNHOUSE];
 /// Distances where trees change level of detail (`Quality::tree_lod`).
 #[derive(Clone, Copy)]
 struct TreeLod {
@@ -2048,9 +2054,12 @@ impl GlState {
                 mesh::pine(),
                 mesh::broadleaf(),
                 mesh::rock(),
-                mesh::house(),
+                buildings::farmhouse(),
                 mesh::birch(),
                 mesh::bush(),
+                buildings::barn(),
+                buildings::shed(),
+                buildings::townhouse(),
                 mesh::post(),
                 mesh::plank(),
                 mesh::Mesh::default(),
@@ -3327,7 +3336,8 @@ impl GlState {
                 }
                 let p = self.programs.get_mut("sh_object").unwrap();
                 p.f1(gl, "u_wind", 0.0);
-                self.draw_instanced(gl, &[OBJ_ROCK, OBJ_HOUSE, OBJ_POST, OBJ_PLANK, OBJ_RIDER]);
+                self.draw_instanced(gl, &[OBJ_ROCK, OBJ_POST, OBJ_PLANK, OBJ_RIDER]);
+                self.draw_instanced(gl, &BUILDINGS);
                 let p = self.programs.get_mut("sh_skinned").unwrap();
                 gl.use_program(Some(p.id));
                 p.m4(gl, "u_vp", &f.light_vp[k]);
@@ -3720,6 +3730,9 @@ impl GlState {
                 &[
                     OBJ_ROCK,
                     OBJ_HOUSE,
+                    OBJ_BARN,
+                    OBJ_SHED,
+                    OBJ_TOWNHOUSE,
                     OBJ_POST,
                     OBJ_REFLECTOR,
                     OBJ_PLANK,

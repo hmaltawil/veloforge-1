@@ -141,7 +141,10 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
           <button data-m="2">Birch</button>
           <button data-m="3">Bush</button>
           <button data-m="4">Rock</button>
-          <button data-m="5">House</button>
+          <button data-m="5">Farmhouse</button>
+          <button data-m="13">Two-storey house</button>
+          <button data-m="11">Barn</button>
+          <button data-m="12">Shed</button>
           <button data-m="6">Pine (far)</button>
           <button data-m="7">Broadleaf (far)</button>
         </div>
@@ -546,7 +549,10 @@ for (const b of document.querySelectorAll("#cams button")) b.addEventListener("c
 // ---- scenery ----------------------------------------------------------
 let mode = "rider", modelMesh = null;
 // Unit-sized scenery is drawn at about the size the app uses it.
-const HEIGHTS = { 0: 11, 1: 9, 2: 10, 3: 1.4, 4: 1.2, 6: 11, 7: 9 };
+const HEIGHTS = { 0: 11, 1: 9, 2: 10, 3: 1.4, 4: 1.2, 5: 7.6, 6: 11, 7: 9, 11: 10, 12: 3, 13: 11 };
+// Buildings' roofs take their instance's tint: show them with one the app
+// gives them.
+const ROOFS = { 5: [0.55, 0.22, 0.15], 11: [0.4, 0.4, 0.4], 12: [0.45, 0.28, 0.18], 13: [0.35, 0.33, 0.32] };
 // Uniforms for scenery drawn with the app's shaders (updated each frame).
 let sceneryU = null;
 // A tree in the Scenery tab, drawn as the app would at the camera's distance.
@@ -577,7 +583,8 @@ function showModel(k) {
   const s = HEIGHTS[k] && h < 3 ? HEIGHTS[k] / h : 1;
   if (!sceneryU) sceneryU = rideUniforms();
   // One instance, as the app places it: tint 1, turned to show its best side.
-  modelMesh = appObjects(arr, [MODEL_AT.x, MODEL_AT.y, MODEL_AT.z, 0.6, s, s, 1, 1, 1], v, sceneryU);
+  const tint = ROOFS[k] || [1, 1, 1];
+  modelMesh = appObjects(arr, [MODEL_AT.x, MODEL_AT.y, MODEL_AT.z, 0.6, s, s, ...tint], v, sceneryU);
   modelHeight = Math.max(2.5, h * s);
   scene.add(modelMesh);
   const size = (h * s).toFixed(1);

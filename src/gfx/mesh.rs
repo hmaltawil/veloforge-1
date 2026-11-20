@@ -298,12 +298,12 @@ impl Mesh {
 }
 
 /// Tinted marker: colours are negated so the instance tint applies.
-fn tinted(c: V3) -> V3 {
+pub(super) fn tinted(c: V3) -> V3 {
     scale(c, -1.0)
 }
 
 /// Deterministic pseudo-random number in 0..1.
-fn rnd(a: u32, b: u32, c: u32) -> f32 {
+pub(super) fn rnd(a: u32, b: u32, c: u32) -> f32 {
     let mut h = a
         .wrapping_mul(0x9E37_79B1)
         .wrapping_add(b.wrapping_mul(0x85EB_CA77))
@@ -999,118 +999,6 @@ pub fn rock() -> Mesh {
     m
 }
 
-/// Farmhouse one unit long (x), with a pitched roof; the roof is tinted.
-pub fn house() -> Mesh {
-    let mut m = Mesh::default();
-    let wall = [0.66, 0.62, 0.54];
-    let stone = [0.2, 0.19, 0.18];
-    let timber = [0.11, 0.07, 0.045];
-    // Stone footing, plastered walls.
-    m.cuboid([-0.505, -0.1, -0.305], [0.505, 0.07, 0.305], stone);
-    m.cuboid([-0.5, 0.07, -0.3], [0.5, 0.38, 0.3], wall);
-    // Windows with shutters and a door, on both long sides.
-    for side in [-1.0f32, 1.0] {
-        let z = side * 0.302;
-        let face = |m: &mut Mesh, a: f32, b: f32, y0: f32, y1: f32, z: f32, col: V3| {
-            if side > 0.0 {
-                m.quad([a, y0, z], [b, y0, z], [b, y1, z], [a, y1, z], col);
-            } else {
-                m.quad([b, y0, z], [a, y0, z], [a, y1, z], [b, y1, z], col);
-            }
-        };
-        for (k, wx) in [-0.36f32, -0.17, 0.17, 0.36].into_iter().enumerate() {
-            let lit = (k as i32 + if side > 0.0 { 0 } else { 1 }) % 3 != 0;
-            m.mat = if lit { MAT_WINDOW } else { MAT_GLOSS };
-            face(
-                &mut m,
-                wx - 0.042,
-                wx + 0.042,
-                0.17,
-                0.29,
-                z,
-                [0.03, 0.04, 0.055],
-            );
-            m.mat = MAT_MATT;
-            // Sill and shutters.
-            face(
-                &mut m,
-                wx - 0.052,
-                wx + 0.052,
-                0.155,
-                0.17,
-                z + side * 0.004,
-                [0.5, 0.48, 0.44],
-            );
-            for sx in [-0.064f32, 0.064] {
-                face(
-                    &mut m,
-                    wx + sx - 0.02,
-                    wx + sx + 0.02,
-                    0.17,
-                    0.29,
-                    z + side * 0.002,
-                    [0.1, 0.2, 0.13],
-                );
-            }
-        }
-        if side > 0.0 {
-            face(&mut m, -0.04, 0.04, 0.07, 0.24, z + 0.002, timber);
-        }
-    }
-    // Roof with overhang, on timber eaves.
-    let roof = tinted([1.0, 1.0, 1.0]);
-    let (ex, ez, ey, ry) = (0.55, 0.37, 0.355, 0.62);
-    m.quad(
-        [-ex, ey, ez],
-        [ex, ey, ez],
-        [ex, ry, 0.0],
-        [-ex, ry, 0.0],
-        roof,
-    );
-    m.quad(
-        [ex, ey, -ez],
-        [-ex, ey, -ez],
-        [-ex, ry, 0.0],
-        [ex, ry, 0.0],
-        roof,
-    );
-    let under = tinted([0.45, 0.45, 0.45]);
-    m.quad(
-        [-ex, ey - 0.012, ez],
-        [-ex, ry - 0.012, 0.0],
-        [ex, ry - 0.012, 0.0],
-        [ex, ey - 0.012, ez],
-        under,
-    );
-    m.quad(
-        [ex, ey - 0.012, -ez],
-        [ex, ry - 0.012, 0.0],
-        [-ex, ry - 0.012, 0.0],
-        [-ex, ey - 0.012, -ez],
-        under,
-    );
-    // Gables, boarded with dark timber.
-    m.tri([0.5, 0.38, 0.3], [0.5, 0.38, -0.3], [0.5, 0.6, 0.0], timber);
-    m.tri(
-        [-0.5, 0.38, -0.3],
-        [-0.5, 0.38, 0.3],
-        [-0.5, 0.6, 0.0],
-        timber,
-    );
-    m.cuboid([0.2, 0.44, -0.13], [0.29, 0.7, -0.04], [0.32, 0.2, 0.16]);
-    m.cuboid([0.19, 0.7, -0.14], [0.3, 0.72, -0.03], stone);
-    // A lean-to woodshed at one end.
-    m.cuboid([-0.72, -0.1, -0.24], [-0.5, 0.2, 0.2], timber);
-    m.quad(
-        [-0.74, 0.19, 0.23],
-        [-0.49, 0.3, 0.23],
-        [-0.49, 0.3, -0.27],
-        [-0.74, 0.19, -0.27],
-        roof,
-    );
-    m
-}
-
 /// Unit box (x and z in [-0.5, 0.5], y in [0, 1]), fully tinted.
 pub fn post() -> Mesh {
     let mut m = Mesh::default();
@@ -1713,7 +1601,10 @@ mod tests {
             pine_far(),
             broadleaf_far(),
             rock(),
-            house(),
+            super::super::buildings::farmhouse(),
+            super::super::buildings::townhouse(),
+            super::super::buildings::barn(),
+            super::super::buildings::shed(),
             post(),
             reflector(),
             plank(),
@@ -1874,6 +1765,11 @@ mod tests {
             ("birch", birch(), 1500),
             ("pine far", pine_far(), 120),
             ("broadleaf far", broadleaf_far(), 300),
+            // Few, but drawn as they are all the way out.
+            ("farmhouse", super::super::buildings::farmhouse(), 1200),
+            ("two-storey house", super::super::buildings::townhouse(), 1200),
+            ("barn", super::super::buildings::barn(), 1200),
+            ("shed", super::super::buildings::shed(), 400),
         ] {
             let tris = m.vertex_count() / 3;
             println!("{name}: {tris} triangles");

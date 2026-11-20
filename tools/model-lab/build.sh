@@ -7,7 +7,9 @@ here="$(cd "$(dirname "$0")" && pwd)"
 out="${1:-$here/model-lab.html}"
 cd "$here"
 rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
-cargo build --release --target wasm32-unknown-unknown --quiet
+now_cfg=""
+if [ -f "$here/../../src/gfx/buildings.rs" ]; then now_cfg="--cfg lab_buildings"; fi
+RUSTFLAGS="$now_cfg" cargo build --release --target wasm32-unknown-unknown --quiet
 wasm="$here/target/wasm32-unknown-unknown/release/model_lab.wasm"
 # The released models too (main's model code with this page's exports), so
 # the page can switch between them and this build's.
@@ -17,11 +19,15 @@ for f in math mesh body impostor; do
     git -C "$here" show "main:src/gfx/$f.rs" >"$base_dir/src/gfx/$f.rs" 2>/dev/null \
         || cp "$here/../../src/gfx/$f.rs" "$base_dir/src/gfx/$f.rs"
 done
+# Farm buildings, in releases that have them.
+git -C "$here" show "main:src/gfx/buildings.rs" >"$base_dir/src/gfx/buildings.rs" 2>/dev/null \
+    || rm -f "$base_dir/src/gfx/buildings.rs"
 cp -r "$here/Cargo.toml" "$here/Cargo.lock" "$here/src" "$base_dir/tools/model-lab/"
 cp "$here/../../rust-toolchain.toml" "$base_dir/"   # the same Rust as this build
 # Releases before 1.6.8 had middle-distance trees: draw them with those.
 base_cfg=""
 if grep -q "pub fn broadleaf_mid" "$base_dir/src/gfx/mesh.rs"; then base_cfg="--cfg lab_mid"; fi
+if [ -f "$base_dir/src/gfx/buildings.rs" ]; then base_cfg="$base_cfg --cfg lab_buildings"; fi
 (cd "$base_dir/tools/model-lab" && CARGO_TARGET_DIR="$here/target-base" RUSTFLAGS="$base_cfg" \
     cargo build --release --target wasm32-unknown-unknown --quiet)
 wasm_base="$here/target-base/wasm32-unknown-unknown/release/model_lab.wasm"

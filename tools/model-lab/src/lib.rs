@@ -1,11 +1,15 @@
-//! The app's own model code (src/gfx/math.rs, mesh.rs, body.rs and
-//! impostor.rs, included as they are) behind a few functions a web page can
-//! call.
+//! The app's own model code (src/gfx/math.rs, mesh.rs, body.rs,
+//! impostor.rs and, where it has them, buildings.rs, included as they are)
+//! behind a few functions a web page can call.
 
 #![allow(dead_code)]
 
 #[path = "../../../src/gfx/body.rs"]
 mod body;
+// Farm buildings (build.sh sets lab_buildings when the code has them).
+#[cfg(lab_buildings)]
+#[path = "../../../src/gfx/buildings.rs"]
+mod buildings;
 #[path = "../../../src/gfx/impostor.rs"]
 mod impostor;
 #[path = "../../../src/gfx/math.rs"]
@@ -197,6 +201,9 @@ pub extern "C" fn model(kind: u32) -> u32 {
             2 => mesh::birch(),
             3 => mesh::bush(),
             4 => mesh::rock(),
+            #[cfg(lab_buildings)]
+            5 => buildings::farmhouse(),
+            #[cfg(not(lab_buildings))]
             5 => mesh::house(),
             6 => mesh::pine_far(),
             7 => mesh::broadleaf_far(),
@@ -212,6 +219,14 @@ pub extern "C" fn model(kind: u32) -> u32 {
             8 => mesh::pine(),
             #[cfg(not(lab_mid))]
             9 => mesh::broadleaf(),
+            #[cfg(lab_buildings)]
+            11 => buildings::barn(),
+            #[cfg(lab_buildings)]
+            12 => buildings::shed(),
+            #[cfg(lab_buildings)]
+            13 => buildings::townhouse(),
+            #[cfg(not(lab_buildings))]
+            11..=13 => mesh::house(),
             _ => mesh::birch(),
         };
         l.model = m.v;
