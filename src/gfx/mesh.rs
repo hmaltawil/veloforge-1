@@ -12,6 +12,8 @@ pub const MAT_LAMP: f32 = 2.0;
 pub const MAT_GLOSS: f32 = 3.0;
 pub const MAT_REFLECTOR: f32 = 4.0;
 pub const MAT_LEAF: f32 = 5.0;
+/// Chimney smoke, which the object shader moves (see `OBJECT_VS`).
+pub const MAT_SMOKE: f32 = 8.0;
 
 /// A place and three unit directions: forward, up and right.
 #[derive(Debug, Clone, Copy)]
@@ -1765,12 +1767,12 @@ mod tests {
             ("birch", birch(), 1500),
             ("pine far", pine_far(), 120),
             ("broadleaf far", broadleaf_far(), 300),
-            // Few, but drawn as they are all the way out.
-            ("farmhouse", super::super::buildings::farmhouse(), 1600),
+            // Few (a handful in view), but drawn as they are all the way out.
+            ("farmhouse", super::super::buildings::farmhouse(), 2600),
             (
                 "two-storey house",
                 super::super::buildings::townhouse(),
-                1600,
+                2600,
             ),
             ("barn", super::super::buildings::barn(), 1600),
             ("shed", super::super::buildings::shed(), 400),

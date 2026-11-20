@@ -859,9 +859,20 @@ in vec2 i_lod;
 out vec2 v_lod;
 #endif
 void main() {
+    vec3 ap = a_pos;
+    vec3 an = a_nrm;
+    // Smoke (material 8): each puff carries where it leaves the chimney
+    // (in its normal) and when (in its colour), and rises, drifts, swells
+    // and thins away, over and over.
+    if (a_mat > 7.5) {
+        float t = fract(u_obj_time * 0.07 + a_col.r);
+        float size = (0.45 + 1.7 * t) * (1.0 - smoothstep(0.65, 1.0, t));
+        ap = a_nrm + vec3(1.2 * t * t, 6.0 * t, 0.5 * t) + a_pos * size;
+        an = normalize(a_pos);
+    }
     float c = cos(i_pos_rot.w);
     float s = sin(i_pos_rot.w);
-    vec3 p = vec3(a_pos.x * i_scale.x, a_pos.y * i_scale.y, a_pos.z * i_scale.x);
+    vec3 p = vec3(ap.x * i_scale.x, ap.y * i_scale.y, ap.z * i_scale.x);
     p = vec3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z);
     // Trees sway gently, more towards the top, leaning further and swaying
     // harder as gusts pass, and their leaves flutter. Each tree's timing
@@ -869,11 +880,11 @@ void main() {
     vec2 wp = vec2(i_pos_rot.x + u_origin.x, u_origin.y - i_pos_rot.z);
     float ph = hash12(floor(wp * 0.5)) * 6.2832;
     float gust = gust_at(wp, u_obj_time);
-    float sway = u_wind * a_pos.y * a_pos.y
+    float sway = u_wind * ap.y * ap.y
         * ((0.35 + 0.9 * gust) * sway_at(u_obj_time, ph) + 1.1 * gust);
     p.x += sway * i_scale.y * 0.0066;
     p.z += sway * i_scale.y * 0.0042;
-    vec3 n = vec3(c * a_nrm.x + s * a_nrm.z, a_nrm.y, -s * a_nrm.x + c * a_nrm.z);
+    vec3 n = vec3(c * an.x + s * an.z, an.y, -s * an.x + c * an.z);
     n = normalize(n / vec3(i_scale.x, i_scale.y, i_scale.x));
     if (a_mat > 4.5 && u_wind > 0.0) {
         float fl = sin(u_obj_time * 3.1 + a_pos.x * 37.0 + a_pos.z * 29.0 + ph * 3.0)
@@ -882,7 +893,7 @@ void main() {
     }
     v_pos = p + i_pos_rot.xyz;
     v_nrm = n;
-    v_col = a_col.r < 0.0 ? -a_col * i_tint : a_col;
+    v_col = a_mat > 7.5 ? vec3(0.5, 0.5, 0.5) : a_col.r < 0.0 ? -a_col * i_tint : a_col;
     v_mat = a_mat;
     v_h = a_pos.y;
 #ifdef LOD_FADE
@@ -893,7 +904,7 @@ void main() {
 "#;
 
 /// Materials (`a_mat`): 0 matt, 1 window (lit at night), 2 lamp, 3 glossy,
-/// 4 reflector, 5 leaves.
+/// 4 reflector, 5 leaves, 6 skin, 7 fabric, 8 smoke.
 pub const OBJECT_FS: &str = r#"
 in vec3 v_pos;
 in vec3 v_nrm;
@@ -913,7 +924,10 @@ void main() {
     float vis = sun_vis(v_pos, n);
     vec3 lamp = lamp_light(v_pos, n);
     vec3 lit;
-    if (v_mat > 5.5 && v_mat < 6.5) {
+    if (v_mat > 7.5) {
+        // Smoke: soft, lit mostly by the sky, a little by the sun.
+        lit = v_col * (ambient(n) * 1.15 + u_sun_col * vis * max(dot(n, u_sun) * 0.5 + 0.5, 0.0) * 0.55);
+    } else if (v_mat > 5.5 && v_mat < 6.5) {
         // Skin: light wraps softly round it, warm where it fades into
         // shadow (light scattered under the skin), with a faint sheen.
         float ndl = dot(n, u_sun);

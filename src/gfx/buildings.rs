@@ -2,7 +2,7 @@
 //! the road), z across it, y up. Their roofs take each building's tint.
 
 use super::math::*;
-use super::mesh::{tinted, Mesh, MAT_GLOSS, MAT_LAMP, MAT_MATT, MAT_WINDOW};
+use super::mesh::{tinted, Mesh, MAT_GLOSS, MAT_LAMP, MAT_MATT, MAT_SMOKE, MAT_WINDOW};
 
 const STONE: V3 = [0.2, 0.19, 0.18];
 const TIMBER: V3 = [0.11, 0.07, 0.045];
@@ -354,6 +354,143 @@ impl Mesh {
         );
     }
 
+    /// A white picket fence around the front garden, `len` wide and `deep`
+    /// out from the front wall at `d`, with an open gate before the door at
+    /// `door` and a stone path from it to the door.
+    fn front_garden(&mut self, len: f32, d: f32, deep: f32, door: f32) {
+        let white = [0.66, 0.65, 0.6];
+        let (x0, x1, z) = (-len / 2.0 - 0.6, len / 2.0 + 0.6, d + deep);
+        // A picket: a thin board, both faces, between the ground and `h`.
+        let picket = |m: &mut Mesh, a: V3, b: V3, h: f32| {
+            let (p0, p1) = ([a[0], 0.0, a[2]], [b[0], 0.0, b[2]]);
+            let (q0, q1) = ([a[0], h, a[2]], [b[0], h, b[2]]);
+            m.quad(p0, p1, q1, q0, white);
+            m.quad(p1, p0, q0, q1, white);
+        };
+        let gate = (door - 0.6, door + 0.6);
+        // Along the front, with a gap for the gate.
+        let mut x = x0;
+        while x < x1 {
+            if !(x > gate.0 - 0.1 && x < gate.1) {
+                picket(
+                    self,
+                    [x, 0.0, z],
+                    [x + 0.1, 0.0, z],
+                    0.95 + 0.06 * ((x * 3.0).sin()),
+                );
+            }
+            x += 0.32;
+        }
+        // Down both sides, back to the house.
+        for sx in [x0, x1] {
+            let mut zz = d + 0.4;
+            while zz < z {
+                picket(self, [sx, 0.0, zz], [sx, 0.0, zz + 0.1], 0.95);
+                zz += 0.32;
+            }
+        }
+        // Rails behind the pickets, and posts at the corners and the gate.
+        for y in [0.3f32, 0.75] {
+            for (a, b) in [(x0, gate.0), (gate.1, x1)] {
+                self.cuboid([a, y, z - 0.07], [b, y + 0.07, z - 0.02], white);
+            }
+            for sx in [x0, x1] {
+                self.cuboid([sx - 0.05, y, d + 0.3], [sx, y + 0.07, z], white);
+            }
+        }
+        for px in [x0, x1, gate.0, gate.1] {
+            self.cuboid(
+                [px - 0.07, 0.0, z - 0.07],
+                [px + 0.07, 1.15, z + 0.07],
+                white,
+            );
+        }
+        // The gate, standing open into the garden.
+        let (hx, hz) = (gate.0 + 0.1, z);
+        let open = 1.15f32;
+        let w = gate.1 - gate.0 - 0.2;
+        let (ex, ez) = (hx + w * open.cos(), hz - w * open.sin());
+        for k in 0..5 {
+            let f0 = k as f32 / 4.0 + 0.04;
+            let f1 = f0 + 0.12;
+            let p = |f: f32| [hx + (ex - hx) * f, 0.0, hz + (ez - hz) * f];
+            picket(self, p(f0), p(f1), 0.9);
+        }
+        // The path: stone slabs from the gate to the door.
+        let stone = [0.42, 0.4, 0.37];
+        let mut zz = d + 0.7;
+        let mut k = 0;
+        while zz < z - 0.2 {
+            let jitter = 0.08 * ((k * 7 % 5) as f32 - 2.0) / 2.0;
+            self.cuboid(
+                [door - 0.45 + jitter, 0.0, zz],
+                [door + 0.45 + jitter, 0.05, zz + 0.5],
+                stone,
+            );
+            zz += 0.62;
+            k += 1;
+        }
+    }
+
+    /// A garden table with two chairs under a striped parasol, at (x, z).
+    fn garden_table(&mut self, x: f32, z: f32) {
+        let wood = [0.42, 0.28, 0.15];
+        self.cuboid([x - 0.5, 0.72, z - 0.5], [x + 0.5, 0.78, z + 0.5], wood);
+        for (dx, dz) in [(-0.42, -0.42), (0.36, -0.42), (-0.42, 0.36), (0.36, 0.36)] {
+            self.cuboid(
+                [x + dx, 0.0, z + dz],
+                [x + dx + 0.06, 0.72, z + dz + 0.06],
+                scale(wood, 0.7),
+            );
+        }
+        for side in [-1.0f32, 1.0] {
+            let cx = x + side * 0.85;
+            self.cuboid(
+                [cx - 0.22, 0.42, z - 0.22],
+                [cx + 0.22, 0.47, z + 0.22],
+                wood,
+            );
+            let bx = cx + side * 0.2;
+            self.cuboid(
+                [bx - 0.03, 0.47, z - 0.22],
+                [bx + 0.03, 0.95, z + 0.22],
+                wood,
+            );
+            for dz in [-0.2f32, 0.16] {
+                self.cuboid(
+                    [cx - 0.2, 0.0, z + dz],
+                    [cx - 0.15, 0.42, z + dz + 0.04],
+                    scale(wood, 0.7),
+                );
+                self.cuboid(
+                    [cx + 0.15, 0.0, z + dz],
+                    [cx + 0.2, 0.42, z + dz + 0.04],
+                    scale(wood, 0.7),
+                );
+            }
+        }
+        // The parasol: a pole and a striped cone, both faces.
+        self.cuboid(
+            [x - 0.03, 0.0, z - 0.03],
+            [x + 0.03, 2.3, z + 0.03],
+            [0.6, 0.6, 0.6],
+        );
+        let n = 12;
+        for k in 0..n {
+            let a0 = k as f32 / n as f32 * std::f32::consts::TAU;
+            let a1 = (k + 1) as f32 / n as f32 * std::f32::consts::TAU;
+            let col = if k % 2 == 0 {
+                [0.7, 0.08, 0.06]
+            } else {
+                [0.75, 0.73, 0.68]
+            };
+            let top = [x, 2.4, z];
+            let e = |a: f32| [x + a.cos() * 1.3, 1.95, z + a.sin() * 1.3];
+            self.tri(top, e(a1), e(a0), col);
+            self.tri(top, e(a0), e(a1), scale(col, 0.7));
+        }
+    }
+
     /// Walls and a pitched roof: a box `len` by `dep` up to `wall`, gables
     /// up to the ridge at `ridge`, the roof overhanging by `over`, with
     /// thickness, fascia boards and a ridge cap. The roof takes the tint.
@@ -480,6 +617,34 @@ impl Mesh {
 
     /// A chimney through the roof at (x, z), up to `top`.
     fn chimney(&mut self, x: f32, z: f32, from: f32, top: f32) {
+        // Five puffs of smoke, a fifth of a cycle apart (the shader moves
+        // them, from where they leave the chimney).
+        self.mat = MAT_SMOKE;
+        for k in 0..4 {
+            let base = [x, top + 0.3, z];
+            let phase = k as f32 / 5.0 + 0.07 * (x + z).sin();
+            let (rings, segs) = (4usize, 7usize);
+            for i in 0..rings {
+                for j in 0..segs {
+                    let pt = |i: usize, j: usize| {
+                        let th = i as f32 / rings as f32 * std::f32::consts::PI;
+                        let ph =
+                            (j as f32 + 0.5 * (i % 2) as f32) / segs as f32 * std::f32::consts::TAU;
+                        let r = 0.38 * (1.0 + 0.15 * ((i * 3 + j * 5 + k) % 4) as f32 / 3.0);
+                        [
+                            th.sin() * ph.cos() * r,
+                            th.cos() * r * 0.85,
+                            th.sin() * ph.sin() * r,
+                        ]
+                    };
+                    let q = [pt(i, j), pt(i + 1, j), pt(i + 1, j + 1), pt(i, j + 1)];
+                    for idx in [0, 1, 2, 0, 2, 3] {
+                        self.push(q[idx], base, [phase, 0.0, 0.0]);
+                    }
+                }
+            }
+        }
+        self.mat = MAT_MATT;
         let w = 0.32;
         self.cuboid(
             [x - w, from, z - w],
@@ -544,6 +709,8 @@ pub fn farmhouse() -> Mesh {
     m.pot(Side::Front, 3.75, d);
     m.lamp(Side::Front, -0.95, 2.15, d);
     m.bicycle(Side::Front, -3.8, d);
+    m.front_garden(len, d, 6.0, 0.0);
+    m.garden_table(4.6, d + 3.6);
     m.chimney(3.0, -1.6, 4.5, 8.6);
     // A lean-to woodshed at the west end.
     let x0 = -len / 2.0;
@@ -617,6 +784,8 @@ pub fn townhouse() -> Mesh {
     m.pot(Side::Front, -1.05, d);
     m.pot(Side::Front, 1.05, d);
     m.lamp(Side::Front, 1.0, 2.2, d);
+    m.front_garden(len, d, 5.5, 0.0);
+    m.garden_table(-3.4, d + 3.2);
     m.chimney(4.4, 0.0, 8.0, 11.4);
     m.chimney(-4.4, 0.0, 8.0, 11.4);
     m

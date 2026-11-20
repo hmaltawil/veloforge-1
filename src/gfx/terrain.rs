@@ -113,6 +113,8 @@ pub struct Sample {
 /// A farm building, or a tree in its garden, placed by `farmsteads`.
 struct Building {
     kind: usize,
+    /// Which farmstead it belongs to.
+    farm: i64,
     x: f64,
     z: f64,
     /// The height it stands at.
@@ -146,6 +148,11 @@ pub struct RouteGeo {
     pub water_level: Option<f64>,
     pub max_ele: f64,
     seed: u64,
+    /// Level pads the farm buildings stand on: where, how high, and how far
+    /// the ground is level (it blends back into the land beyond).
+    pads: Vec<(f64, f64, f64, f64)>,
+    /// The farm buildings and their gardens' trees, for the whole route.
+    farms: Vec<Building>,
 }
 
 impl RouteGeo {
@@ -172,7 +179,7 @@ impl RouteGeo {
             _ => inside,
         };
         let grid = NearGrid::build(&pts);
-        RouteGeo {
+        let mut geo = RouteGeo {
             route: route.clone(),
             eles: route.points().iter().map(|p| p.ele).collect(),
             pts,
@@ -182,7 +189,41 @@ impl RouteGeo {
             water_level,
             max_ele,
             seed: route.seed,
+            pads: Vec::new(),
+            farms: Vec::new(),
+        };
+        // The farms: first where the buildings go on the land as it is, and
+        // a level pad for each at the average height of its ground; then
+        // again on the levelled land, with their gardens.
+        if Palette::of(route.scenery).farmhouses {
+            let everywhere = (-1.0e7, -1.0e7, 2.0e7);
+            let first = geo.farmsteads(everywhere.0, everywhere.1, everywhere.2);
+            // One level yard per farmstead: all its buildings at the average
+            // height of their ground, so pads that overlap agree.
+            let buildings: Vec<&Building> = first
+                .iter()
+                .filter(|b| [HOUSE, TOWNHOUSE, BARN, SHED].contains(&b.kind))
+                .collect();
+            let mut yard: std::collections::HashMap<i64, (f64, f64)> = Default::default();
+            for b in &buildings {
+                let e = yard.entry(b.farm).or_default();
+                for k in 0..9 {
+                    let a = k as f64 * std::f64::consts::FRAC_PI_4;
+                    let r = if k == 8 { 0.0 } else { b.reach * 0.75 };
+                    e.0 += geo.sample(b.x + a.cos() * r, b.z + a.sin() * r).h;
+                    e.1 += 1.0;
+                }
+            }
+            geo.pads = buildings
+                .iter()
+                .map(|b| {
+                    let (sum, n) = yard[&b.farm];
+                    (b.x, b.z, sum / n, b.reach * 0.95)
+                })
+                .collect();
+            geo.farms = geo.farmsteads(everywhere.0, everywhere.1, everywhere.2);
         }
+        geo
     }
 
     pub fn snow_level(&self) -> f64 {
@@ -258,7 +299,37 @@ impl RouteGeo {
         exact + (se / sw - exact) * smoothstep(9.0, 30.0, near.dist)
     }
 
+    /// What the land is like at (x, z): its height, how far the road is,
+    /// how thick the forest and whether it is under water; levelled where a
+    /// farm building stands.
     pub fn sample(&self, x: f64, z: f64) -> Sample {
+        let mut smp = self.land(x, z);
+        if smp.water {
+            return smp;
+        }
+        // Level under each building, blending back into the slope around
+        // it, never near the road. Where pads meet, the one a point is
+        // well inside wins (weights raised to a high power).
+        let (mut wmax, mut sum, mut total) = (0.0f64, 0.0, 0.0);
+        for &(px, pz, ph, r) in &self.pads {
+            let d = ((x - px).powi(2) + (z - pz).powi(2)).sqrt();
+            if d < r + 10.0 {
+                let w = 1.0 - smoothstep(r, r + 10.0, d);
+                let k = w.powi(32);
+                wmax = wmax.max(w);
+                sum += k * ph;
+                total += k;
+            }
+        }
+        if total > 0.0 {
+            let w = wmax * smoothstep(4.5, 7.0, smp.dist);
+            smp.h += (sum / total - smp.h) * w;
+        }
+        smp
+    }
+
+    /// The land as it lies, before any levelling.
+    fn land(&self, x: f64, z: f64) -> Sample {
         let near = self.nearest(x, z);
         let road = self.base_height(x, z, &near);
         let s = self.seed;
@@ -488,6 +559,9 @@ impl RouteGeo {
                 for k in 0..8 {
                     let a = k as f64 * std::f64::consts::FRAC_PI_4;
                     let g = self.sample(x + a.cos() * reach * 0.75, z + a.sin() * reach * 0.75);
+                    if g.water {
+                        return;
+                    }
                     lo = lo.min(g.h);
                     hi = hi.max(g.h);
                 }
@@ -496,6 +570,7 @@ impl RouteGeo {
                 }
                 out.push(Building {
                     kind,
+                    farm: k,
                     x,
                     z,
                     h: hi - 0.1,
@@ -538,15 +613,23 @@ impl RouteGeo {
                     3.5,
                 );
             }
-            // A fruit tree or two in the front garden, between the house
-            // and the road.
+            // A fruit tree or two in the front garden.
             let fruit = if rng.next() < 0.75 {
                 1 + usize::from(rng.next() < 0.45)
             } else {
                 0
             };
             for _ in 0..fruit {
-                let (x, z) = at((rng.next() - 0.5) * 18.0, -(7.0 + 4.0 * rng.next()));
+                // Inside the garden fence, on the side away from the table
+                // (the farmhouse's is at its east end, the two-storey
+                // house's at its west; a building's east, +x, lies at
+                // `-side` along the road).
+                let east = if two_storey { 1.0 } else { -1.0 };
+                let depth = if two_storey { 4.0 } else { 4.2 };
+                let (x, z) = at(
+                    -side * east * (2.5 + 3.5 * rng.next()),
+                    -(depth + 1.4 + 3.0 * rng.next()),
+                );
                 let height = (5.0 + 2.5 * rng.next()) as f32;
                 let rot = (rng.next() * std::f64::consts::TAU) as f32;
                 if x < x0 || x > x0 + size || z < z0 || z > z0 + size {
@@ -558,6 +641,7 @@ impl RouteGeo {
                 }
                 out.push(Building {
                     kind: BROADLEAF,
+                    farm: k,
                     x,
                     z,
                     h: smp.h - 0.2,
@@ -587,11 +671,11 @@ impl RouteGeo {
         let (gi0, gj0) = ((x0 / cell).floor() as i64, (z0 / cell).floor() as i64);
         let cells = (size / cell).ceil() as i64;
         let palette = Palette::of(self.route.scenery);
-        let farms = if palette.farmhouses {
-            self.farmsteads(x0, z0, size)
-        } else {
-            Vec::new()
-        };
+        let farms: Vec<&Building> = self
+            .farms
+            .iter()
+            .filter(|b| b.x >= x0 && b.x <= x0 + size && b.z >= z0 && b.z <= z0 + size)
+            .collect();
         for gj in gj0..gj0 + cells {
             for gi in gi0..gi0 + cells {
                 let mut rng = Rng(hash2(gi, gj, s + 77));
@@ -685,7 +769,7 @@ impl RouteGeo {
                 }
             }
         }
-        for b in &farms {
+        for b in farms {
             let (rx, rz) = rel(b.x, b.z);
             out[b.kind].extend_from_slice(&[
                 rx, b.h as f32, rz, b.rot, b.scale.0, b.scale.1, b.tint[0], b.tint[1], b.tint[2],
@@ -888,7 +972,7 @@ mod tests {
     fn farm_buildings_face_the_road_and_keep_off_it() {
         for r in route::builtin() {
             let g = RouteGeo::new(&r);
-            let farms = g.farmsteads(-1e6, -1e6, 2e6);
+            let farms = &g.farms;
             if r.scenery == Scenery::Alpine {
                 continue;
             }
@@ -905,6 +989,26 @@ mod tests {
                     "{}: building at {:.0} m from the road",
                     r.id,
                     smp.dist
+                );
+                // It stands on level ground: no floating door or flowers.
+                let (mut lo, mut hi) = (smp.h, smp.h);
+                for k in 0..12 {
+                    let a = k as f64 * std::f64::consts::TAU / 12.0;
+                    let g = g.sample(b.x + a.cos() * b.reach * 0.7, b.z + a.sin() * b.reach * 0.7);
+                    lo = lo.min(g.h);
+                    hi = hi.max(g.h);
+                }
+                assert!(
+                    hi - lo < 0.3,
+                    "{}: ground under a building varies {:.2} m",
+                    r.id,
+                    hi - lo
+                );
+                assert!(
+                    (b.h - lo).abs() < 0.3,
+                    "{}: building {:.2} m off the ground",
+                    r.id,
+                    b.h - lo
                 );
                 // Houses and sheds turn their front (+z) to the road:
                 // towards where it is nearer, a few metres ahead.
