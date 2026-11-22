@@ -1278,6 +1278,9 @@ impl App {
         if let Some(o) = other {
             b.other.push(o);
         }
+        if let Some(c) = self.gpu.stage_counts() {
+            b.counts.push(c);
+        }
         b.rows.push(BenchRow {
             t: (elapsed - Bench::WARM_UP) as f32,
             ms,
@@ -6566,6 +6569,10 @@ struct Bench {
     frames: Vec<f32>,
     /// GPU milliseconds per frame for each stage (see `gfx::STAGES`).
     gpu: Vec<[f32; crate::gfx::STAGES]>,
+    /// What each stage drew per frame: triangles, pixel samples and
+    /// fragment shader runs (the same on any graphics card, unlike the
+    /// times).
+    counts: Vec<[crate::gfx::StageCounts; crate::gfx::STAGES]>,
     /// The computer's milliseconds per frame: the app's work (of which
     /// preparing the 3D frame), issuing the 3D drawing commands, and the
     /// rest of drawing and presenting the screen.
@@ -6611,6 +6618,7 @@ impl Bench {
             secs,
             frames: Vec::new(),
             gpu: Vec::new(),
+            counts: Vec::new(),
             cpu: Vec::new(),
             other: Vec::new(),
             rows: Vec::new(),
@@ -6676,6 +6684,40 @@ impl Bench {
                 all * 30.0 / 10.0,
                 all * 60.0 / 10.0,
             );
+        }
+        if !self.counts.is_empty() {
+            let k = self.counts.len() as f64;
+            let avg = |f: fn(&crate::gfx::StageCounts) -> u64| -> Vec<f64> {
+                (0..crate::gfx::STAGES)
+                    .map(|i| self.counts.iter().map(|c| f(&c[i]) as f64).sum::<f64>() / k)
+                    .collect()
+            };
+            let tri: Vec<f64> = avg(|c| c.triangles).iter().map(|t| t / 1e3).collect();
+            let px: Vec<f64> = avg(|c| c.samples).iter().map(|p| p / 1e6).collect();
+            let frag: Vec<f64> = avg(|c| c.fragments.unwrap_or(0))
+                .iter()
+                .map(|p| p / 1e6)
+                .collect();
+            let mut rows = vec![
+                ("Triangles drawn per frame", "thousand", &tri),
+                ("Pixel samples drawn per frame", "million", &px),
+            ];
+            if self.counts.iter().any(|c| c[0].fragments.is_some()) {
+                rows.push(("Pixels worked out per frame", "million", &frag));
+            }
+            for (what, unit, v) in rows {
+                out += &format!(
+                    "{what} ({unit}): {:.1} (shadows {:.1}, trees and objects {:.1}, \
+                     ground and road {:.1}, grass {:.1}, sky, water and the rest {:.1}, finishing {:.1})\n",
+                    v.iter().sum::<f64>(),
+                    v[0],
+                    v[1],
+                    v[2],
+                    v[3],
+                    v[4],
+                    v[5],
+                );
+            }
         }
         if !self.other.is_empty() {
             let k = self.other.len() as f32;

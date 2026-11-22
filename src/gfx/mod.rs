@@ -627,6 +627,12 @@ impl GpuWorld {
         self.gl.lock().ok().and_then(|g| g.gpu_ms)
     }
 
+    /// What each stage of the last timed frame drew: triangles, pixel
+    /// samples and fragment shader runs (None if this driver cannot count).
+    pub fn stage_counts(&self) -> Option<[StageCounts; STAGES]> {
+        self.gl.lock().ok().and_then(|g| g.counts)
+    }
+
     /// Milliseconds the GPU last spent outside the 3D view: drawing the rest
     /// of the screen, and showing the frame (None if it cannot be measured).
     pub fn other_ms(&self) -> Option<[f32; 2]> {
@@ -1639,6 +1645,9 @@ struct GlState {
     timers_failed: bool,
     /// Milliseconds the GPU last spent on shadows, the scene and finishing.
     gpu_ms: Option<[f32; STAGES]>,
+    /// What each stage of the last timed frame drew (see [`StageCounts`]),
+    /// where the driver counts it.
+    counts: Option<[StageCounts; STAGES]>,
     /// Milliseconds the last frame's drawing commands took to issue.
     paint_ms: f32,
     /// How many times the land has been uploaded (for `--bench`).
@@ -1676,8 +1685,29 @@ const STAGE_FINISHING: usize = 5;
 /// results are read without waiting for the GPU.
 struct Timers {
     q: Vec<[glow::Query; STAGES]>,
+    /// Counting queries alongside (none if the driver has none), one for
+    /// each of `targets`.
+    counted: Option<Vec<[[glow::Query; 3]; STAGES]>>,
+    /// What is counted: triangles sent to be drawn, pixel samples that
+    /// passed the depth test, and (where the driver has pipeline
+    /// statistics) fragment shader runs.
+    targets: Vec<u32>,
     used: Vec<bool>,
     frame: usize,
+}
+
+/// What one stage of a frame drew: the triangles it sent, the pixel
+/// samples that passed the depth test (including ones later drawn over;
+/// with multisampling, each sample counts), and how many times the
+/// fragment shader ran (each pixel worked out, whether it was kept, drawn
+/// over later or thrown away). Unlike the times, these are the same on any
+/// graphics card.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct StageCounts {
+    pub triangles: u64,
+    pub samples: u64,
+    /// None where the driver has no pipeline statistics.
+    pub fragments: Option<u64>,
 }
 
 /// Index runs of the terrain tiles that `vp` can see, merged where they
@@ -3382,15 +3412,49 @@ impl GlState {
                     }
                     q.push(std::array::from_fn(|i| set[i]));
                 }
+                let mut targets = vec![glow::PRIMITIVES_GENERATED, glow::SAMPLES_PASSED];
+                if (v.major, v.minor) >= (4, 6)
+                    || gl
+                        .supported_extensions()
+                        .contains("GL_ARB_pipeline_statistics_query")
+                {
+                    targets.push(glow::FRAGMENT_SHADER_INVOCATIONS);
+                }
+                let mut counted = Some(Vec::new());
+                for _ in 0..q.len() {
+                    let mut set = Vec::new();
+                    for _ in 0..STAGES * 3 {
+                        match gl.create_query() {
+                            Ok(x) => set.push(x),
+                            Err(_) => break,
+                        }
+                    }
+                    if set.len() < STAGES * 3 {
+                        counted = None;
+                        break;
+                    }
+                    if let Some(c) = counted.as_mut() {
+                        c.push(std::array::from_fn(|i| {
+                            [set[3 * i], set[3 * i + 1], set[3 * i + 2]]
+                        }));
+                    }
+                }
                 self.timers = Some(Timers {
                     used: vec![false; q.len()],
                     q,
+                    counted,
+                    targets,
                     frame: 0,
                 });
             }
             let t = self.timers.as_mut().unwrap();
             if k > 0 {
                 gl.end_query(glow::TIME_ELAPSED);
+                if t.counted.is_some() {
+                    for &target in &t.targets {
+                        gl.end_query(target);
+                    }
+                }
             } else {
                 t.frame = (t.frame + 1) % t.q.len();
                 let slot = t.frame;
@@ -3403,19 +3467,42 @@ impl GlState {
                             gl.get_query_parameter_u64(q, glow::QUERY_RESULT) as f32 / 1.0e6
                         });
                         self.gpu_ms = Some(ms);
+                        let stats = t.targets.len() > 2;
+                        self.counts = t.counted.as_ref().map(|c| {
+                            c[slot].map(|[tri, smp, frag]| StageCounts {
+                                triangles: gl.get_query_parameter_u64(tri, glow::QUERY_RESULT),
+                                samples: gl.get_query_parameter_u64(smp, glow::QUERY_RESULT),
+                                fragments: stats
+                                    .then(|| gl.get_query_parameter_u64(frag, glow::QUERY_RESULT)),
+                            })
+                        });
                     }
                 }
                 t.used[slot] = true;
             }
             let q = self.timers.as_ref().unwrap();
             gl.begin_query(glow::TIME_ELAPSED, q.q[q.frame][k]);
+            if let Some(c) = &q.counted {
+                for (&target, query) in q.targets.iter().zip(c[q.frame][k]) {
+                    gl.begin_query(target, query);
+                }
+            }
         }
     }
 
     /// End the last stage of this frame.
     unsafe fn time_end(&mut self, gl: &glow::Context) {
-        if self.timing && self.timers.is_some() && !self.timers_failed {
-            unsafe { gl.end_query(glow::TIME_ELAPSED) };
+        if self.timing && !self.timers_failed {
+            if let Some(t) = &self.timers {
+                unsafe {
+                    gl.end_query(glow::TIME_ELAPSED);
+                    if t.counted.is_some() {
+                        for &target in &t.targets {
+                            gl.end_query(target);
+                        }
+                    }
+                }
+            }
         }
     }
 
