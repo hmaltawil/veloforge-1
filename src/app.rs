@@ -434,6 +434,9 @@ impl App {
                 app.route_idx = r;
             }
             app.gpu.set_timing(true);
+            // `--counts`: count what each part draws instead of timing it
+            // undisturbed (the counting can slow the frames).
+            app.gpu.set_counting(args.iter().any(|a| a == "--counts"));
         }
         if app.bench.is_some() || args.iter().any(|a| a == "--demo") {
             app.demo = true;

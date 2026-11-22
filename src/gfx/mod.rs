@@ -621,6 +621,15 @@ impl GpuWorld {
         }
     }
 
+    /// Also count what each stage draws (for `--bench --counts`). Counting
+    /// can hold the graphics card up between stages, so frames take longer
+    /// while it is on: count and time in separate runs.
+    pub fn set_counting(&self, on: bool) {
+        if let Ok(mut g) = self.gl.lock() {
+            g.counting = on;
+        }
+    }
+
     /// Milliseconds the GPU spent on each stage of the last timed frame (see
     /// [`STAGES`]; None if it cannot be measured here).
     pub fn gpu_ms(&self) -> Option<[f32; STAGES]> {
@@ -1641,6 +1650,8 @@ struct GlState {
     tiles: Vec<terrain::Tile>,
     /// Timing the passes on the GPU (for `--bench`).
     timing: bool,
+    /// Counting what the passes draw as well (`--bench --counts`).
+    counting: bool,
     timers: Option<Timers>,
     timers_failed: bool,
     /// Milliseconds the GPU last spent on shadows, the scene and finishing.
@@ -3420,25 +3431,12 @@ impl GlState {
                 {
                     targets.push(glow::FRAGMENT_SHADER_INVOCATIONS);
                 }
-                let mut counted = Some(Vec::new());
-                for _ in 0..q.len() {
-                    let mut set = Vec::new();
-                    for _ in 0..STAGES * 3 {
-                        match gl.create_query() {
-                            Ok(x) => set.push(x),
-                            Err(_) => break,
-                        }
-                    }
-                    if set.len() < STAGES * 3 {
-                        counted = None;
-                        break;
-                    }
-                    if let Some(c) = counted.as_mut() {
-                        c.push(std::array::from_fn(|i| {
-                            [set[3 * i], set[3 * i + 1], set[3 * i + 2]]
-                        }));
-                    }
-                }
+                // Only when asked: counting can hold the card up.
+                let counted = if self.counting {
+                    Self::counting_queries(gl, q.len())
+                } else {
+                    None
+                };
                 self.timers = Some(Timers {
                     used: vec![false; q.len()],
                     q,
@@ -3488,6 +3486,25 @@ impl GlState {
                 }
             }
         }
+    }
+
+    /// Queries to count each stage's drawing, for `frames` frames in flight
+    /// (None if the driver cannot make them).
+    unsafe fn counting_queries(
+        gl: &glow::Context,
+        frames: usize,
+    ) -> Option<Vec<[[glow::Query; 3]; STAGES]>> {
+        let mut counted = Vec::new();
+        for _ in 0..frames {
+            let mut set = Vec::new();
+            for _ in 0..STAGES * 3 {
+                set.push(unsafe { gl.create_query() }.ok()?);
+            }
+            counted.push(std::array::from_fn(|i| {
+                [set[3 * i], set[3 * i + 1], set[3 * i + 2]]
+            }));
+        }
+        Some(counted)
     }
 
     /// End the last stage of this frame.

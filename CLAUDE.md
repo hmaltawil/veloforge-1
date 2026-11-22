@@ -38,7 +38,10 @@ __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia cargo run --release
 
 Useful arguments: `--demo` (simulated trainer), `--demo --km 5.5` (start
 partway along the route), `--demo --workout [id]`, `--bench 60` (60 s
-benchmark on Valley Loop, printing per-part graphics card times).
+benchmark on Valley Loop, printing per-part graphics card times),
+`--bench 60 --counts` (the same ride counting triangles and pixels per
+part instead: the same on any card, so it works under Xvfb too, but the
+counting slows the frames, so take times from a run without it).
 `VELOFORGE_DATA=<dir>` points the app at another data folder (a
 `state.json` there selects the route, e.g. `settings.route_id`).
 
