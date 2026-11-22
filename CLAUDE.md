@@ -55,9 +55,17 @@ show what is drawn but their timings mean nothing. Ask the owner to run
 |---|---|---|---|---|---|---|
 | 1.7.2 | 29.9 | 25.0 | 6.1 | 4.8 | 2.7 | 4.5 |
 | 1.8.0 | 25.3 | 28.8 | 7.7 | 6.4 | 3.2 | 4.5 |
+| 1.8.1 | 30.1 | 22.0 | 3.0 | 5.2 | 3.2 | 4.3 |
 
 1.8.0 added 3.8 ms (land to the horizon, retaining walls, oaks and maples,
-dry-stone walls and bales, 3D banner lettering). Goal: back to 30 fps.
+dry-stone walls and bales, 3D banner lettering). 1.8.1 took back 6.8 ms:
+the road drawn before the land and the land nearest first (so land under
+the road or behind a hill is not worked out), and retaining walls that stop
+at the ground. Frames only show on the screen's 60 Hz steps, so a frame
+needs about 25 ms of graphics card time or less to hold 30 fps; keep the
+margin. Still above 1.7.2: trees and objects (dry-stone walls, 1,172
+triangles a piece at full detail to 600 m, in both shadow maps) and
+shadows.
 
 ## Visual changes go through the Model Lab first
 
