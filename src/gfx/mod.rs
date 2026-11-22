@@ -1683,6 +1683,8 @@ struct GlState {
     paint_ms: f32,
     /// How many times the land has been uploaded (for `--bench`).
     land_uploads: u32,
+    /// The land as drawn, for where shadows fall on it.
+    land: Option<Arc<TerrainData>>,
     /// GPU timestamps around egui's drawing and the 3D view (for `--bench`).
     marks: Option<Marks>,
     marks_failed: bool,
@@ -2064,9 +2066,13 @@ const FAR_CULL: f32 = 1600.0;
 const THIN_FROM: f32 = 400.0;
 /// Bushes and rocks are too small to see beyond this.
 const SMALL_CULL: f32 = 600.0;
-/// Things this close are kept even behind the camera: their shadows may
-/// fall into view.
+/// Things this close, and further by the length of their shadow, are kept
+/// even out of view: their shadows may fall into it.
 const KEEP_AROUND: f32 = 150.0;
+/// How many times longer than on level ground a shadow may reach down a
+/// slope falling away from the sun: with the sun 35 degrees up, 3 times on
+/// a 25 degree slope, 6 times on a 30 degree one.
+const SLOPE_SHADOW: f32 = 6.0;
 
 /// Side of the square of grass that follows the camera, in metres.
 const GRASS_PATCH: f32 = 60.0;
@@ -2613,13 +2619,45 @@ impl GlState {
         // height.
         let sun_flat = norm([f.sun[0], 0.0, f.sun[2]]);
         let per_metre = shadow_reach(f.sun[1]) / 30.0;
-        // Whether the shadow of something `h` tall standing at `p` can fall
-        // into view: its foot, middle or tip.
+        // How far the shadow of something `h` tall may reach along the
+        // ground: on level ground `per_metre` a metre of height, but much
+        // further down a slope falling away from the sun.
+        let shadow_reach_most = |h: f32| (h * per_metre * SLOPE_SHADOW).min(400.0);
+        // How steeply the sun's rays fall: metres down per metre along.
+        let fall = f.sun[1].max(0.05) / (f.sun[0].hypot(f.sun[2])).max(1e-3);
+        // The height of the land as drawn under `p`, if it is known.
+        let land = self.land.clone();
+        let ground = |p: V3| -> Option<f32> {
+            land.as_ref()?
+                .ground(p[0] as f64 + f.origin.0, f.origin.1 - p[2] as f64)
+                .map(|y| y as f32)
+        };
+        // Whether the shadow of something `h` tall and `r` across standing
+        // at `p` can fall into view: followed over the land, away from the
+        // sun, until the ray past its top is below the ground (its tip),
+        // at points no further apart than it is wide.
         let shadow_in_view = |p: V3, h: f32, r: f32| {
-            let s = scale(sun_flat, -(h * per_metre).min(400.0));
-            [0.0, 0.5, 1.0]
-                .into_iter()
-                .any(|k| in_view(add(p, scale(s, k)), r))
+            let most = shadow_reach_most(h);
+            let away = scale(sun_flat, -1.0);
+            // All of it out of view, however far it reaches.
+            if !in_view(add(p, scale(away, 0.5 * most)), 0.5 * most + h + r + 2.0) {
+                return false;
+            }
+            let n = ((most / r).ceil() as usize).clamp(1, 256);
+            for i in 0..=n {
+                let t = most * i as f32 / n as f32;
+                let mut q = add(p, scale(away, t));
+                let y = ground(q).unwrap_or(p[1]);
+                if p[1] + h - t * fall < y - 0.5 {
+                    // Past its tip.
+                    return false;
+                }
+                q[1] = y;
+                if in_view(q, r) {
+                    return true;
+                }
+            }
+            false
         };
         for (kind, list) in self.scattered.iter().enumerate() {
             let tree = TREES.iter().position(|&k| k == kind);
@@ -2649,7 +2687,10 @@ impl GlState {
                     } else {
                         inst[4].max(1.0)
                     };
-                    if dist > KEEP_AROUND || !shadow_in_view(foot, r * 1.15, wide) {
+                    let tall = r * 1.15;
+                    if dist > KEEP_AROUND + shadow_reach_most(tall)
+                        || !shadow_in_view(foot, tall, wide)
+                    {
                         continue;
                     }
                     // Trees cast it without being drawn in the view: the same
@@ -3968,6 +4009,7 @@ impl GlState {
             }
             if let Some(t) = &f.terrain {
                 self.land_uploads += 1;
+                self.land = Some(t.clone());
                 if let Err(e) = self.upload_terrain(gl, t) {
                     self.error = Some(e);
                     return;
