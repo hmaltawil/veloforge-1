@@ -1723,8 +1723,9 @@ pub struct StageCounts {
 
 /// Index runs of the terrain tiles that `vp` can see, merged where they
 /// follow each other: (byte offset, count).
-fn visible_runs(vp: &M4, tiles: &[terrain::Tile]) -> Vec<(i32, i32)> {
-    let mut runs: Vec<(i32, i32)> = Vec::new();
+/// With `eye`, the tiles nearest it come first.
+fn visible_runs(vp: &M4, tiles: &[terrain::Tile], eye: Option<V3>) -> Vec<(i32, i32)> {
+    let mut seen: Vec<&terrain::Tile> = Vec::with_capacity(tiles.len());
     for t in tiles {
         // Outside if all eight corners are beyond the same clip plane.
         let mut out = [true; 6];
@@ -1751,6 +1752,19 @@ fn visible_runs(vp: &M4, tiles: &[terrain::Tile]) -> Vec<(i32, i32)> {
         if out.iter().any(|&o| o) {
             continue;
         }
+        seen.push(t);
+    }
+    if let Some(e) = eye {
+        // How far the eye is from the nearest point of each tile's box.
+        let gap = |t: &terrain::Tile| {
+            (0..3)
+                .map(|k| (t.lo[k] - e[k]).max(e[k] - t.hi[k]).max(0.0).powi(2))
+                .sum::<f32>()
+        };
+        seen.sort_by(|a, b| gap(a).total_cmp(&gap(b)));
+    }
+    let mut runs: Vec<(i32, i32)> = Vec::new();
+    for t in seen {
         let (first, count) = (t.first as i32 * 4, t.count as i32);
         match runs.last_mut() {
             Some(r) if r.0 + r.1 * 4 == first => r.1 += count,
@@ -3384,13 +3398,16 @@ impl GlState {
 
     /// Draw instanced objects with the program that is bound.
     /// The terrain tiles `vp` can see (all `count` indices without tiles).
-    unsafe fn draw_terrain(&self, gl: &glow::Context, vp: &M4, count: i32) {
+    /// Draw the land's tiles that `vp` can see; with `eye`, nearest first,
+    /// so that land behind a nearer hill fails the depth test before it is
+    /// worked out.
+    unsafe fn draw_terrain(&self, gl: &glow::Context, vp: &M4, count: i32, eye: Option<V3>) {
         unsafe {
             if self.tiles.is_empty() {
                 gl.draw_elements(glow::TRIANGLES, count, glow::UNSIGNED_INT, 0);
                 return;
             }
-            for (offset, n) in visible_runs(vp, &self.tiles) {
+            for (offset, n) in visible_runs(vp, &self.tiles, eye) {
                 gl.draw_elements(glow::TRIANGLES, n, glow::UNSIGNED_INT, offset);
             }
         }
@@ -3573,7 +3590,7 @@ impl GlState {
                     gl.use_program(Some(p.id));
                     p.m4(gl, "u_vp", &f.light_vp[k]);
                     gl.bind_vertex_array(Some(vao));
-                    self.draw_terrain(gl, &f.light_vp[k], count);
+                    self.draw_terrain(gl, &f.light_vp[k], count, None);
                 }
                 let p = self.programs.get_mut("sh_object").unwrap();
                 gl.use_program(Some(p.id));
@@ -4056,22 +4073,23 @@ impl GlState {
                 }
             }
 
-            // Distant mountains, far to near.
             self.time_stage(gl, 2);
-            if let Some((b, rings)) = self.mountains.as_ref().filter(|_| f.look.mountains) {
-                let (vao, rings) = (b.vao, rings.clone());
-                self.common(gl, "mountain", f);
-                let p = self.programs.get_mut("mountain").unwrap();
-                p.v3(gl, "u_anchor", f.anchor);
-                gl.bind_vertex_array(Some(vao));
-                for (k, r) in rings.iter().enumerate() {
-                    p.f1(gl, "u_haze", r.haze);
-                    p.f1(gl, "u_snowline", r.snowline);
-                    p.f1(gl, "u_treeline", r.treeline);
-                    p.f1(gl, "u_ring", k as f32);
-                    gl.draw_arrays(glow::TRIANGLES, r.first, r.count);
-                }
-            }
+            // Nearest first, so what lies behind is hidden before it is worked
+            // out: the road (hiding the land under it), the land nearest first,
+            // then the distant mountains behind it all. Road, pulled slightly
+            // towards the camera so it never z-fights the ground.
+            gl.enable(glow::POLYGON_OFFSET_FILL);
+            gl.polygon_offset(-1.0, -4.0);
+            let (rvao, rcount) = {
+                let r = self.road.as_ref().unwrap();
+                (r.vao, r.count)
+            };
+            self.common(gl, "road", f);
+            let p = self.programs.get_mut("road").unwrap();
+            p.f1(gl, "u_snow", f.snow);
+            gl.bind_vertex_array(Some(rvao));
+            gl.draw_arrays(glow::TRIANGLES, 0, rcount);
+            gl.disable(glow::POLYGON_OFFSET_FILL);
 
             // Terrain.
             if let Some(t) = &self.terrain {
@@ -4082,7 +4100,7 @@ impl GlState {
                 p.f1(gl, "u_water", f.water);
                 p.f1(gl, "u_snow", f.snow);
                 gl.bind_vertex_array(Some(vao));
-                self.draw_terrain(gl, &f.vp, count);
+                self.draw_terrain(gl, &f.vp, count, Some(f.cam));
                 // The distant land, out to the mountains, where the
                 // window does not reach (the shader leaves out the rest).
                 if let Some(far) = &self.far {
@@ -4098,19 +4116,21 @@ impl GlState {
                 }
             }
 
-            // Road, pulled slightly towards the camera so it never z-fights the ground.
-            gl.enable(glow::POLYGON_OFFSET_FILL);
-            gl.polygon_offset(-1.0, -4.0);
-            let (rvao, rcount) = {
-                let r = self.road.as_ref().unwrap();
-                (r.vao, r.count)
-            };
-            self.common(gl, "road", f);
-            let p = self.programs.get_mut("road").unwrap();
-            p.f1(gl, "u_snow", f.snow);
-            gl.bind_vertex_array(Some(rvao));
-            gl.draw_arrays(glow::TRIANGLES, 0, rcount);
-            gl.disable(glow::POLYGON_OFFSET_FILL);
+            // Distant mountains, near to far.
+            if let Some((b, rings)) = self.mountains.as_ref().filter(|_| f.look.mountains) {
+                let (vao, rings) = (b.vao, rings.clone());
+                self.common(gl, "mountain", f);
+                let p = self.programs.get_mut("mountain").unwrap();
+                p.v3(gl, "u_anchor", f.anchor);
+                gl.bind_vertex_array(Some(vao));
+                for (k, r) in rings.iter().enumerate().rev() {
+                    p.f1(gl, "u_haze", r.haze);
+                    p.f1(gl, "u_snowline", r.snowline);
+                    p.f1(gl, "u_treeline", r.treeline);
+                    p.f1(gl, "u_ring", k as f32);
+                    gl.draw_arrays(glow::TRIANGLES, r.first, r.count);
+                }
+            }
 
             // Soft darkening under trees and riders.
             self.time_stage(gl, 4);
@@ -4694,9 +4714,34 @@ mod tests {
             tile(0.0, -100.0, 12),
             tile(900.0, -20.0, 18),
         ];
-        let runs = visible_runs(&vp, &tiles);
+        let runs = visible_runs(&vp, &tiles, None);
         // Ahead: drawn; behind and far off to the side: skipped.
         assert_eq!(runs, vec![(0, 6), (48, 6)]);
+    }
+
+    #[test]
+    fn terrain_tiles_nearest_the_eye_come_first() {
+        let tile = |z: f32, first: u32| terrain::Tile {
+            first,
+            count: 6,
+            lo: [-10.0, -2.0, z - 10.0],
+            hi: [10.0, 2.0, z + 10.0],
+        };
+        let eye = [0.0, 2.0, 0.0];
+        let view = look_at(eye, [0.0, 2.0, -10.0], [0.0, 1.0, 0.0]);
+        let vp = mul(&perspective(1.0, 1.6, 0.5, 3000.0), &view);
+        // Stored far to near, with the two nearest next to each other.
+        let tiles = [tile(-300.0, 0), tile(-60.0, 6), tile(-40.0, 12)];
+        assert_eq!(
+            visible_runs(&vp, &tiles, None),
+            vec![(0, 18)],
+            "in storage order, merged"
+        );
+        assert_eq!(
+            visible_runs(&vp, &tiles, Some(eye)),
+            vec![(48, 6), (24, 6), (0, 6)],
+            "nearest first"
+        );
     }
 
     #[test]
