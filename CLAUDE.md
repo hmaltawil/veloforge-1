@@ -70,7 +70,8 @@ owner's Model Lab artifact: https://claude.ai/artifact/XRwTc47KujMQ1f3Fbrft2D
   surveys every kind of route (builtins, random routes of each scenery and
   shape, several kinds of import): land over the road, retaining walls,
   sharpest turn, steepest grade, how far an import strays from its track.
-  `VELOFORGE_ALPE=<file.gpx>` adds a GPX file. Run it before and after any
+  It always includes a real Alpe d'Huez climb (`tests/data/alpe_d_huez.gpx`);
+  `VELOFORGE_SURVEY_GPX=<file.gpx>` adds another. Run it before and after any
   change to land, road or route cleaning, and compare.
 - `print_grades` (`VELOFORGE_ROUTE_JSON`) and `gpx_to_json`
   (`VELOFORGE_GPX_IN`, `VELOFORGE_GPX_OUT`) in `src/route.rs`.
