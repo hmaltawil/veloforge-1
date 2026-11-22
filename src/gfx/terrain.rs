@@ -2467,7 +2467,9 @@ mod survey {
 /// and shape, imports of several kinds) to compare before and after a
 /// change to the land or the road: how far any land rises over the road,
 /// how much retaining wall shows, the sharpest turn, the steepest grade and
-/// how far an import strays from its track. `VELOFORGE_ALPE` adds a GPX file.
+/// how far an import strays from its track. A real climb with 21 hairpins
+/// (`tests/data/alpe_d_huez.gpx`) is always included; `VELOFORGE_SURVEY_GPX`
+/// adds another GPX file.
 /// `cargo test --release survey_all_kinds -- --ignored --nocapture`
 #[cfg(test)]
 mod survey_many {
@@ -2659,10 +2661,18 @@ mod survey_many {
                 println!("{}", survey(&r, None));
             }
         }
-        if let Ok(path) = std::env::var("VELOFORGE_ALPE") {
-            let xml = std::fs::read_to_string(path).unwrap();
-            let mut g = route::parse_gpx(&xml, "alpe", "Alpe d'Huez").unwrap();
+        let mut files = vec![(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/alpe_d_huez.gpx").to_string(),
+            "Alpe d'Huez".to_string(),
+        )];
+        if let Ok(path) = std::env::var("VELOFORGE_SURVEY_GPX") {
+            files.push((path, "Your GPX file".into()));
+        }
+        for (path, name) in files {
+            let xml = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+            let mut g = route::parse_gpx(&xml, "survey", &name).unwrap();
             g.scenery = Some(Scenery::Alpine);
+            g.name = name;
             let track: Vec<(f64, f64)> = g.pts.iter().map(|p| (p.2, p.3)).collect();
             println!("{}", survey(&g.to_route(), Some(&track)));
         }
