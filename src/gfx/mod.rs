@@ -802,18 +802,7 @@ impl GpuWorld {
 
         // --- road ribbon -------------------------------------------------
         let mut road = Vec::with_capacity(20_000);
-        let mut slices = Vec::new();
-        let mut s = ((d - 25.0) / 2.5).floor() * 2.5;
-        while s < d + 1100.0 {
-            slices.push(s);
-            s += if s < d + 150.0 {
-                2.5
-            } else if s < d + 400.0 {
-                5.0
-            } else {
-                10.0
-            };
-        }
+        let slices = road_slices(d, |s| route.at(s).heading);
         let laterals: [(f64, f64); 4] = [(-5.8, -0.25), (-4.6, 0.03), (4.6, 0.03), (5.8, -0.25)];
         let row = |s: f64| -> Vec<(V3, f32)> {
             let p = route.at(s);
@@ -872,48 +861,48 @@ impl GpuWorld {
                 }
             }
             let right = [h.cos() as f32, 0.0, h.sin() as f32];
-            // Masonry close by: courses of stone, each block a shade of its
-            // own, under a paler coping; further off one dark face.
-            let courses: &[(f32, f32)] = if s < d + 250.0 {
-                &[
-                    (0.0, 0.3),
-                    (0.3, 0.8),
-                    (0.8, 1.3),
-                    (1.3, 1.8),
-                    (1.8, 2.3),
-                    (2.3, 2.8),
-                    (2.8, 3.4),
-                    (3.4, WALL_DEPTH),
-                ]
-            } else {
-                &[(0.0, WALL_DEPTH)]
-            };
+            // Masonry: courses of stone under a paler coping, in blocks
+            // `WALL_BLOCK` long, each a shade of its own from where it
+            // stands along the road, so a block keeps its shade however
+            // the road is cut into pieces.
+            const COURSES: [(f32, f32); 8] = [
+                (0.0, 0.3),
+                (0.3, 0.8),
+                (0.8, 1.3),
+                (1.3, 1.8),
+                (1.8, 2.3),
+                (2.3, 2.8),
+                (2.8, 3.4),
+                (3.4, WALL_DEPTH),
+            ];
             for (k, out) in [(0usize, scale(right, -1.0)), (3, right)] {
                 let (a, b) = (
                     add(prev[k].0, [0.0, -0.03, 0.0]),
                     add(cur[k].0, [0.0, -0.03, 0.0]),
                 );
-                // Only as deep as the land beside it: the rest would be
-                // buried, drawn and then hidden by the ground.
-                let depth = reach_down(a, b, out);
-                for (row, &(top, bottom)) in courses.iter().enumerate() {
-                    if top >= depth {
-                        break;
-                    }
-                    let bottom = bottom.min(depth);
-                    let hash =
-                        terrain_hash((s / 2.5) as i64 * 31 + k as i64, row as i64, route.seed);
-                    let shade = 0.7 + 0.6 * (hash % 100) as f32 / 100.0;
-                    // Weathered grey stone, darker low down where it is damp.
-                    let stone = if row == 0 && courses.len() > 1 {
-                        scale([0.13, 0.125, 0.115], shade)
-                    } else {
-                        scale([0.075, 0.072, 0.066], shade * (1.0 - 0.04 * row as f32))
-                    };
-                    let (t, u) = ([0.0, -top, 0.0], [0.0, -bottom, 0.0]);
-                    let quad = [add(a, t), add(b, t), add(b, u), add(a, u)];
-                    for i in [0, 1, 2, 0, 2, 3] {
-                        walls.push(quad[i], out, stone);
+                for (f0, f1, block) in wall_blocks(prev_s, s) {
+                    let (a, b) = (add(a, scale(sub(b, a), f0)), add(a, scale(sub(b, a), f1)));
+                    // Only as deep as the land beside it: the rest would be
+                    // buried, drawn and then hidden by the ground.
+                    let depth = reach_down(a, b, out);
+                    for (row, &(top, bottom)) in COURSES.iter().enumerate() {
+                        if top >= depth {
+                            break;
+                        }
+                        let bottom = bottom.min(depth);
+                        let hash = terrain_hash(block * 31 + k as i64, row as i64, route.seed);
+                        let shade = 0.7 + 0.6 * (hash % 100) as f32 / 100.0;
+                        // Weathered grey stone, darker low down where it is damp.
+                        let stone = if row == 0 {
+                            scale([0.13, 0.125, 0.115], shade)
+                        } else {
+                            scale([0.075, 0.072, 0.066], shade * (1.0 - 0.04 * row as f32))
+                        };
+                        let (t, u) = ([0.0, -top, 0.0], [0.0, -bottom, 0.0]);
+                        let quad = [add(a, t), add(b, t), add(b, u), add(a, u)];
+                        for i in [0, 1, 2, 0, 2, 3] {
+                            walls.push(quad[i], out, stone);
+                        }
                     }
                 }
             }
@@ -1830,6 +1819,94 @@ const OBJ_MAPLE: usize = terrain::MAPLE;
 const OBJ_BALE: usize = terrain::BALE;
 /// How far a retaining wall reaches below the road's edge at most.
 const WALL_DEPTH: f32 = 25.0;
+/// The length of a retaining wall's stone blocks along the road.
+const WALL_BLOCK: f64 = 2.5;
+/// The most the road may turn from one of its pieces to the next.
+const ROAD_TURN_PER_PIECE: f64 = 3.0 * std::f64::consts::PI / 180.0;
+
+/// Where the road ahead of a rider at `d` is cut into pieces (distances
+/// along the route): every 2.5 m close by, 5 m from 150 m ahead and 10 m
+/// from 400 m, each at whole multiples of its step so the cuts stay where
+/// they are on the road as the rider moves; and wherever the road turns
+/// more than `ROAD_TURN_PER_PIECE` between two cuts (`heading` at a
+/// distance), more cuts between them, one each time it has turned that much
+/// again, so a bend is round at any distance.
+fn road_slices(d: f64, heading: impl Fn(f64) -> f64) -> Vec<f64> {
+    let step = |s: f64| {
+        if s < d + 150.0 {
+            2.5
+        } else if s < d + 400.0 {
+            5.0
+        } else {
+            10.0
+        }
+    };
+    let turn = |a: f64, b: f64| {
+        let t = (b - a).rem_euclid(std::f64::consts::TAU);
+        t.min(std::f64::consts::TAU - t)
+    };
+    let mut slices = Vec::new();
+    let mut s = ((d - 25.0) / 2.5).floor() * 2.5;
+    let mut h = heading(s);
+    while s < d + 1100.0 {
+        slices.push(s);
+        let st = step(s);
+        let next = ((s / st).floor() + 1.0) * st;
+        let (hm, hn) = (heading((s + next) / 2.0), heading(next));
+        // Through the middle too, so an S-bend is not taken for straight.
+        if turn(h, hm) + turn(hm, hn) > ROAD_TURN_PER_PIECE * 0.5 {
+            // How far the road has turned at points along the stretch, and
+            // cuts where it has turned each equal share of the whole.
+            const SAMPLES: usize = 16;
+            let at = |j: usize| s + (next - s) * j as f64 / SAMPLES as f64;
+            let mut turned = [0.0f64; SAMPLES + 1];
+            let mut last = h;
+            for j in 1..=SAMPLES {
+                let hj = heading(at(j));
+                turned[j] = turned[j - 1] + turn(last, hj);
+                last = hj;
+            }
+            let whole = turned[SAMPLES];
+            let pieces = ((whole / ROAD_TURN_PER_PIECE).ceil() as usize).clamp(1, 64);
+            let mut j = 0;
+            for i in 1..pieces {
+                let share = whole * i as f64 / pieces as f64;
+                while turned[j + 1] < share {
+                    j += 1;
+                }
+                let part = (share - turned[j]) / (turned[j + 1] - turned[j]).max(1e-12);
+                slices.push(s + (next - s) * (j as f64 + part) / SAMPLES as f64);
+            }
+        }
+        s = next;
+        h = hn;
+    }
+    slices
+}
+
+/// The retaining wall's stone blocks along the road between distances `s0`
+/// and `s1` (one of the road's pieces): for each, where it starts and ends
+/// as shares of the piece, and which block it is (its place along the road,
+/// `WALL_BLOCK` apart).
+fn wall_blocks(s0: f64, s1: f64) -> Vec<(f32, f32, i64)> {
+    let len = s1 - s0;
+    if len <= 0.0 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut a = s0;
+    while a < s1 - 1e-6 {
+        let block = (a / WALL_BLOCK + 1e-9).floor();
+        let b = ((block + 1.0) * WALL_BLOCK).min(s1);
+        out.push((
+            ((a - s0) / len) as f32,
+            ((b - s0) / len) as f32,
+            block as i64,
+        ));
+        a = b;
+    }
+    out
+}
 /// Dry-stone walls along the fields, piece by piece.
 const OBJ_WALL: usize = terrain::WALL;
 const OBJ_POST: usize = KINDS;
@@ -4750,6 +4827,62 @@ mod tests {
         let runs = visible_runs(&vp, &tiles, None);
         // Ahead: drawn; behind and far off to the side: skipped.
         assert_eq!(runs, vec![(0, 6), (48, 6)]);
+    }
+
+    #[test]
+    fn the_road_is_cut_where_it_was_as_the_rider_moves() {
+        let straight = |_: f64| 0.3;
+        let a = road_slices(1000.0, straight);
+        let b = road_slices(1003.7, straight);
+        // Every cut of the later frame that lies in the same band in both
+        // (each band's cuts are whole multiples of its step) was there before.
+        for s in b.iter().filter(|&&s| {
+            s < 1000.0 + 140.0
+                || (s > 1003.7 + 160.0 && s < 1000.0 + 390.0)
+                || s > 1003.7 + 410.0 && s < 2090.0
+        }) {
+            assert!(
+                a.iter().any(|&t| (t - s).abs() < 1e-9),
+                "{s} was not cut before"
+            );
+        }
+        assert!(a.windows(2).all(|w| w[1] > w[0]));
+    }
+
+    #[test]
+    fn bends_are_round_at_any_distance() {
+        // A hairpin of 9 m radius 600 m ahead (in the 10 m band), and one
+        // close by: 180 degrees in 28 m.
+        let hairpin = |at: f64| {
+            move |s: f64| {
+                ((s - at) / (9.0 * std::f64::consts::PI)).clamp(0.0, 1.0) * std::f64::consts::PI
+            }
+        };
+        for at in [40.0, 600.0] {
+            let h = hairpin(at);
+            let cuts = road_slices(0.0, h);
+            for w in cuts.windows(2) {
+                let turn = (h(w[1]) - h(w[0])).abs();
+                assert!(
+                    turn <= ROAD_TURN_PER_PIECE + 1e-9,
+                    "{:.1} deg at {}",
+                    turn.to_degrees(),
+                    w[0]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn wall_blocks_keep_their_place_along_the_road() {
+        // A piece of road from 98.3 m to 104.1 m: blocks from 97.5, 100 and
+        // 102.5 m, cut where the piece starts and ends.
+        let b = wall_blocks(98.3, 104.1);
+        assert_eq!(b.iter().map(|x| x.2).collect::<Vec<_>>(), vec![39, 40, 41]);
+        assert!((b[0].0 - 0.0).abs() < 1e-6 && (b[2].1 - 1.0).abs() < 1e-6);
+        assert!((b[0].1 - b[1].0).abs() < 1e-6 && (b[1].1 - b[2].0).abs() < 1e-6);
+        // The same block, whichever pieces the road is cut into.
+        assert_eq!(wall_blocks(100.4, 100.9)[0].2, 40);
     }
 
     #[test]
