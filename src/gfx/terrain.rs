@@ -332,13 +332,21 @@ impl RouteGeo {
 
     /// Snow lies on the mountains well above the highest road, so a climb
     /// that finishes at its top finishes on grass and rock.
-    /// How high the ground may be at (`x`, `z`) so as to stay below every
-    /// stretch of road within `reach`: for each, its surface where it is
-    /// nearest, less a little for how much it climbs or falls across a
-    /// triangle of the land. None if no road is that near.
-    fn road_bed(&self, x: f64, z: f64, reach: f64) -> Option<f64> {
+    /// The surface of the road over (`x`, `z`), if a road covers it: the
+    /// lowest of every stretch of road there, each at its height where it
+    /// is nearest, and its verges (beyond `ROAD_CROWN` of the middle) taken
+    /// as low as their outer edges. (The land uses `surface_from`.)
+    #[cfg(test)]
+    fn road_surface(&self, x: f64, z: f64) -> Option<f64> {
+        self.surface_from(&self.road_near(x, z, 0.0), x, z)
+    }
+
+    /// The road's segments that may cover a spot within `around` of
+    /// (`x`, `z`), in order along the route: looked up once for many spots
+    /// close together (`surface_from`).
+    fn road_near(&self, x: f64, z: f64, around: f64) -> Vec<u32> {
         let (ci, cj) = ((x / SEG_CELL).floor() as i64, (z / SEG_CELL).floor() as i64);
-        let k = (reach / SEG_CELL).ceil() as i64;
+        let k = ((ROAD_HALF_WIDTH + around) / SEG_CELL).ceil() as i64;
         let mut near: Vec<u32> = Vec::new();
         for dj in -k..=k {
             for di in -k..=k {
@@ -347,11 +355,32 @@ impl RouteGeo {
                 }
             }
         }
-        if near.is_empty() {
-            return None;
-        }
         near.sort_unstable();
+        near.dedup();
+        near
+    }
+
+    /// The road's surface over (`x`, `z`) (as `road_surface`), from the
+    /// segments `near` it (`road_near`).
+    fn surface_from(&self, near: &[u32], x: f64, z: f64) -> Option<f64> {
         let n = self.pts.len();
+        // Where along segment `i` the spot is nearest: how far from it, the
+        // road's height there, and whether the spot is square on to it.
+        let seg = |i: u32| {
+            let j = i as usize;
+            let ((ax, az), (bx, bz)) = (self.pts[j], self.pts[j + 1]);
+            let (dx, dz) = (bx - ax, bz - az);
+            let l2 = (dx * dx + dz * dz).max(1e-9);
+            let along = ((x - ax) * dx + (z - az) * dz) / l2;
+            let t = along.clamp(0.0, 1.0);
+            let d = (x - ax - dx * t).hypot(z - az - dz * t);
+            let ele = self.eles[j] + (self.eles[j + 1] - self.eles[j]) * t;
+            (d, ele, (0.0..1.0).contains(&along))
+        };
+        let near = match near.iter().position(|&i| i as usize + 1 >= n) {
+            Some(last) => &near[..last],
+            None => near,
+        };
         let mut cap: Option<f64> = None;
         // Each run of neighbouring points is one stretch of road.
         let mut start = 0;
@@ -364,39 +393,133 @@ impl RouteGeo {
             // to, round a bend) holds the ground down: the two legs of a
             // hairpin are one run joined by its bend, and the spot may be
             // nearer the one than the other all the way round.
-            let pass: Vec<(f64, f64, f64, bool)> = near[start..end]
-                .iter()
-                .filter(|&&i| (i as usize) + 1 < n)
-                .map(|&i| {
-                    let j = i as usize;
-                    let ((ax, az), (bx, bz)) = (self.pts[j], self.pts[j + 1]);
-                    let (dx, dz) = (bx - ax, bz - az);
-                    let l2 = (dx * dx + dz * dz).max(1e-9);
-                    let along = ((x - ax) * dx + (z - az) * dz) / l2;
-                    let t = along.clamp(0.0, 1.0);
-                    let d = (x - ax - dx * t).hypot(z - az - dz * t);
-                    let ele = self.eles[j] + (self.eles[j + 1] - self.eles[j]) * t;
-                    let square = (0.0..1.0).contains(&along);
-                    (
-                        d,
-                        ele,
-                        (self.eles[j + 1] - self.eles[j]) / l2.sqrt(),
-                        square,
-                    )
-                })
-                .collect();
-            for k in 0..pass.len() {
-                let d = pass[k].0;
-                let before = k == 0 || pass[k - 1].0 >= d;
-                let after = k + 1 == pass.len() || pass[k + 1].0 >= d;
-                if (pass[k].3 || before && after) && d < reach {
-                    let here = pass[k].1 - pass[k].2.abs() * 4.0;
-                    cap = Some(cap.map_or(here, |c: f64| c.min(here)));
+            let mut prev: Option<(f64, f64, bool)> = None;
+            let mut here = seg(near[start]);
+            for k in start..end {
+                let next = (k + 1 < end).then(|| seg(near[k + 1]));
+                let (d, ele, square) = here;
+                let before = prev.is_none_or(|p| p.0 >= d);
+                let after = next.is_none_or(|q| q.0 >= d);
+                if (square || before && after) && d <= ROAD_HALF_WIDTH {
+                    let top = ele - if d > ROAD_CROWN { ROAD_VERGE_DROP } else { 0.0 };
+                    cap = Some(cap.map_or(top, |c: f64| c.min(top)));
+                }
+                prev = Some(here);
+                if let Some(q) = next {
+                    here = q;
                 }
             }
             start = end;
         }
         cap
+    }
+
+    /// How far each corner of a land triangle with heights `h` must come
+    /// down so that nowhere under a road is it higher than `ROAD_BED` below
+    /// the road's surface (`surface` at a point given by its weights on the
+    /// corners). As little as that takes: each time, the corners nearest the
+    /// point most over the road come down the most.
+    fn bed_drops(&self, h: [f64; 3], surface: impl Fn([f64; 3]) -> Option<f64>) -> [f64; 3] {
+        // The land is flat across the triangle, so it is furthest over the
+        // road where the road's edge or the foot of its verge crosses the
+        // triangle's sides (or at a corner): those crossings, found to a few
+        // millimetres, and points across the triangle about a metre apart
+        // for roads that bend or end inside it.
+        const STEPS: usize = 8;
+        const SIDE_STEPS: usize = 16;
+        // A step in what covers the spot: the road's edge, or a verge's foot.
+        let changes = |s0: Option<f64>, s1: Option<f64>| match (s0, s1) {
+            (Some(a), Some(b)) => (a - b).abs() > 0.1,
+            (a, b) => a.is_some() != b.is_some(),
+        };
+        let mut under: Vec<([f64; 3], f64)> = Vec::new();
+        let mut first = None;
+        let mut mixed = false;
+        for p in 0..=STEPS {
+            for q in 0..=STEPS - p {
+                let (u, v) = (p as f64 / STEPS as f64, q as f64 / STEPS as f64);
+                let w = [1.0 - u - v, u, v];
+                let top = surface(w);
+                let f = *first.get_or_insert(top);
+                mixed |= changes(f, top);
+                if let Some(top) = top {
+                    under.push((w, top - ROAD_BED));
+                }
+            }
+        }
+        let corner = |k: usize| {
+            let mut w = [0.0; 3];
+            w[k] = 1.0;
+            w
+        };
+        let between = |a: [f64; 3], b: [f64; 3], t: f64| -> [f64; 3] {
+            std::array::from_fn(|k| a[k] + (b[k] - a[k]) * t)
+        };
+        // The triangle's sides, and where a road's edge runs inside it, lines
+        // across it a metre apart each way (an edge bending inside crosses
+        // those).
+        let mut lines: Vec<([f64; 3], [f64; 3])> =
+            (0..3).map(|k| (corner(k), corner((k + 1) % 3))).collect();
+        for p in (1..STEPS).filter(|_| mixed) {
+            let t = p as f64 / STEPS as f64;
+            for k in 0..3 {
+                let (a, b, c) = (corner(k), corner((k + 1) % 3), corner((k + 2) % 3));
+                lines.push((between(a, b, t), between(a, c, t)));
+            }
+        }
+        for (a, b) in lines {
+            let mut prev = (0.0, surface(a));
+            for step in 1..=SIDE_STEPS {
+                let t = step as f64 / SIDE_STEPS as f64;
+                let here = (t, surface(between(a, b, t)));
+                if changes(prev.1, here.1) {
+                    // Narrow it down, keeping the two sides of the step.
+                    let (mut lo, mut hi) = (prev, here);
+                    for _ in 0..7 {
+                        let mid_t = (lo.0 + hi.0) / 2.0;
+                        let mid = (mid_t, surface(between(a, b, mid_t)));
+                        if changes(lo.1, mid.1) {
+                            hi = mid;
+                        } else {
+                            lo = mid;
+                        }
+                    }
+                    for (t, top) in [lo, hi] {
+                        if let Some(top) = top {
+                            under.push((between(a, b, t), top - ROAD_BED));
+                        }
+                    }
+                }
+                prev = here;
+            }
+        }
+        let mut lower = [0.0f64; 3];
+        let over = |lower: &[f64; 3], w: &[f64; 3], cap: f64| {
+            (0..3).map(|k| w[k] * (h[k] - lower[k])).sum::<f64>() - cap
+        };
+        for _ in 0..12 {
+            let Some((w, e)) = under
+                .iter()
+                .map(|(w, cap)| (*w, over(&lower, w, *cap)))
+                .max_by(|a, b| a.1.total_cmp(&b.1))
+            else {
+                return lower;
+            };
+            if e <= 1e-4 {
+                return lower;
+            }
+            // The least change that brings that point down to the cap.
+            let n2: f64 = w.iter().map(|x| x * x).sum();
+            for k in 0..3 {
+                lower[k] += e * w[k] / n2;
+            }
+        }
+        // Whatever is left over, all three together.
+        let left = under
+            .iter()
+            .map(|(w, cap)| over(&lower, w, *cap))
+            .fold(0.0, f64::max);
+        lower.map(|l| l + left)
     }
 
     pub fn snow_level(&self) -> f64 {
@@ -699,21 +822,53 @@ impl RouteGeo {
                     .push(self.sample(x0 + (i as f64 - 1.0) * cell, z0 + (j as f64 - 1.0) * cell));
             }
         }
-        // The road bed: no point of the land's triangles near a road higher
-        // than just below it, so no triangle reaching from the roadside up a
-        // bank can rise over the road (a triangle reaches a cell's diagonal
-        // from its points), whichever stretch of road it is beside.
-        let reach = ROAD_HALF_WIDTH + cell * std::f64::consts::SQRT_2;
-        for j in 0..m {
-            for i in 0..m {
+        // The road bed: no point of the land's triangles under a road
+        // higher than just below its surface, whichever stretch of road it
+        // is (so no bank rises over the road, at a hairpin's legs too).
+        // Each triangle near a road asks its corners to come down as little
+        // as that takes, and each point comes down as far as the most any
+        // of its triangles asks: worked out from the land as shaped, so a
+        // point comes out the same in every window. Land beside the road
+        // keeps its height.
+        let mut drop = vec![0.0f64; m * m];
+        let near = ROAD_HALF_WIDTH + cell * std::f64::consts::SQRT_2;
+        for j in 0..m - 1 {
+            for i in 0..m - 1 {
+                let (a, b, c, d) = (
+                    j * m + i,
+                    j * m + i + 1,
+                    (j + 1) * m + i,
+                    (j + 1) * m + i + 1,
+                );
                 let (x, z) = (x0 + (i as f64 - 1.0) * cell, z0 + (j as f64 - 1.0) * cell);
-                if samples[j * m + i].dist < reach + 30.0 {
-                    if let Some(bed) = self.road_bed(x, z, reach) {
-                        let s = &mut samples[j * m + i];
-                        s.h = s.h.min(bed - ROAD_BED);
+                // The cell's two triangles, as drawn: (a, b, c) and (b, d, c),
+                // each corner with its offset in the cell.
+                for tri in [
+                    [(a, 0.0, 0.0), (b, 1.0, 0.0), (c, 0.0, 1.0)],
+                    [(b, 1.0, 0.0), (d, 1.0, 1.0), (c, 0.0, 1.0)],
+                ] {
+                    if tri.iter().all(|&(v, _, _)| samples[v].dist > near) {
+                        continue;
+                    }
+                    let h = tri.map(|(v, _, _)| samples[v].h);
+                    let roads = self.road_near(x + cell * 0.5, z + cell * 0.5, cell);
+                    if roads.is_empty() {
+                        continue;
+                    }
+                    let lower = self.bed_drops(h, |w| {
+                        let (u, v) = (0..3).fold((0.0, 0.0), |(u, v), k| {
+                            (u + w[k] * tri[k].1, v + w[k] * tri[k].2)
+                        });
+                        self.surface_from(&roads, x + u * cell, z + v * cell)
+                    });
+                    for (k, &(v, _, _)) in tri.iter().enumerate() {
+                        drop[v] = drop[v].max(lower[k]);
                     }
                 }
             }
+        }
+        for (s, d) in samples.iter_mut().zip(&drop) {
+            s.h -= d;
         }
         let at = |i: usize, j: usize| &samples[j * m + i];
         let mut verts = Vec::with_capacity(n * n * TERRAIN_STRIDE);
@@ -1557,8 +1712,12 @@ struct Request {
 /// Half the road's width to the outside of its verges (the road ribbon's
 /// outer edge in `gfx`).
 pub const ROAD_HALF_WIDTH: f64 = 5.8;
-/// How far below the road its bed lies.
-pub const ROAD_BED: f64 = 0.3;
+/// How far below the road's surface the land under it lies, at least.
+pub const ROAD_BED: f64 = 0.02;
+/// Half the width of the road's middle, between its verges.
+pub const ROAD_CROWN: f64 = 4.6;
+/// How far the verges fall from the middle to the road's outer edges.
+pub const ROAD_VERGE_DROP: f64 = 0.25;
 /// The size of the squares road points are sorted into.
 const SEG_CELL: f64 = 16.0;
 
@@ -1760,7 +1919,7 @@ mod tests {
         // On the lake route, whose banks are steep: everything stands on the
         // drawn triangles, its base set into the ground all round, so no
         // side of it floats over a slope, and no deeper than it needs.
-        let r = route::builtin()
+        let r = crate::route::builtin()
             .into_iter()
             .find(|r| r.id == "lakeside")
             .unwrap();
@@ -1849,7 +2008,10 @@ mod tests {
     #[test]
     fn nothing_stands_in_the_water_on_cliffs_or_in_the_fields() {
         for id in ["valley-loop", "lakeside", "island-coast", "col-loop"] {
-            let r = route::builtin().into_iter().find(|r| r.id == id).unwrap();
+            let r = crate::route::builtin()
+                .into_iter()
+                .find(|r| r.id == id)
+                .unwrap();
             let g = RouteGeo::new(&r);
             let (mut bales, mut checked) = (0, 0);
             for at in [1500.0, 9000.0] {
@@ -2147,7 +2309,7 @@ mod tests {
 
     #[test]
     fn lake_is_inside_the_loop() {
-        let r = route::builtin()
+        let r = crate::route::builtin()
             .into_iter()
             .find(|r| r.id == "lakeside")
             .unwrap();
@@ -2271,15 +2433,14 @@ mod survey {
             let q = r.at(d);
             let w = geo.build_window(q.x, q.z, WINDOW_SIZE, WINDOW_VERTS);
             let cell = WINDOW_SIZE / (WINDOW_VERTS - 1) as f64;
-            let reach = ROAD_HALF_WIDTH + cell * std::f64::consts::SQRT_2;
             println!("road at {d}: ele {:.1} heading {:.2}", q.ele, q.heading);
             for k in -6..=6 {
                 let lat = k as f64 * 5.6 / 6.0;
                 let (x, z) = (q.x + lat * q.heading.cos(), q.z - lat * q.heading.sin());
                 println!(
-                    "  lat {lat:+.1}: ground {:.2} bed {:?} near {:.1}",
+                    "  lat {lat:+.1}: ground {:.2} road {:?} near {:.1}",
                     w.ground(x, z).unwrap(),
-                    geo.road_bed(x, z, reach),
+                    geo.road_surface(x, z),
                     geo.nearest(x, z).dist
                 );
             }
@@ -2292,8 +2453,8 @@ mod survey {
                     let (x, z) = (w.ox - half + i as f64 * cell, w.oz - half + j as f64 * cell);
                     let h = w.verts[(j * n + i) * TERRAIN_STRIDE + 1];
                     println!(
-                        "  vertex ({i},{j}): h {h:.2} bed {:?} near {:.1}",
-                        geo.road_bed(x, z, reach),
+                        "  vertex ({i},{j}): h {h:.2} road {:?} near {:.1}",
+                        geo.road_surface(x, z),
                         geo.nearest(x, z).dist
                     );
                 }
