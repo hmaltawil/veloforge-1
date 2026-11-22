@@ -834,6 +834,30 @@ impl GpuWorld {
         // Stone walls hold the road up where the land falls away beside it
         // (down from both edges, hidden where the ground meets the road).
         let mut walls = mesh::Mesh::default();
+        let land = self.land.clone();
+        // How far down from its top a wall must reach between `a` and `b`
+        // to meet the land beside it (`out` from the road), a little into
+        // it: none where the land covers the wall's top all along, and all
+        // the way (`WALL_DEPTH`) where the land is not known.
+        let reach_down = |a: V3, b: V3, out: V3| -> f32 {
+            let Some(land) = &land else {
+                return WALL_DEPTH;
+            };
+            let mut deepest = f32::MIN;
+            for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                let p = add(add(a, scale(sub(b, a), t)), scale(out, 0.15));
+                let world = (p[0] as f64 + origin.0, origin.1 - p[2] as f64);
+                let Some(ground) = land.ground(world.0, world.1) else {
+                    return WALL_DEPTH;
+                };
+                deepest = deepest.max(p[1] - ground as f32);
+            }
+            if deepest <= 0.0 {
+                0.0
+            } else {
+                (deepest + 0.3).min(WALL_DEPTH)
+            }
+        };
         let mut prev = row(slices[0]);
         let mut prev_s = slices[0];
         for &s in &slices[1..] {
@@ -859,17 +883,24 @@ impl GpuWorld {
                     (1.8, 2.3),
                     (2.3, 2.8),
                     (2.8, 3.4),
-                    (3.4, 25.0),
+                    (3.4, WALL_DEPTH),
                 ]
             } else {
-                &[(0.0, 25.0)]
+                &[(0.0, WALL_DEPTH)]
             };
             for (k, out) in [(0usize, scale(right, -1.0)), (3, right)] {
                 let (a, b) = (
                     add(prev[k].0, [0.0, -0.03, 0.0]),
                     add(cur[k].0, [0.0, -0.03, 0.0]),
                 );
+                // Only as deep as the land beside it: the rest would be
+                // buried, drawn and then hidden by the ground.
+                let depth = reach_down(a, b, out);
                 for (row, &(top, bottom)) in courses.iter().enumerate() {
+                    if top >= depth {
+                        break;
+                    }
+                    let bottom = bottom.min(depth);
                     let hash =
                         terrain_hash((s / 2.5) as i64 * 31 + k as i64, row as i64, route.seed);
                     let shade = 0.7 + 0.6 * (hash % 100) as f32 / 100.0;
@@ -1797,6 +1828,8 @@ const OBJ_TOWNHOUSE: usize = terrain::TOWNHOUSE;
 const OBJ_OAK: usize = terrain::OAK;
 const OBJ_MAPLE: usize = terrain::MAPLE;
 const OBJ_BALE: usize = terrain::BALE;
+/// How far a retaining wall reaches below the road's edge at most.
+const WALL_DEPTH: f32 = 25.0;
 /// Dry-stone walls along the fields, piece by piece.
 const OBJ_WALL: usize = terrain::WALL;
 const OBJ_POST: usize = KINDS;
