@@ -1465,10 +1465,9 @@ void main() {
 "#;
 
 /// Shafts of sunlight: march from each pixel towards the sun and count how
-/// much open sky lies in between.
+/// much open sky lies in between, in the quarter-size sky mask.
 pub const RAYS_FS: &str = r#"
 uniform sampler2D u_sky;
-uniform float u_is_depth;   // 1 when u_sky is the depth image itself
 uniform vec2 u_sun_uv;
 uniform float u_aspect;
 uniform int u_samples;
@@ -1487,7 +1486,6 @@ void main() {
         if (i >= u_samples) break;
         vec2 c = clamp(uv, vec2(0.001), vec2(0.999));
         float sky = texture(u_sky, c).r;
-        if (u_is_depth > 0.5) sky = step(0.99999, sky);
         // Sky close to the sun counts most.
         vec2 ds = (u_sun_uv - uv) * vec2(u_aspect, 1.0);
         sum += sky * wgt * exp(-dot(ds, ds) * 5.0);

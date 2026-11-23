@@ -1654,10 +1654,6 @@ struct GlState {
     targets: Option<Targets>,
     /// Off-screen rendering is not possible here: draw straight to the screen.
     direct: bool,
-    /// For measuring: `VELOFORGE_RAYS=off` leaves out the light shafts,
-    /// `old` marches them over the full-size depth image as before.
-    rays_off: bool,
-    rays_old: bool,
     shadow_maps: Option<ShadowMaps>,
     /// Cloud shadows for the deck above the view, made once per frame.
     cloud_map: Option<Target>,
@@ -2348,8 +2344,6 @@ impl GlState {
             self.sky_vao = Some(gl.create_vertex_array()?);
             // For troubleshooting: draw straight to the screen, no post pass.
             self.direct = std::env::var("VELOFORGE_POST").is_ok_and(|v| v == "0");
-            self.rays_off = std::env::var("VELOFORGE_RAYS").is_ok_and(|v| v == "off");
-            self.rays_old = std::env::var("VELOFORGE_RAYS").is_ok_and(|v| v == "old");
 
             self.road = Some(Self::buffers(gl, &[(3, 0), (2, 3)], 5, &[], None)?);
             self.water = Some(Self::buffers(gl, &[(3, 0)], 3, &[], None)?);
@@ -3312,11 +3306,7 @@ impl GlState {
                 )?,
                 // Quarter size: the shafts are soft, and look the same as at
                 // half size for a quarter of the work.
-                rays: {
-                    let old = std::env::var("VELOFORGE_RAYS").is_ok_and(|v| v == "old");
-                    let k = if old { 2 } else { 4 };
-                    Self::target(gl, (w / k).max(1), (h / k).max(1), false)?
-                },
+                rays: Self::target(gl, (w / 4).max(1), (h / 4).max(1), false)?,
             };
             // The blur pyramid: halve until it gets small.
             let (mut lw, mut lh) = (w, h);
@@ -4495,14 +4485,13 @@ impl GlState {
             );
             let mut rays = 0.0;
             let mut sun_uv = [0.5, 0.5];
-            if sun_clip[3] > 0.0 && t.hdr && f.quality != Quality::Low && !self.rays_off {
+            if sun_clip[3] > 0.0 && t.hdr && f.quality != Quality::Low {
                 let (x, y) = (sun_clip[0] / sun_clip[3], sun_clip[1] / sun_clip[3]);
                 let off = x.abs().max(y.abs());
                 rays = f.look.rays * (1.0 - ((off - 0.9) / 0.8).clamp(0.0, 1.0));
                 sun_uv = [x * 0.5 + 0.5, y * 0.5 + 0.5];
             }
-            let old = self.rays_old;
-            if rays > 0.0 && !old {
+            if rays > 0.0 {
                 let p = self.programs.get_mut("sky_mask").unwrap();
                 gl.use_program(Some(p.id));
                 p.i1(gl, "u_depth", 0);
@@ -4517,12 +4506,10 @@ impl GlState {
                 let p = self.programs.get_mut("rays").unwrap();
                 gl.use_program(Some(p.id));
                 p.i1(gl, "u_sky", 0);
-                p.f1(gl, "u_is_depth", if old { 1.0 } else { 0.0 });
                 p.f2(gl, "u_sun_uv", sun_uv[0], sun_uv[1]);
                 p.i1(gl, "u_samples", f.quality.ray_samples());
                 p.f1(gl, "u_aspect", t.w as f32 / t.h as f32);
-                let src = if old { t.depth_tex } else { t.sky.tex };
-                gl.bind_texture(glow::TEXTURE_2D, Some(src));
+                gl.bind_texture(glow::TEXTURE_2D, Some(t.sky.tex));
                 gl.draw_arrays(glow::TRIANGLES, 0, 3);
             } else {
                 gl.clear_color(0.0, 0.0, 0.0, 1.0);
