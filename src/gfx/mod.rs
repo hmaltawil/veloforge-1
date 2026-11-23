@@ -3310,7 +3310,13 @@ impl GlState {
                     glow::RED,
                     glow::UNSIGNED_BYTE,
                 )?,
-                rays: Self::target(gl, (w / 2).max(1), (h / 2).max(1), false)?,
+                // Quarter size: the shafts are soft, and look the same as at
+                // half size for a quarter of the work.
+                rays: {
+                    let old = std::env::var("VELOFORGE_RAYS").is_ok_and(|v| v == "old");
+                    let k = if old { 2 } else { 4 };
+                    Self::target(gl, (w / k).max(1), (h / k).max(1), false)?
+                },
             };
             // The blur pyramid: halve until it gets small.
             let (mut lw, mut lh) = (w, h);
