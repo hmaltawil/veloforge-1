@@ -531,11 +531,46 @@ impl App {
             .extend(self.store.gpx_routes.iter().map(|g| g.to_route()));
         self.routes
             .extend(self.store.random_routes.iter().map(|r| r.route()));
-        self.route_idx = self
+        // The route chosen, the other way round if its id says so.
+        let want = &self.store.settings.route_id;
+        let (base, reversed) = match want.strip_suffix(route::REVERSED) {
+            Some(base) => (base, true),
+            None => (want.as_str(), false),
+        };
+        match self.routes.iter().position(|r| r.id == base) {
+            Some(i) => {
+                self.route_idx = i;
+                if reversed {
+                    self.routes[i] = self.routes[i].reversed();
+                }
+            }
+            None => self.route_idx = 0,
+        }
+    }
+
+    /// Ride the route with id `id` next (a route's id with
+    /// `route::REVERSED` after it rides it the other way).
+    fn choose_route(&mut self, id: String) {
+        if id == self.routes[self.route_idx].id {
+            return;
+        }
+        let swap_way = self.routes[self.route_idx].is_reversed() || id.ends_with(route::REVERSED);
+        self.store.settings.route_id = id;
+        if swap_way {
+            // The routes are made again, this one the way chosen.
+            self.rebuild_routes();
+        } else if let Some(i) = self
             .routes
             .iter()
             .position(|r| r.id == self.store.settings.route_id)
-            .unwrap_or(0);
+        {
+            self.route_idx = i;
+        }
+        self.mark_dirty();
+        // A ghost belongs to the route it was ridden on.
+        if matches!(self.ride.companion, Some(ride::Companion::Ghost(_))) {
+            self.ride.companion = None;
+        }
     }
 
     /// Make a new random route from the choices in Settings, add it to the
@@ -2180,6 +2215,15 @@ impl App {
             .and_then(|s| s.to_str())
             .unwrap_or("import")
             .to_string();
+        // A route is called by its file's name ("Alpe_d_Huez.gpx": "Alpe d
+        // Huez"), not the name inside it, often an app's placeholder.
+        let title = stem.replace('_', " ");
+        let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+        let title = if title.is_empty() {
+            stem.clone()
+        } else {
+            title
+        };
         let id = format!(
             "{}-{}",
             ext,
@@ -2199,7 +2243,7 @@ impl App {
                 }
                 Err(e) => self.notify(format!("Could not import workout: {e:#}")),
             },
-            "gpx" => match route::parse_gpx(&text, &id, &stem) {
+            "gpx" => match route::parse_gpx(&text, &id, &title) {
                 Ok(g) => {
                     let name = g.name.clone();
                     self.store.gpx_routes.retain(|x| x.id != id);
@@ -3397,13 +3441,25 @@ impl App {
                     ri = self.route_idx;
                 }
                 if ri != self.route_idx {
-                    self.route_idx = ri;
-                    self.store.settings.route_id = self.routes[ri].id.clone();
-                    self.mark_dirty();
-                    // A ghost belongs to the route it was ridden on.
-                    if matches!(self.ride.companion, Some(ride::Companion::Ghost(_))) {
-                        self.ride.companion = None;
-                    }
+                    // Another route is ridden the way it is made.
+                    self.choose_route(self.routes[ri].base_id().to_string());
+                }
+                let current = &self.routes[self.route_idx];
+                let mut reversed = current.is_reversed();
+                let turn = ui
+                    .toggle_value(&mut reversed, "Reverse")
+                    .on_hover_text(if current.shape() == route::Shape::Loop {
+                        "Ride the loop the other way round"
+                    } else {
+                        "Ride from the finish back to the start"
+                    });
+                if turn.changed() {
+                    let base = current.base_id().to_string();
+                    self.choose_route(if reversed {
+                        format!("{base}{}", route::REVERSED)
+                    } else {
+                        base
+                    });
                 }
             }
             self.companion_menu(ui);
