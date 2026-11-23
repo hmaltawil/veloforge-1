@@ -1495,6 +1495,10 @@ struct Targets {
     /// Progressively smaller and blurrier copies of the scene.
     down: Vec<Target>,
     up: Vec<Target>,
+    /// How much of each 4x4 block of the scene is open sky, for the light
+    /// shafts: small enough to stay in the graphics card's cache as they
+    /// march across it, where the full-size depth image does not.
+    sky: Target,
     rays: Target,
 }
 
@@ -1650,8 +1654,10 @@ struct GlState {
     targets: Option<Targets>,
     /// Off-screen rendering is not possible here: draw straight to the screen.
     direct: bool,
-    /// For measuring: `VELOFORGE_RAYS=off` leaves out the light shafts.
+    /// For measuring: `VELOFORGE_RAYS=off` leaves out the light shafts,
+    /// `old` marches them over the full-size depth image as before.
     rays_off: bool,
+    rays_old: bool,
     shadow_maps: Option<ShadowMaps>,
     /// Cloud shadows for the deck above the view, made once per frame.
     cloud_map: Option<Target>,
@@ -2336,12 +2342,14 @@ impl GlState {
             // Post-processing.
             self.compile(gl, "down", &[SCREEN_VS], &[DOWN_FS], &[])?;
             self.compile(gl, "up", &[SCREEN_VS], &[UP_FS], &[])?;
+            self.compile(gl, "sky_mask", &[SCREEN_VS], &[SKY_MASK_FS], &[])?;
             self.compile(gl, "rays", &[SCREEN_VS], &[RAYS_FS], &[])?;
             self.compile(gl, "composite", &[SCREEN_VS], &[COMPOSITE_FS], &[])?;
             self.sky_vao = Some(gl.create_vertex_array()?);
             // For troubleshooting: draw straight to the screen, no post pass.
             self.direct = std::env::var("VELOFORGE_POST").is_ok_and(|v| v == "0");
             self.rays_off = std::env::var("VELOFORGE_RAYS").is_ok_and(|v| v == "off");
+            self.rays_old = std::env::var("VELOFORGE_RAYS").is_ok_and(|v| v == "old");
 
             self.road = Some(Self::buffers(gl, &[(3, 0), (2, 3)], 5, &[], None)?);
             self.water = Some(Self::buffers(gl, &[(3, 0)], 3, &[], None)?);
@@ -3164,13 +3172,24 @@ impl GlState {
 
     /// A colour texture with a framebuffer to draw into it.
     unsafe fn target(gl: &glow::Context, w: i32, h: i32, hdr: bool) -> Result<Target, String> {
+        let (internal, ty) = if hdr {
+            (glow::RGBA16F, glow::HALF_FLOAT)
+        } else {
+            (glow::RGBA8, glow::UNSIGNED_BYTE)
+        };
+        unsafe { Self::target_as(gl, w, h, internal, glow::RGBA, ty) }
+    }
+
+    unsafe fn target_as(
+        gl: &glow::Context,
+        w: i32,
+        h: i32,
+        internal: u32,
+        format: u32,
+        ty: u32,
+    ) -> Result<Target, String> {
         unsafe {
-            let (internal, ty) = if hdr {
-                (glow::RGBA16F, glow::HALF_FLOAT)
-            } else {
-                (glow::RGBA8, glow::UNSIGNED_BYTE)
-            };
-            let tex = Self::texture(gl, w, h, internal, glow::RGBA, ty, glow::LINEAR)?;
+            let tex = Self::texture(gl, w, h, internal, format, ty, glow::LINEAR)?;
             let fbo = gl.create_framebuffer()?;
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
             gl.framebuffer_texture_2d(
@@ -3283,6 +3302,14 @@ impl GlState {
                 depth_tex,
                 down: Vec::new(),
                 up: Vec::new(),
+                sky: Self::target_as(
+                    gl,
+                    (w / 4).max(1),
+                    (h / 4).max(1),
+                    glow::R8,
+                    glow::RED,
+                    glow::UNSIGNED_BYTE,
+                )?,
                 rays: Self::target(gl, (w / 2).max(1), (h / 2).max(1), false)?,
             };
             // The blur pyramid: halve until it gets small.
@@ -3310,7 +3337,7 @@ impl GlState {
             gl.delete_framebuffer(t.resolve_fbo);
             gl.delete_texture(t.color_tex);
             gl.delete_texture(t.depth_tex);
-            for x in t.down.into_iter().chain(t.up).chain([t.rays]) {
+            for x in t.down.into_iter().chain(t.up).chain([t.sky, t.rays]) {
                 gl.delete_framebuffer(x.fbo);
                 gl.delete_texture(x.tex);
             }
@@ -4468,16 +4495,28 @@ impl GlState {
                 rays = f.look.rays * (1.0 - ((off - 0.9) / 0.8).clamp(0.0, 1.0));
                 sun_uv = [x * 0.5 + 0.5, y * 0.5 + 0.5];
             }
+            let old = self.rays_old;
+            if rays > 0.0 && !old {
+                let p = self.programs.get_mut("sky_mask").unwrap();
+                gl.use_program(Some(p.id));
+                p.i1(gl, "u_depth", 0);
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(t.sky.fbo));
+                gl.viewport(0, 0, t.sky.w, t.sky.h);
+                gl.bind_texture(glow::TEXTURE_2D, Some(t.depth_tex));
+                gl.draw_arrays(glow::TRIANGLES, 0, 3);
+            }
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(t.rays.fbo));
             gl.viewport(0, 0, t.rays.w, t.rays.h);
             if rays > 0.0 {
                 let p = self.programs.get_mut("rays").unwrap();
                 gl.use_program(Some(p.id));
-                p.i1(gl, "u_depth", 0);
+                p.i1(gl, "u_sky", 0);
+                p.f1(gl, "u_is_depth", if old { 1.0 } else { 0.0 });
                 p.f2(gl, "u_sun_uv", sun_uv[0], sun_uv[1]);
                 p.i1(gl, "u_samples", f.quality.ray_samples());
                 p.f1(gl, "u_aspect", t.w as f32 / t.h as f32);
-                gl.bind_texture(glow::TEXTURE_2D, Some(t.depth_tex));
+                let src = if old { t.depth_tex } else { t.sky.tex };
+                gl.bind_texture(glow::TEXTURE_2D, Some(src));
                 gl.draw_arrays(glow::TRIANGLES, 0, 3);
             } else {
                 gl.clear_color(0.0, 0.0, 0.0, 1.0);
