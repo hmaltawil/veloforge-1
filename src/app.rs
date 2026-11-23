@@ -6597,8 +6597,9 @@ impl App {
 }
 
 /// The route `want` names (`--route`): the one with that id, else the
-/// one whose name contains it, ignoring case and anything but letters and
-/// digits (so "alpe" and "alpe d huez" both find "Alpe d'Huez").
+/// one whose name or id contains it, ignoring case and anything but letters
+/// and digits (so "alpe" and "alpe d huez" both find "Alpe d'Huez", and
+/// "alpe" an import named after its file, "gpx-alpe-d-huez").
 fn find_route(routes: &[Route], want: &str) -> Result<usize, String> {
     if let Some(i) = routes.iter().position(|r| r.id == want) {
         return Ok(i);
@@ -6614,7 +6615,7 @@ fn find_route(routes: &[Route], want: &str) -> Result<usize, String> {
         return Err("no route named".into());
     }
     let found: Vec<usize> = (0..routes.len())
-        .filter(|&i| plain(&routes[i].name).contains(&want))
+        .filter(|&i| plain(&routes[i].name).contains(&want) || plain(&routes[i].id).contains(&want))
         .collect();
     match found[..] {
         [i] => Ok(i),
@@ -6914,9 +6915,17 @@ mod tests {
         assert!(name("hairpin-pass").unwrap().starts_with("Hairpin Pass"));
         assert!(name("valley").unwrap().starts_with("Valley Loop"));
         let alpe_name = routes.last().unwrap().name.clone();
-        for w in ["alpe", "ALPE D HUEZ", "Alpe d'Huez", "gpx-1234"] {
+        for w in ["alpe", "ALPE D HUEZ", "Alpe d'Huez", "gpx-1234", "1234"] {
             assert_eq!(name(w).unwrap(), alpe_name, "{w}");
         }
+        // Imported before imports were named after their files: found by
+        // the file's name in its id.
+        let mut old = route::parse_gpx(&xml, "gpx-alpe-d-huez", "New file").unwrap();
+        old.name = "New file".into();
+        let mut with_old = route::builtin();
+        with_old.push(old.to_route());
+        let found = find_route(&with_old, "alpe").unwrap();
+        assert_eq!(with_old[found].id, "gpx-alpe-d-huez");
         // Two routes have it in their names (Valley Loop, Col Loop): neither
         // is picked.
         let both = name("loop").unwrap_err();
