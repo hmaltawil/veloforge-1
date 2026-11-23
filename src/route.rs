@@ -85,6 +85,25 @@ pub struct Route {
     open: bool,
 }
 
+/// After a route's id: the route ridden the other way.
+pub const REVERSED: &str = "~reversed";
+
+/// A route's name ridden the other way; a name ending in the climb (as
+/// "… · 12 km, 600 m climb") gives `ascent` there, when it is known.
+pub fn reversed_name(name: &str, ascent: Option<f64>) -> String {
+    let name = match (
+        ascent,
+        name.strip_suffix(" m climb")
+            .and_then(|s| s.rsplit_once(", ")),
+    ) {
+        (Some(a), Some((head, m))) if m.parse::<f64>().is_ok() => {
+            format!("{head}, {a:.0} m climb")
+        }
+        _ => name.to_string(),
+    };
+    format!("{name} · reversed")
+}
+
 /// Points stored for user-imported routes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GpxRoute {
@@ -157,6 +176,36 @@ impl Route {
         r.ascent = ascent;
         r.open = true;
         r
+    }
+
+    /// The same road ridden the other way: a loop the other way round from
+    /// the same start line; a point-to-point route from its finish to its
+    /// start, with a road of its own beyond. Its id is the route's with
+    /// `REVERSED` after it, so its rides, records and land are its own.
+    pub fn reversed(&self) -> Route {
+        let mut course = self.course_points().to_vec();
+        course.reverse();
+        let id = format!("{}{REVERSED}", self.id);
+        if !self.open {
+            let mut r = Route::from_points(&id, "", self.scenery, self.seed, course);
+            r.name = reversed_name(&self.name, None);
+            return r;
+        }
+        let beyond = crate::routegen::beyond(&course, self.scenery, self.seed);
+        let mut r = Route::point_to_point(&id, "", self.scenery, self.seed, course, beyond);
+        // Point to point, the climb one way is not the climb the other.
+        r.name = reversed_name(&self.name, Some(r.ascent));
+        r
+    }
+
+    /// Whether this is a route ridden the other way (see `reversed`).
+    pub fn is_reversed(&self) -> bool {
+        self.id.ends_with(REVERSED)
+    }
+
+    /// The id of the route this is, whichever way it is ridden.
+    pub fn base_id(&self) -> &str {
+        self.id.strip_suffix(REVERSED).unwrap_or(&self.id)
     }
 
     pub fn shape(&self) -> Shape {
@@ -835,7 +884,9 @@ pub(crate) fn clean_track(track: &[RoutePt]) -> Vec<RoutePt> {
 }
 
 /// Parse a GPX track or route, project it to local metres and resample.
-pub fn parse_gpx(xml: &str, id: &str, fallback_name: &str) -> Result<GpxRoute> {
+/// The route is called `name` (the app passes the file's name: the name
+/// inside a GPX file is often an app's placeholder, such as "New file").
+pub fn parse_gpx(xml: &str, id: &str, name: &str) -> Result<GpxRoute> {
     let doc = roxmltree::Document::parse(xml).context("invalid GPX XML")?;
     let mut raw = Vec::new();
     for n in doc
@@ -858,13 +909,6 @@ pub fn parse_gpx(xml: &str, id: &str, fallback_name: &str) -> Result<GpxRoute> {
         raw.push((lat, lon, ele));
     }
     anyhow::ensure!(raw.len() >= 2, "GPX has fewer than two track points");
-    let name = doc
-        .descendants()
-        .find(|n| n.has_tag_name("name"))
-        .and_then(|n| n.text())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| fallback_name.to_string());
 
     // Equirectangular projection around the first point.
     let (lat0, lon0) = (raw[0].0.to_radians(), raw[0].1.to_radians());
@@ -924,7 +968,7 @@ pub fn parse_gpx(xml: &str, id: &str, fallback_name: &str) -> Result<GpxRoute> {
     }
     Ok(GpxRoute {
         id: id.into(),
-        name,
+        name: name.into(),
         pts: out,
         scenery: None,
         shape: None,
@@ -1208,6 +1252,62 @@ mod tests {
     }
 
     #[test]
+    fn a_loop_reversed_is_the_same_road_the_other_way_round() {
+        let f = builtin().into_iter().find(|r| r.id == "col-loop").unwrap();
+        let r = f.reversed();
+        assert_eq!(r.id, "col-loop~reversed");
+        assert!(r.is_reversed() && !f.is_reversed());
+        assert_eq!(r.base_id(), "col-loop");
+        assert_eq!(r.name, "Col Loop · 14 km, 420 m climb · reversed");
+        assert_eq!(r.shape(), Shape::Loop);
+        assert!((r.length - f.length).abs() < 1e-6);
+        assert!((r.ascent - f.ascent).abs() < 1e-6);
+        for d in [0.0, 1234.0, 7000.0, 13_000.0] {
+            let (a, b) = (r.at(d), f.at(f.length - d));
+            assert!((a.x - b.x).hypot(a.z - b.z) < 0.5, "{d}");
+            assert!((a.ele - b.ele).abs() < 0.01, "{d}");
+            let turn = (a.heading - b.heading).rem_euclid(TAU);
+            assert!((turn - std::f64::consts::PI).abs() < 0.05, "{d}: {turn}");
+            assert!((r.grade(d) + f.grade(f.length - d)).abs() < 0.2, "{d}");
+        }
+    }
+
+    #[test]
+    fn a_point_to_point_route_reversed_starts_at_its_finish() {
+        let mut xml = String::from(r#"<?xml version="1.0"?><gpx><trk><trkseg>"#);
+        for i in 0..200 {
+            let lat = 45.0 + i as f64 * 0.0001;
+            xml += &format!(
+                r#"<trkpt lat="{lat}" lon="7.0"><ele>{}</ele></trkpt>"#,
+                100.0 + i as f64 * 0.5
+            );
+        }
+        xml += "</trkseg></trk></gpx>";
+        let f = parse_gpx(&xml, "gpx-climb", "Climb").unwrap().to_route();
+        let r = f.reversed();
+        assert_eq!(r.shape(), Shape::PointToPoint);
+        assert_eq!(r.name, "Climb · reversed");
+        assert!((r.length - f.length).abs() < 1e-6);
+        let (start, finish) = (r.at(0.0), f.at(f.length));
+        assert!((start.x - finish.x).hypot(start.z - finish.z) < 0.5);
+        // Up one way, down the other, and a road on past the new finish.
+        assert!(f.grade(1000.0) > 3.0 && r.grade(1000.0) < -3.0);
+        assert!(r.ascent < 1.0 && f.ascent > 90.0);
+        assert!(r.span() > r.length + 1000.0);
+    }
+
+    #[test]
+    fn a_reversed_name_gives_the_climb_that_way() {
+        let n = "Summit Road · 12 km, 600 m climb";
+        assert_eq!(
+            reversed_name(n, Some(85.4)),
+            "Summit Road · 12 km, 85 m climb · reversed"
+        );
+        assert_eq!(reversed_name(n, None), format!("{n} · reversed"));
+        assert_eq!(reversed_name("Alpe", Some(9.0)), "Alpe · reversed");
+    }
+
+    #[test]
     fn gpx_import() {
         let mut xml = String::from(r#"<?xml version="1.0"?><gpx><trk><name>Hill</name><trkseg>"#);
         for i in 0..100 {
@@ -1218,8 +1318,9 @@ mod tests {
             );
         }
         xml += "</trkseg></trk></gpx>";
-        let g = parse_gpx(&xml, "hill", "x").unwrap();
-        assert_eq!(g.name, "Hill");
+        let g = parse_gpx(&xml, "hill", "My hill").unwrap();
+        // The name given (the file's), not the one inside the file.
+        assert_eq!(g.name, "My hill");
         let r = g.to_route();
         assert!((r.length - 1100.0).abs() < 15.0, "{}", r.length);
         let grade = r.grade(500.0);

@@ -1068,7 +1068,7 @@ impl App {
                 let name = self
                     .routes
                     .iter()
-                    .find(|r| r.id == id)
+                    .find(|r| r.base_id() == id)
                     .map(|r| units.route_name(&r.name))
                     .unwrap_or_default();
                 row(ui, &name, spec.scenery.label(), |ui| {
@@ -1092,6 +1092,7 @@ impl App {
         }
         let mut remove = None;
         let mut rebuild = false;
+        let mut renamed = None;
         let mut pick = false;
         let picking = self.picking.is_some();
         card(ui, "Imported routes", |ui| {
@@ -1112,8 +1113,16 @@ impl App {
                 ui.label(RichText::new("No imported routes yet.").italics());
             }
             for (i, g) in self.store.gpx_routes.iter_mut().enumerate() {
-                let name = g.name.clone();
-                row(ui, &name, "", |ui| {
+                ui.horizontal_top(|ui| {
+                    // Its name, to change as you like.
+                    if ui
+                        .add(egui::TextEdit::singleline(&mut g.name).desired_width(LABEL_WIDTH))
+                        .on_hover_text("The route's name")
+                        .changed()
+                    {
+                        renamed = Some((g.id.clone(), g.name.clone()));
+                    }
+                    ui.add_space(12.0);
                     ui.horizontal(|ui| {
                         let mut sc = g.scenery.unwrap_or(route::Scenery::Hills);
                         egui::ComboBox::from_id_salt(("scenery", i))
@@ -1150,6 +1159,16 @@ impl App {
         });
         if pick {
             self.pick_file("Import a route", &[("Routes (.gpx)", &["gpx"])]);
+        }
+        if let Some((id, name)) = renamed {
+            for r in self.routes.iter_mut().filter(|r| r.base_id() == id) {
+                r.name = if r.is_reversed() {
+                    route::reversed_name(&name, None)
+                } else {
+                    name.clone()
+                };
+            }
+            self.mark_dirty();
         }
         if rebuild {
             self.rebuild_routes();
