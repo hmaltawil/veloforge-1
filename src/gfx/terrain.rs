@@ -1826,7 +1826,10 @@ mod tests {
         let p = r.at(100.0);
         w.request(r.clone(), p.x, p.z);
         let (mut window, mut far) = (false, false);
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        // Both come in about a second, but on a busy machine (a CI runner
+        // building land in many tests at once) much later: this checks they
+        // come, not how fast.
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(120);
         while std::time::Instant::now() < until && !(window && far) {
             match w.rx.recv_timeout(std::time::Duration::from_millis(200)) {
                 Ok(Built::Window(_)) => window = true,
