@@ -420,8 +420,9 @@ impl App {
         }
         // `--demo`: ride the simulator straight away, no hardware needed.
         let args: Vec<String> = std::env::args().collect();
-        // `--bench [seconds]`: ride the Valley Loop with the simulator and
-        // measure how fast the 3D view draws, then print it and quit.
+        // `--bench [seconds]`: ride the Valley Loop (or `--route`, from
+        // `--km`) with the simulator and measure how fast the 3D view
+        // draws, then print it and quit.
         if let Some(i) = args.iter().position(|a| a == "--bench") {
             let secs = args
                 .get(i + 1)
@@ -439,6 +440,24 @@ impl App {
             app.gpu.set_counting(args.iter().any(|a| a == "--counts"));
         }
         if app.bench.is_some() || args.iter().any(|a| a == "--demo") {
+            // `--route alpe`: ride another route (built in, imported or
+            // random), by its id or any part of its name.
+            if let Some(want) = args
+                .iter()
+                .position(|a| a == "--route")
+                .map(|i| args.get(i + 1).cloned().unwrap_or_default())
+            {
+                match find_route(&app.routes, &want) {
+                    Ok(r) => app.route_idx = r,
+                    Err(why) => {
+                        eprintln!("veloforge: --route {want:?}: {why}. The routes:");
+                        for r in &app.routes {
+                            eprintln!("  {}  ({})", r.name, r.id);
+                        }
+                        std::process::exit(2);
+                    }
+                }
+            }
             app.demo = true;
             app.dev.send(Cmd::SimEnable(true));
             if args.iter().any(|a| a == "--heart-rate") {
@@ -465,7 +484,21 @@ impl App {
                 .and_then(|i| args.get(i + 1))
                 .and_then(|v| v.parse::<f64>().ok())
             {
+                let route = &app.routes[app.route_idx];
+                if km < 0.0
+                    || (route.shape() == route::Shape::PointToPoint && km * 1000.0 >= route.length)
+                {
+                    eprintln!(
+                        "veloforge: --km {km}: {} is {:.1} km long",
+                        route.name,
+                        route.length / 1000.0
+                    );
+                    std::process::exit(2);
+                }
                 app.ride.distance = km * 1000.0;
+                if let Some(b) = &mut app.bench {
+                    b.from_km = km;
+                }
             }
             if args.iter().any(|a| a == "--pacer") {
                 let w = ((app.store.settings.ftp * 0.75) / 5.0).round() * 5.0;
@@ -6563,6 +6596,41 @@ impl App {
     }
 }
 
+/// The route `want` names (`--route`): the one with that id, else the
+/// one whose name contains it, ignoring case and anything but letters and
+/// digits (so "alpe" and "alpe d huez" both find "Alpe d'Huez").
+fn find_route(routes: &[Route], want: &str) -> Result<usize, String> {
+    if let Some(i) = routes.iter().position(|r| r.id == want) {
+        return Ok(i);
+    }
+    let plain = |s: &str| -> String {
+        s.chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect()
+    };
+    let want = plain(want);
+    if want.is_empty() {
+        return Err("no route named".into());
+    }
+    let found: Vec<usize> = (0..routes.len())
+        .filter(|&i| plain(&routes[i].name).contains(&want))
+        .collect();
+    match found[..] {
+        [i] => Ok(i),
+        [] => Err("no route has that id or name".into()),
+        _ => Err(format!(
+            "{} routes match: {}",
+            found.len(),
+            found
+                .iter()
+                .map(|&i| routes[i].name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
 /// Measurements for `--bench`.
 struct Bench {
     start: Instant,
@@ -6589,6 +6657,8 @@ struct Bench {
     /// The computer's latest timings (as in `cpu`).
     last_cpu: [f32; 4],
     measuring: bool,
+    /// Where along the route the ride started (`--km`).
+    from_km: f64,
 }
 
 /// One measured frame.
@@ -6627,6 +6697,7 @@ impl Bench {
             rows: Vec::new(),
             last_cpu: [0.0; 4],
             measuring: false,
+            from_km: 0.0,
         }
     }
 
@@ -6653,11 +6724,16 @@ impl Bench {
         let slow = &sorted[..(sorted.len() / 100).max(1).min(sorted.len())];
         let slow_ms = slow.iter().sum::<f32>() / slow.len().max(1) as f32;
         let mut out = format!(
-            "VeloForge {version} benchmark: {:.0} s on {route}\n\
+            "VeloForge {version} benchmark: {:.0} s on {route}{}\n\
              Detail {detail}, world drawn at {:.0}% of {:.0}x{:.0} pixels\n\
              Graphics: {graphics}\n\
              Frames: {} ({:.1} per second), {:.1} ms on average, slowest 1% {:.1} ms\n",
             self.secs,
+            if self.from_km > 0.0 {
+                format!(", from km {}", self.from_km)
+            } else {
+                String::new()
+            },
             scale * 100.0,
             size.0,
             size.1,
@@ -6825,6 +6901,29 @@ impl Bench {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn routes_are_found_by_id_or_any_part_of_their_name() {
+        let mut routes = route::builtin();
+        let xml = std::fs::read_to_string("tests/data/alpe_d_huez.gpx").unwrap();
+        let mut alpe = route::parse_gpx(&xml, "gpx-1234", "Alpe d'Huez").unwrap();
+        // (The file calls itself "New file": named as a rider would.)
+        alpe.name = "Alpe d'Huez".into();
+        routes.push(alpe.to_route());
+        let name = |w: &str| find_route(&routes, w).map(|i| routes[i].name.clone());
+        assert!(name("hairpin-pass").unwrap().starts_with("Hairpin Pass"));
+        assert!(name("valley").unwrap().starts_with("Valley Loop"));
+        let alpe_name = routes.last().unwrap().name.clone();
+        for w in ["alpe", "ALPE D HUEZ", "Alpe d'Huez", "gpx-1234"] {
+            assert_eq!(name(w).unwrap(), alpe_name, "{w}");
+        }
+        // Two routes have it in their names (Valley Loop, Col Loop): neither
+        // is picked.
+        let both = name("loop").unwrap_err();
+        assert!(both.contains("2 routes match"), "{both}");
+        assert!(name("nowhere").is_err());
+        assert!(name("").is_err());
+    }
 
     #[test]
     fn the_bench_finds_what_slow_frames_have_around_them() {
