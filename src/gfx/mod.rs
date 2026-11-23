@@ -4238,12 +4238,7 @@ impl GlState {
 
             // The mountains beyond the distant land, nearest first.
             let mountains = self.mountains.as_ref().zip(self.far_data.as_ref());
-            // TEMPORARY, for one benchmark: VELOFORGE_NO_MOUNTAIN_MESH=1
-            // leaves the mesh out. Take out before merging.
-            static NO_MESH: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            let no_mesh =
-                *NO_MESH.get_or_init(|| std::env::var_os("VELOFORGE_NO_MOUNTAIN_MESH").is_some());
-            if let Some((b, far)) = mountains.filter(|_| f.look.mountains && !no_mesh) {
+            if let Some((b, far)) = mountains.filter(|_| f.look.mountains) {
                 let vao = b.vao;
                 // From the distant land's centre, lowered with it (`upload_far`).
                 let anchor = [
