@@ -1650,6 +1650,8 @@ struct GlState {
     targets: Option<Targets>,
     /// Off-screen rendering is not possible here: draw straight to the screen.
     direct: bool,
+    /// For measuring: `VELOFORGE_RAYS=off` leaves out the light shafts.
+    rays_off: bool,
     shadow_maps: Option<ShadowMaps>,
     /// Cloud shadows for the deck above the view, made once per frame.
     cloud_map: Option<Target>,
@@ -2339,6 +2341,7 @@ impl GlState {
             self.sky_vao = Some(gl.create_vertex_array()?);
             // For troubleshooting: draw straight to the screen, no post pass.
             self.direct = std::env::var("VELOFORGE_POST").is_ok_and(|v| v == "0");
+            self.rays_off = std::env::var("VELOFORGE_RAYS").is_ok_and(|v| v == "off");
 
             self.road = Some(Self::buffers(gl, &[(3, 0), (2, 3)], 5, &[], None)?);
             self.water = Some(Self::buffers(gl, &[(3, 0)], 3, &[], None)?);
@@ -4459,7 +4462,7 @@ impl GlState {
             );
             let mut rays = 0.0;
             let mut sun_uv = [0.5, 0.5];
-            if sun_clip[3] > 0.0 && t.hdr && f.quality != Quality::Low {
+            if sun_clip[3] > 0.0 && t.hdr && f.quality != Quality::Low && !self.rays_off {
                 let (x, y) = (sun_clip[0] / sun_clip[3], sun_clip[1] / sun_clip[3]);
                 let off = x.abs().max(y.abs());
                 rays = f.look.rays * (1.0 - ((off - 0.9) / 0.8).clamp(0.0, 1.0));
