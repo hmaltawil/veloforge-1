@@ -830,10 +830,11 @@ impl RouteGeo {
         let oz = (cz / cell).round() * cell;
         let (x0, z0) = (ox - size / 2.0, oz - size / 2.0);
         let m = n + 2;
-        // Row by row on a few threads.
+        // Row by row on two threads (more would take cores the app and the
+        // driver need: on a four-core laptop frames slowed while it built).
         let threads = std::thread::available_parallelism()
             .map_or(1, |n| n.get())
-            .clamp(1, 4);
+            .clamp(1, 2);
         let rows: Vec<usize> = (0..m).collect();
         let mut samples = Vec::with_capacity(m * m);
         std::thread::scope(|sc| {
@@ -940,12 +941,12 @@ impl RouteGeo {
                 .max(1e-6);
             edge_normals.push([nn[0] / l, nn[1] / l, nn[2] / l]);
         }
-        // The rest on a few threads (some 50,000 points, a fifth of a second
-        // on one).
+        // The rest on two threads (some 50,000 points, a fifth of a second
+        // on one; more would take cores the app and the driver need).
         let rest = &pts[seam.len()..];
         let threads = std::thread::available_parallelism()
             .map_or(1, |n| n.get())
-            .clamp(1, 4);
+            .clamp(1, 2);
         let chunk = rest.len().div_ceil(threads);
         std::thread::scope(|sc| {
             let parts: Vec<_> = rest
