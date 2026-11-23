@@ -20,6 +20,11 @@ mod impostor;
 mod math;
 #[path = "../../../src/gfx/mesh.rs"]
 mod mesh;
+// The mountains beyond the distant land (build.sh sets lab_mountains when
+// the code has them).
+#[cfg(lab_mountains)]
+#[path = "../../../src/gfx/mountains.rs"]
+mod mountains;
 
 use math::*;
 use std::cell::RefCell;
@@ -326,4 +331,100 @@ pub extern "C" fn card_normal(level: u32) -> *const u8 {
 #[no_mangle]
 pub extern "C" fn card_depth(level: u32) -> *const u8 {
     card_level(level, |l| l.depth.as_ptr(), std::ptr::null())
+}
+
+// ---- mountains --------------------------------------------------------
+
+#[cfg(lab_mountains)]
+thread_local! {
+    /// The land under the mesh's vertices (height, forest), then the
+    /// distant land's normals along its edge (3 floats each); the mesh.
+    static MOUNTAINS: RefCell<(Vec<f32>, Vec<f32>, Vec<u32>)> = const { RefCell::new((Vec::new(), Vec::new(), Vec::new())) };
+}
+
+/// Room for the mountains' input: `floats` floats, filled by the page.
+#[cfg(lab_mountains)]
+#[no_mangle]
+pub extern "C" fn mountains_input(floats: u32) -> *mut f32 {
+    MOUNTAINS.with(|m| {
+        let mut m = m.borrow_mut();
+        m.0 = vec![0.0; floats as usize];
+        m.0.as_mut_ptr()
+    })
+}
+
+/// The app's mountain mesh (`mountains::build`) beyond a distant land
+/// `half` metres from its centre to its edge with `cells` cells along a
+/// side, from the input. Returns the number of floats.
+#[cfg(lab_mountains)]
+#[no_mangle]
+pub extern "C" fn mountains_build(kind: u32, min_ele: f64, max_ele: f64, water: f64, snow: f64, half: f64, cells: u32) -> u32 {
+    use mountains::*;
+    let p = Params {
+        kind: [Kind::Hills, Kind::Lake, Kind::Alpine, Kind::Coast][kind as usize],
+        seed: 0,
+        min_ele,
+        max_ele,
+        water: if water.is_nan() { None } else { Some(water) },
+        snow,
+    };
+    let seam = seam(half, cells as usize);
+    let pts = points(&seam);
+    MOUNTAINS.with(|m| {
+        let mut m = m.borrow_mut();
+        let ground: Vec<Ground> = (0..pts.len())
+            .map(|i| Ground { h: m.0[2 * i] as f64, forest: m.0[2 * i + 1] as f64 })
+            .collect();
+        let at = 2 * pts.len();
+        let edge: Vec<[f32; 3]> = (0..seam.len()).map(|j| [m.0[at + 3 * j], m.0[at + 3 * j + 1], m.0[at + 3 * j + 2]]).collect();
+        m.1 = build(&p, &pts, &ground, &edge);
+        m.2 = indices(seam.len());
+        m.1.len() as u32
+    })
+}
+
+#[cfg(lab_mountains)]
+#[no_mangle]
+pub extern "C" fn mountains_ptr() -> *const f32 {
+    MOUNTAINS.with(|m| m.borrow().1.as_ptr())
+}
+
+#[cfg(lab_mountains)]
+#[no_mangle]
+pub extern "C" fn mountains_indices() -> *const u32 {
+    MOUNTAINS.with(|m| m.borrow().2.as_ptr())
+}
+
+#[cfg(lab_mountains)]
+#[no_mangle]
+pub extern "C" fn mountains_index_count() -> u32 {
+    MOUNTAINS.with(|m| m.borrow().2.len() as u32)
+}
+
+#[cfg(lab_mountains)]
+#[no_mangle]
+pub extern "C" fn mountains_stride() -> u32 {
+    mountains::STRIDE as u32
+}
+
+thread_local! {
+    static NOISE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The app's noise texture (`noise_values` in src/gfx/mod.rs, the same
+/// splitmix64 of each texel's index): `size` by `size` bytes.
+#[no_mangle]
+pub extern "C" fn noise_texture(size: u32) -> *const u8 {
+    NOISE.with(|n| {
+        let mut n = n.borrow_mut();
+        *n = (0..(size as u64) * (size as u64))
+            .map(|i| {
+                let mut z = i.wrapping_add(0x9e37_79b9_7f4a_7c15);
+                z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+                ((z ^ (z >> 31)) >> 56) as u8
+            })
+            .collect();
+        n.as_ptr()
+    })
 }

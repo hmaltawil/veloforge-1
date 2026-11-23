@@ -15,6 +15,7 @@ mod impostor;
 mod lettering;
 mod math;
 mod mesh;
+mod mountains;
 mod shaders;
 mod terrain;
 
@@ -425,7 +426,6 @@ struct FrameData {
     scenery: i32,
     water: f32,
     snow: f32,
-    anchor: V3,
     road: Vec<f32>,
     rider: Vec<f32>,
     /// Each rider's bone matrices and jersey colour.
@@ -449,7 +449,6 @@ struct FrameData {
     terrain: Option<Arc<TerrainData>>,
     /// New distant land to upload, when there is some.
     far: Option<Arc<FarData>>,
-    mountains: Option<(Vec<f32>, Vec<Ring>)>,
 }
 
 struct CurrentTerrain {
@@ -466,7 +465,6 @@ pub struct GpuWorld {
     route: Option<Arc<Route>>,
     terrain: Option<CurrentTerrain>,
     pending: bool,
-    mountains_for: Option<String>,
     yaw: f64,
     pitch: f64,
     initialised: bool,
@@ -491,7 +489,6 @@ impl Default for GpuWorld {
             route: None,
             terrain: None,
             pending: false,
-            mountains_for: None,
             yaw: 0.0,
             pitch: 0.0,
             initialised: false,
@@ -1212,14 +1209,6 @@ impl GpuWorld {
             rider.extend(m.v);
         }
 
-        // --- mountains ring (rebuilt per route) ------------------------------
-        let mountains = if self.mountains_for.as_deref() != Some(route.id.as_str()) {
-            self.mountains_for = Some(route.id.clone());
-            Some(mountain_ring(route.seed, route.scenery))
-        } else {
-            None
-        };
-
         let look = look(route.scenery, scene.sky);
         let cam_vel = {
             let h = route.at(d);
@@ -1263,7 +1252,6 @@ impl GpuWorld {
             },
             water,
             snow,
-            anchor: [eye[0], eye[1] - 60.0, eye[2]],
             road,
             rider,
             skins,
@@ -1293,7 +1281,6 @@ impl GpuWorld {
             lamp_dir,
             terrain: upload,
             far,
-            mountains,
         };
 
         let state = self.gl.clone();
@@ -1319,103 +1306,6 @@ impl GpuWorld {
             }
         }
     }
-}
-
-/// One ring of distant mountains: where its vertices start, and how it is
-/// shaded.
-#[derive(Debug, Clone, Copy)]
-struct Ring {
-    first: i32,
-    count: i32,
-    haze: f32,
-    snowline: f32,
-    treeline: f32,
-}
-
-/// Distant mountain silhouettes as rings around the camera, far to near.
-fn mountain_ring(seed: u64, scenery: Scenery) -> (Vec<f32>, Vec<Ring>) {
-    // Height of each ring, then where snow starts and trees stop.
-    let (heights, snowline, treeline) = match scenery {
-        Scenery::Alpine => ([1500.0, 1000.0, 520.0], 520.0, 300.0),
-        Scenery::Hills => ([520.0, 380.0, 230.0], 1.0e9, 1.0e9),
-        Scenery::Lake => ([760.0, 460.0, 200.0], 640.0, 420.0),
-        // Distant islands and headlands with open sea between them.
-        Scenery::Coast => ([520.0, 420.0, 300.0], 1.0e9, 170.0),
-    };
-    let mut v = Vec::new();
-    let mut rings = Vec::new();
-    for (ring, (radius, haze)) in [(7400.0f32, 0.66f32), (5400.0, 0.5), (3900.0, 0.34)]
-        .into_iter()
-        .enumerate()
-    {
-        let height = heights[ring];
-        let n = 480;
-        let s = seed as f32 * 0.731 + ring as f32 * 4.1;
-        let h = |a: f32| -> f32 {
-            let mut sum = 0.0;
-            for (k, amp) in [
-                (3.0, 0.32),
-                (5.0, 0.22),
-                (8.0, 0.16),
-                (13.0, 0.1),
-                (21.0, 0.06),
-                (34.0, 0.035),
-                (55.0, 0.02),
-                (89.0, 0.012),
-            ] {
-                sum += amp * ((a * k + s * k * 0.37).sin()).abs().powf(0.8);
-            }
-            if scenery == Scenery::Coast {
-                height * (sum - 0.42)
-            } else {
-                height * (0.15 + sum)
-            }
-        };
-        let col = match ring {
-            0 => [0.1, 0.105, 0.125],
-            1 => [0.095, 0.095, 0.1],
-            _ => [0.085, 0.082, 0.078],
-        };
-        let point = |i: usize, frac: f32| -> (V3, V3) {
-            let a = i as f32 / n as f32 * std::f32::consts::TAU;
-            let top = h(a);
-            // Down well below any land seen in front of them.
-            let y = -2500.0 + (top + 2500.0) * frac;
-            let dir = [a.sin(), 0.0, -a.cos()];
-            let slope = (h(a + 0.004) - h(a - 0.004)) / (0.008 * radius);
-            let tangent = [a.cos(), 0.0, a.sin()];
-            let n = norm(add(
-                add(scale(dir, -0.6), [0.0, 0.75, 0.0]),
-                scale(tangent, -slope * 2.5),
-            ));
-            ([dir[0] * radius, y, dir[2] * radius], n)
-        };
-        let first = (v.len() / 9) as i32;
-        for i in 0..n {
-            for (f0, f1) in [(0.0, 0.62), (0.62, 1.0)] {
-                let corners = [
-                    point(i, f0),
-                    point(i + 1, f0),
-                    point(i + 1, f1),
-                    point(i, f1),
-                ];
-                for idx in [0, 1, 2, 0, 2, 3] {
-                    let (p, nn) = corners[idx];
-                    v.extend_from_slice(&[
-                        p[0], p[1], p[2], nn[0], nn[1], nn[2], col[0], col[1], col[2],
-                    ]);
-                }
-            }
-        }
-        rings.push(Ring {
-            first,
-            count: (v.len() / 9) as i32 - first,
-            haze,
-            snowline,
-            treeline,
-        });
-    }
-    (v, rings)
 }
 
 // ---------------------------------------------------------------------------
@@ -1614,7 +1504,11 @@ struct GlState {
     far_origin: (f64, f64),
     road: Option<Buffers>,
     water: Option<Buffers>,
-    mountains: Option<(Buffers, Vec<Ring>)>,
+    /// The mountains beyond the distant land, from its centre (the
+    /// triangles are the same for every mesh), and its sectors' boxes
+    /// (`mountains::sectors`).
+    mountains: Option<Buffers>,
+    mountain_sectors: Vec<terrain::Tile>,
     /// Object meshes, indexed by the `OBJ_` constants.
     objects: Vec<Buffers>,
     /// All instances of the current terrain window, per kind; split into
@@ -2217,14 +2111,29 @@ impl GlState {
                 gl,
                 "terrain",
                 &[TERRAIN_VS],
-                &[&noise_tex, NOISE, LIGHT, GROUND_MAP, TERRAIN_FS],
+                &[
+                    &noise_tex,
+                    NOISE,
+                    LIGHT,
+                    GROUND_MAP,
+                    MOUNTAIN_RIBS,
+                    TERRAIN_FS,
+                ],
                 &terrain_attribs,
             )?;
             self.compile(
                 gl,
                 "terrain_far",
                 &[TERRAIN_VS],
-                &[FAR_LAND, &noise_tex, NOISE, LIGHT, GROUND_MAP, TERRAIN_FS],
+                &[
+                    FAR_LAND,
+                    &noise_tex,
+                    NOISE,
+                    LIGHT,
+                    GROUND_MAP,
+                    MOUNTAIN_RIBS,
+                    TERRAIN_FS,
+                ],
                 &terrain_attribs,
             )?;
             self.compile(
@@ -2298,8 +2207,8 @@ impl GlState {
                 gl,
                 "mountain",
                 &[MOUNTAIN_VS],
-                &[NOISE, LIGHT, MOUNTAIN_FS],
-                &["a_pos", "a_nrm", "a_col"],
+                &[&noise_tex, NOISE, LIGHT, MOUNTAIN_RIBS, MOUNTAIN_FS],
+                &["a_pos", "a_nrm", "a_mat", "a_beyond"],
             )?;
             // Depth-only versions for the shadow maps.
             self.compile(
@@ -2986,6 +2895,50 @@ impl GlState {
     /// Upload the distant land, its vertices moved to the render `origin`
     /// (the detailed window's centre) and a little lower, so where the two
     /// overlap the detailed land is the one seen.
+    /// The mountains' new mesh, from the distant land's centre.
+    unsafe fn upload_mountains(&mut self, gl: &glow::Context, v: &[f32]) -> Result<(), String> {
+        unsafe {
+            if self.mountains.is_none() {
+                let mut b = Self::buffers(
+                    gl,
+                    &[(3, 0), (3, 3), (4, 6), (1, 10)],
+                    mountains::STRIDE as i32,
+                    &[],
+                    None,
+                )?;
+                let rays = 4 * (terrain::FAR_VERTS - 1) * mountains::RAYS_PER_CELL;
+                let indices = mountains::indices(rays);
+                let ebo = gl.create_buffer()?;
+                gl.bind_vertex_array(Some(b.vao));
+                gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ebo));
+                gl.buffer_data_u8_slice(
+                    glow::ELEMENT_ARRAY_BUFFER,
+                    bytes_u32(&indices),
+                    glow::STATIC_DRAW,
+                );
+                gl.bind_vertex_array(None);
+                b.ebo = Some(ebo);
+                b.count = indices.len() as i32;
+                self.mountains = Some(b);
+            }
+            let b = self.mountains.as_ref().unwrap();
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(b.vbo));
+            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes(v), glow::STATIC_DRAW);
+            gl.bind_buffer(glow::ARRAY_BUFFER, None);
+        }
+        let rays = 4 * (terrain::FAR_VERTS - 1) * mountains::RAYS_PER_CELL;
+        self.mountain_sectors = mountains::sectors(v, rays)
+            .into_iter()
+            .map(|(first, count, lo, hi)| terrain::Tile {
+                first,
+                count,
+                lo,
+                hi,
+            })
+            .collect();
+        Ok(())
+    }
+
     unsafe fn upload_far(&mut self, gl: &glow::Context, origin: (f64, f64)) -> Result<(), String> {
         let Some(far) = self.far_data.clone() else {
             return Ok(());
@@ -4018,26 +3971,15 @@ impl GlState {
             if let Some(far) = &f.far {
                 self.far_data = Some(far.clone());
                 self.far_origin = (f64::NAN, f64::NAN);
+                if let Err(e) = self.upload_mountains(gl, &far.mountains) {
+                    self.error = Some(e);
+                    return;
+                }
             }
             if self.far_data.is_some() && self.far_origin != f.origin {
                 if let Err(e) = self.upload_far(gl, f.origin) {
                     self.error = Some(e);
                     return;
-                }
-            }
-            if let Some((v, rings)) = &f.mountains {
-                match Self::buffers(gl, &[(3, 0), (3, 3), (3, 6)], 9, v, None) {
-                    Ok(b) => {
-                        if let Some((old, _)) = self.mountains.take() {
-                            gl.delete_vertex_array(old.vao);
-                            gl.delete_buffer(old.vbo);
-                        }
-                        self.mountains = Some((b, rings.clone()));
-                    }
-                    Err(e) => {
-                        self.error = Some(e);
-                        return;
-                    }
                 }
             }
             // Whatever egui was drawing into is where the finished frame goes.
@@ -4268,19 +4210,33 @@ impl GlState {
                 }
             }
 
-            // Distant mountains, near to far.
-            if let Some((b, rings)) = self.mountains.as_ref().filter(|_| f.look.mountains) {
-                let (vao, rings) = (b.vao, rings.clone());
+            // The mountains beyond the distant land, nearest first.
+            let mountains = self.mountains.as_ref().zip(self.far_data.as_ref());
+            if let Some((b, far)) = mountains.filter(|_| f.look.mountains) {
+                let vao = b.vao;
+                // From the distant land's centre, lowered with it (`upload_far`).
+                let anchor = [
+                    (far.ox - f.origin.0) as f32,
+                    -0.4,
+                    -(far.oz - f.origin.1) as f32,
+                ];
+                // Only the sectors in view.
+                let moved: Vec<terrain::Tile> = self
+                    .mountain_sectors
+                    .iter()
+                    .map(|t| terrain::Tile {
+                        lo: add(t.lo, anchor),
+                        hi: add(t.hi, anchor),
+                        ..*t
+                    })
+                    .collect();
+                let runs = visible_runs(&f.vp, &moved, Some(f.cam));
                 self.common(gl, "mountain", f);
                 let p = self.programs.get_mut("mountain").unwrap();
-                p.v3(gl, "u_anchor", f.anchor);
+                p.v3(gl, "u_anchor", anchor);
                 gl.bind_vertex_array(Some(vao));
-                for (k, r) in rings.iter().enumerate().rev() {
-                    p.f1(gl, "u_haze", r.haze);
-                    p.f1(gl, "u_snowline", r.snowline);
-                    p.f1(gl, "u_treeline", r.treeline);
-                    p.f1(gl, "u_ring", k as f32);
-                    gl.draw_arrays(glow::TRIANGLES, r.first, r.count);
+                for (offset, n) in runs {
+                    gl.draw_elements(glow::TRIANGLES, n, glow::UNSIGNED_INT, offset);
                 }
             }
 
@@ -4533,6 +4489,175 @@ impl GlState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Scenes for the Model Lab's Mountains tab (`tools/model-lab/build.sh`
+    /// runs this): for each, the app's own distant land and the land under
+    /// the mountains' mesh beyond it, with the camera, the light of a clear
+    /// day and the road. `VELOFORGE_LAB_OUT=<dir>` writes `scenes.json`
+    /// and `scenes.bin` there.
+    #[test]
+    #[ignore]
+    fn lab_scenes() {
+        use crate::world::{Camera, Sky, TimeOfDay, Weather};
+        let out = std::env::var("VELOFORGE_LAB_OUT").expect("VELOFORGE_LAB_OUT");
+        let xml = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/data/alpe_d_huez.gpx"
+        ))
+        .unwrap();
+        let mut g = crate::route::parse_gpx(&xml, "alpe", "Alpe d'Huez").unwrap();
+        g.scenery = Some(Scenery::Alpine);
+        let alpe = g.to_route();
+        let builtin = |id: &str| {
+            crate::route::builtin()
+                .into_iter()
+                .find(|r| r.id == id)
+                .unwrap()
+        };
+        let random = crate::routegen::RandomRoute {
+            seed: 101,
+            scenery: Scenery::Alpine,
+            km: 15,
+            hills: crate::routegen::Hills::Hilly,
+            shape: crate::route::Shape::PointToPoint,
+        }
+        .route();
+        let scenes = [
+            ("Alpe d'Huez, 2.5 km", alpe.clone(), 2.5),
+            ("Alpe d'Huez, 7 km", alpe.clone(), 7.0),
+            ("Alpe d'Huez, near the top", alpe.clone(), 12.6),
+            ("Col loop (alpine)", builtin("col-loop"), 3.0),
+            ("Random alpine route", random, 5.0),
+            ("Lakeside", builtin("lakeside"), 2.0),
+            ("Valley loop (hills)", builtin("valley-loop"), 3.0),
+            ("Island coast", builtin("island-coast"), 2.0),
+        ];
+        let mut bin: Vec<u8> = Vec::new();
+        let mut meta = Vec::new();
+        let f32s = |bin: &mut Vec<u8>, v: &[f32]| {
+            while !bin.len().is_multiple_of(4) {
+                bin.push(0);
+            }
+            let at = bin.len();
+            for x in v {
+                bin.extend_from_slice(&x.to_le_bytes());
+            }
+            at
+        };
+        for (name, r, km) in scenes {
+            let geo = terrain::RouteGeo::new(&r);
+            let d = km * 1000.0;
+            let (eye, target) = Camera::default().rig(&r, d, crate::world::LANE);
+            let yaw = (target[0] - eye[0]).atan2(target[2] - eye[2]);
+            let ahead = look_ahead(eye[0], eye[2], yaw);
+            let far = geo.build_far(ahead.0, ahead.1);
+            let (_, ground, edge) = geo.mountain_input(far.ox, far.oz, &far.verts);
+            // The window of near land (more coarsely than the app's, to keep
+            // the page small); everything from its centre, as the app draws.
+            const WIN: usize = 129;
+            let win = geo.build_window(ahead.0, ahead.1, terrain::WINDOW_SIZE, WIN);
+            let rel = |p: [f64; 3]| [(p[0] - win.ox) as f32, p[1] as f32, -(p[2] - win.oz) as f32];
+            let road: Vec<f32> = r
+                .points()
+                .iter()
+                .filter(|p| (p.x - eye[0]).hypot(p.z - eye[2]) < 6000.0)
+                .flat_map(|p| rel([p.x, p.ele, p.z]))
+                .collect();
+            let l = look(
+                r.scenery,
+                Sky {
+                    time: TimeOfDay::Day,
+                    weather: Weather::Clear,
+                },
+            );
+            // Packed small: heights to 0.1 m in 16 bits, normals and
+            // shares in 8.
+            let height =
+                |h: f64| (((h + 200.0) * 10.0).round().clamp(0.0, 65535.0) as u16).to_le_bytes();
+            let unit = |v: f32| ((v * 127.0).round() as i8) as u8;
+            let share = |v: f64| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let mut land = |verts: &[f32]| {
+                let at = bin.len();
+                let fv = verts.chunks(TERRAIN_STRIDE);
+                for v in fv.clone() {
+                    bin.extend_from_slice(&height(v[1] as f64));
+                }
+                for v in fv.clone() {
+                    bin.extend_from_slice(&[unit(v[3]), unit(v[4]), unit(v[5])]);
+                }
+                for v in fv.clone() {
+                    bin.extend_from_slice(&(v[6].round().clamp(0.0, 65535.0) as u16).to_le_bytes());
+                }
+                for v in fv {
+                    bin.push(share(v[7] as f64));
+                }
+                at
+            };
+            let far_at = land(&far.verts);
+            let win_at = land(&win.verts);
+            let ground_at = bin.len();
+            for g in &ground {
+                bin.extend_from_slice(&height(g.h));
+            }
+            for g in &ground {
+                bin.push(share(g.forest));
+            }
+            let edge_at = bin.len();
+            for e in &edge {
+                bin.extend_from_slice(&[unit(e[0]), unit(e[1]), unit(e[2])]);
+            }
+            let road_at = f32s(&mut bin, &road);
+            let m = geo.mountains;
+            meta.push(serde_json::json!({
+                "name": name,
+                "route": r.id,
+                "km": km,
+                "scenery": match r.scenery {
+                    Scenery::Hills => 0,
+                    Scenery::Lake => 1,
+                    Scenery::Alpine => 2,
+                    Scenery::Coast => 3,
+                },
+                "origin": [win.ox, win.oz],
+                "eye": rel(eye),
+                "target": rel(target),
+                "snow": geo.snow_level(),
+                "water": geo.water_level.unwrap_or(-1.0e4),
+                "sea": r.scenery == Scenery::Coast,
+                "mountains": {
+                    "kind": m.kind as u32,
+                    "seed": m.seed.to_string(),
+                    "min_ele": m.min_ele,
+                    "max_ele": m.max_ele,
+                    "water": m.water.unwrap_or(f64::NAN).to_string(),
+                    "snow": m.snow,
+                },
+                "far": {
+                    "at": far_at, "n": terrain::FAR_VERTS, "size": terrain::FAR_SIZE,
+                    "offset": [far.ox - win.ox, -(far.oz - win.oz)],
+                },
+                "window": { "at": win_at, "n": WIN, "size": terrain::WINDOW_SIZE },
+                "ground": { "at": ground_at, "count": ground.len() },
+                "edge": { "at": edge_at, "count": edge.len() },
+                "road": { "at": road_at, "floats": road.len() },
+                "look": {
+                    "sky_top": l.sky_top, "sky_hor": l.sky_hor, "sky_anti": l.sky_anti,
+                    "sun_col": l.sun_col, "sun_dir": l.sun_dir, "fog": l.fog,
+                    "fog_falloff": l.fog_falloff, "glow": l.glow, "clouds": l.clouds,
+                    "exposure": l.exposure, "desat": l.desat, "grass": l.grass,
+                    "disk": l.disk, "cloud_lit": l.cloud_lit, "cloud_dark": l.cloud_dark,
+                },
+            }));
+        }
+        std::fs::write(format!("{out}/scenes.bin"), &bin).unwrap();
+        std::fs::write(
+            format!("{out}/scenes.json"),
+            serde_json::to_string(&serde_json::json!({ "scenes": meta, "bytes": bin.len() }))
+                .unwrap(),
+        )
+        .unwrap();
+        println!("{} scenes, {} bytes", meta.len(), bin.len());
+    }
 
     #[test]
     fn the_ground_map_works_out_only_the_ground_newly_in_it() {
@@ -4824,29 +4949,6 @@ mod tests {
         let mut s = Stance::default();
         hold(&mut s, 5.0, 0.0, 14.0, 1.0, true);
         assert!(s.tuck < 0.01);
-    }
-
-    #[test]
-    fn mountain_ring_is_well_formed() {
-        for s in [
-            Scenery::Hills,
-            Scenery::Lake,
-            Scenery::Alpine,
-            Scenery::Coast,
-        ] {
-            let (v, rings) = mountain_ring(7, s);
-            assert_eq!(v.len() % 9, 0);
-            assert_eq!(rings.len(), 3);
-            assert_eq!(
-                rings.iter().map(|r| r.count).sum::<i32>(),
-                (v.len() / 9) as i32
-            );
-            assert!(
-                rings.windows(2).all(|w| w[0].haze > w[1].haze),
-                "far rings are hazier"
-            );
-            assert!(v.iter().all(|x| x.is_finite()));
-        }
     }
 
     #[test]

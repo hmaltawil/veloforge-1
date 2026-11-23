@@ -431,6 +431,25 @@ void main() {
 }
 "#;
 
+/// Ribs and gullies down a mountainside, tens of metres apart (after
+/// `NOISE`): for the mountains and for the land seen from far off.
+pub const MOUNTAIN_RIBS: &str = r#"
+// Noise across the face and stretched down it, laid on the world's two
+// upright planes and blended by which way the face looks (laid along the
+// face itself, it would swirl where the face curves). `t` is the way
+// across the face.
+// Meadow as seen from far off: duller and warmer.
+vec3 far_meadow(vec3 g) {
+    return mix(g, vec3(dot(g, vec3(0.3, 0.6, 0.1))) * vec3(1.1, 1.0, 0.72), 0.4);
+}
+float mountain_ribs(vec2 w, float y, vec2 t) {
+    y *= 0.0025;
+    float a = vnoise(vec2(w.y * 0.012, y)) * 0.6 + vnoise(vec2(w.y * 0.028, y * 1.9) + 7.3) * 0.4;
+    float b = vnoise(vec2(w.x * 0.012, y)) * 0.6 + vnoise(vec2(w.x * 0.028, y * 1.9) + 7.3) * 0.4;
+    return mix(a, b, t.x * t.x);
+}
+"#;
+
 pub const TERRAIN_FS: &str = r#"
 uniform int u_scenery;   // 0 hills, 1 lake, 2 alpine, 3 coast
 uniform float u_water;   // water level, or a large negative number
@@ -479,6 +498,10 @@ void main() {
             grass = mix(grass, fcol, smoothstep(0.17, 0.07, length(ff)) * near * patchy);
         }
     }
+    // Meadows seen from far off duller, as in the distance they are (not
+    // lime through the haze).
+    float far_off = smoothstep(600.0, 2000.0, dcam);
+    grass = mix(grass, far_meadow(grass), far_off);
     vec3 col = grass;
 
     if (u_scenery < 2) {
@@ -508,11 +531,16 @@ void main() {
     col = mix(col, floor_col, smoothstep(0.15, 0.55, v_forest));
     // Rock on steep slopes, in tilted layers.
     float rock = smoothstep(0.8, 0.62, n.y);
+    float ribs = 0.5;
+    vec3 rib_dir = vec3(0.0);
     if (u_scenery == 2) {
         rock = max(rock, smoothstep(u_snow - 220.0, u_snow - 90.0, v_pos.y + n1 * 70.0) * 0.85);
     }
     if (rock > 0.0) {
-        float strata = vnoise(vec2(dot(w, vec2(0.02, 0.013)), v_pos.y * 0.45 + n2 * 2.0));
+        // Layers about 2 m apart: from a few hundred metres off finer than a
+        // pixel, and banding if drawn, so they fade out.
+        float strata = mix(vnoise(vec2(dot(w, vec2(0.02, 0.013)), v_pos.y * 0.45 + n2 * 2.0)), 0.5,
+                           smoothstep(150.0, 600.0, dcam));
         float grain = n2;
         // On a steep face the ground's noise, seen from above, smears into
         // streaks down it: there the rock's pattern is laid on the face
@@ -530,6 +558,17 @@ void main() {
             float ledges = vnoise(vec2(fc.x * 0.015, fc.y * 0.12 + big * 3.0));
             strata = mix(strata, 0.55 * ledges + 0.45 * blocks, face);
             grain = mix(grain, (0.45 * big + 0.35 * blocks + 0.2 * fine) * (1.0 - 0.45 * crack), face);
+        }
+        // Far off, the rock's layers and blocks are finer than a pixel and
+        // would shimmer into stripes: the mountains' ribs and gullies
+        // instead, as on the mountains beyond.
+        if (far_off > 0.0) {
+            float fl = length(n.xz);
+            vec2 t = fl > 1e-3 ? vec2(-n.z, n.x) / fl : vec2(1.0, 0.0);
+            ribs = mountain_ribs(w, v_pos.y, t);
+            rib_dir = vec3(t.x, 0.0, t.y) * smoothstep(0.92, 0.6, n.y) * far_off;
+            strata = mix(strata, 0.5, far_off);
+            grain = mix(grain, 0.42 + 0.3 * ribs, far_off);
         }
         vec3 rockc = mix(vec3(0.2, 0.185, 0.165), vec3(0.1, 0.098, 0.097), strata) * (0.75 + 0.5 * grain);
         col = mix(col, rockc, rock);
@@ -556,7 +595,7 @@ void main() {
     col = mix(col, col * vec3(0.5, 0.75, 0.8), below);
     col *= 1.0 - 0.22 * u_wet;
 
-    vec3 nb = normalize(n + vec3(n2 - 0.5, 0.0, n3 - 0.5) * 0.45 * detail);
+    vec3 nb = normalize(n + vec3(n2 - 0.5, 0.0, n3 - 0.5) * 0.45 * detail + rib_dir * (ribs - 0.5) * 1.2 * rock);
     float ao = 1.0 - 0.5 * smoothstep(0.3, 0.8, v_forest);
     float vis = sun_vis(v_pos, n);
     vec3 lit = shade(col, nb, ao, vis) + col * lamp_light(v_pos, n);
@@ -1320,61 +1359,68 @@ void main() {
 }
 "#;
 
+/// The mountains beyond the distant land (`mountains.rs`): forest, rock,
+/// snow and shade worked out for each vertex, haze as on the land.
 pub const MOUNTAIN_VS: &str = r#"
 in vec3 a_pos;
 in vec3 a_nrm;
-in vec3 a_col;
+in vec4 a_mat;      // forest, snow, rock, shade
+in float a_beyond;  // metres beyond the distant land's edge
 uniform mat4 u_vp;
-uniform vec3 u_anchor;   // follows the camera so the ring stays at the horizon
-out vec3 v_dir;
+uniform vec3 u_anchor;   // the distant land's centre
+out vec3 v_pos;
 out vec3 v_nrm;
-out vec3 v_col;
+out vec4 v_mat;
+out float v_beyond;
 void main() {
     vec3 p = a_pos + u_anchor;
-    v_dir = a_pos;
+    v_pos = p;
     v_nrm = a_nrm;
-    v_col = a_col;
+    v_mat = a_mat;
+    v_beyond = a_beyond;
     gl_Position = u_vp * vec4(p, 1.0);
 }
 "#;
 
 pub const MOUNTAIN_FS: &str = r#"
-uniform float u_haze;
-uniform float u_snowline;   // height of the snow line, or a huge number
-uniform float u_treeline;
-uniform float u_ring;
-in vec3 v_dir;
+in vec3 v_pos;
 in vec3 v_nrm;
-in vec3 v_col;
+in vec4 v_mat;
+in float v_beyond;
 out vec4 frag;
+// Haze as on the land (`apply_fog`) at the distant land's edge, where the
+// two meet; beyond it the low haze thins (the ranges stand above it) and
+// clear air takes over, so the far ranges show, each further one paler.
+vec3 mountain_haze(vec3 col, vec3 p) {
+    vec3 v = p - u_cam;
+    float dist = length(v);
+    vec3 d = v / max(dist, 0.001);
+    float density = u_fog * exp(-max(p.y - u_cam.y + 30.0, 0.0) * u_fog_falloff);
+    float low = 1.0 - exp(-(dist - v_beyond * 0.85) * density);
+    float air = 1.0 - exp(-v_beyond * 3.5e-5);
+    vec3 fc = sky_color(normalize(vec3(d.x, max(d.y, 0.0) * 0.25 + 0.015, d.z)));
+    return mix(col, fc, clamp(1.0 - (1.0 - low) * (1.0 - air), 0.0, 1.0));
+}
 void main() {
-    float ang = atan(v_dir.x, -v_dir.z);
-    float h = v_dir.y;
-    // Ridges and gullies running down the slopes.
-    vec2 q = vec2(ang * 38.0 + u_ring * 17.0, h * 0.0035);
-    float ridges = fbm(q);
-    float gx = fbm(q + vec2(0.35, 0.0)) - ridges;
-    vec3 tangent = normalize(vec3(-v_dir.z, 0.0, v_dir.x));
-    vec3 n = normalize(v_nrm + tangent * gx * 5.0 + vec3(0.0, (ridges - 0.5) * 0.5, 0.0));
-    float fine = fbm3(vec2(ang * 160.0, h * 0.02));
-    vec3 rock = v_col * (0.7 + 0.6 * ridges) * (0.85 + 0.3 * fine);
-    vec3 col = rock;
-    // Forest below the tree line, in ragged tongues.
-    float trees = 1.0 - smoothstep(u_treeline - 120.0, u_treeline + 60.0, h + (ridges - 0.5) * 320.0);
-    col = mix(col, vec3(0.022, 0.05, 0.026) * (0.7 + 0.6 * fine), trees * 0.9);
-    // Snow above the snow line, thinner on steep faces.
-    float snow = smoothstep(u_snowline - 40.0, u_snowline + 110.0, h + (ridges - 0.5) * 300.0 + (fine - 0.5) * 90.0);
-    snow *= 0.55 + 0.45 * smoothstep(-0.25, 0.25, gx + 0.1);
-    col = mix(col, vec3(0.84, 0.87, 0.94), snow);
-    vec3 d = normalize(v_dir);
-    vec3 lit = shade(col, n, 1.0, 1.0);
-    // Distant mountains fade into the sky, most strongly at their base:
-    // below the eye (where the land in front of them is as hazy), all but
-    // gone, so they rise out of the haze rather than stand on it.
-    float haze = mix(0.97, clamp(u_haze + (1.0 - smoothstep(-150.0, 900.0, h)) * 0.32, 0.0, 0.96),
-                     smoothstep(-200.0, 350.0, h));
-    vec3 air = sky_color(normalize(vec3(d.x, 0.03, d.z)));
-    frag = out_col(mix(lit, air, haze));
+    vec3 n = normalize(v_nrm);
+    vec2 w = world_xz(v_pos);
+    // Ribs and gullies down the fall line, finer than the mesh.
+    float fl = length(n.xz);
+    vec2 t = fl > 1e-3 ? vec2(-n.z, n.x) / fl : vec2(1.0, 0.0);
+    float ribs = mountain_ribs(w, v_pos.y, t);
+    float patchy = vnoise(w * 0.0035 + 3.0);
+    float face = smoothstep(0.92, 0.6, n.y);
+    n = normalize(n + vec3(t.x, 0.0, t.y) * (ribs - 0.5) * 1.2 * face);
+    // Ragged edges to the forest and the snow; snow lies on in the gullies.
+    float forest = smoothstep(0.35, 0.6, v_mat.x + (patchy - 0.5) * 0.5);
+    float snow = smoothstep(0.42, 0.58, v_mat.y + (0.5 - ribs) * 0.55 * (0.4 + face) + (patchy - 0.5) * 0.25);
+    float rock = clamp(v_mat.z + (ribs - 0.5) * 0.3, 0.0, 1.0);
+    // Rock: paler and darker faces across a range, a little banded.
+    vec3 stone = mix(vec3(0.2, 0.185, 0.165), vec3(0.11, 0.105, 0.1), patchy) * (0.85 + 0.3 * ribs);
+    vec3 col = mix(far_meadow(grass_albedo(patchy)), stone, rock);
+    col = mix(col, vec3(0.025, 0.05, 0.022) * (0.8 + 0.4 * patchy), forest);
+    col = mix(col, vec3(0.86, 0.89, 0.95), snow);
+    frag = out_col(mountain_haze(shade(col, n, v_mat.w, 1.0), v_pos));
 }
 "#;
 

@@ -4,6 +4,7 @@
 
 use super::fields;
 use super::flora::{Cover, Palette, Spot};
+use super::mountains;
 use crate::route::{Route, Scenery, STEP};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
@@ -239,6 +240,8 @@ pub struct RouteGeo {
     pub water_level: Option<f64>,
     pub max_ele: f64,
     seed: u64,
+    /// The mountain ranges the land rises into far from the roads.
+    pub mountains: mountains::Params,
     /// Level pads the farm buildings stand on: where, how high, and how far
     /// the ground is level (it blends back into the land beyond).
     pads: Vec<(f64, f64, f64, f64)>,
@@ -287,6 +290,19 @@ impl RouteGeo {
             water_level,
             max_ele,
             seed: route.seed,
+            mountains: mountains::Params {
+                kind: match route.scenery {
+                    Scenery::Hills => mountains::Kind::Hills,
+                    Scenery::Lake => mountains::Kind::Lake,
+                    Scenery::Alpine => mountains::Kind::Alpine,
+                    Scenery::Coast => mountains::Kind::Coast,
+                },
+                seed: route.seed,
+                min_ele,
+                max_ele,
+                water: water_level,
+                snow: max_ele + SNOW_ABOVE,
+            },
             pads: Vec::new(),
             farms: Vec::new(),
         };
@@ -523,7 +539,7 @@ impl RouteGeo {
     }
 
     pub fn snow_level(&self) -> f64 {
-        self.max_ele + 150.0
+        self.max_ele + SNOW_ABOVE
     }
 
     pub fn nearest(&self, x: f64, z: f64) -> Near {
@@ -586,6 +602,7 @@ impl RouteGeo {
         let n = self.pts.len();
         let step = (n / 800).max(3);
         let (mut sw, mut se) = (0.0, 0.0);
+        let (mut sw_far, mut se_far) = (0.0, 0.0);
         // The land rises or falls away from any road no steeper than
         // `CONE`: between these bounds (from every road, the nearest
         // exactly), so where all the other roads in reach are far below (a
@@ -599,11 +616,11 @@ impl RouteGeo {
         for j in (0..n).step_by(step) {
             let (px, pz) = self.pts[j];
             let d = ((px - x).powi(2) + (pz - z).powi(2)).sqrt();
-            if d < 1500.0 {
-                let reach = CONE * (d - 9.0).max(0.0);
-                lo = lo.max(self.eles[j] - reach);
-                hi = hi.min(self.eles[j] + reach);
-            }
+            // From every road, however far (cut off at some distance, the
+            // land would step where a road dropped out of reach).
+            let reach = CONE * (d - 9.0).max(0.0);
+            lo = lo.max(self.eles[j] - reach);
+            hi = hi.min(self.eles[j] + reach);
             // Each point of road weighs as one over its distance to the
             // power 2.5: summed along a road, nearly one over the distance to
             // the road, so between two stretches of road (the legs of a
@@ -620,10 +637,16 @@ impl RouteGeo {
             };
             sw += w;
             se += w * self.eles[j];
+            sw_far += far;
+            se_far += far * self.eles[j];
         }
+        // Beyond the near roads' reach the land follows the whole route,
+        // eased into from 1.1 km (as the near roads fade out, the faintest
+        // weights left would otherwise take over all at once, a cliff).
+        let blended = se_far / sw_far
+            + (se / sw - se_far / sw_far) * (1.0 - smoothstep(1100.0, 1500.0, near.dist));
         // Where roads are steeper apart than the bounds allow, the blend
         // between them is the best there is.
-        let blended = se / sw;
         let bounded = if lo <= hi {
             blended.clamp(lo, hi)
         } else {
@@ -669,12 +692,51 @@ impl RouteGeo {
         smp
     }
 
-    /// The land as it lies, before any levelling.
+    /// The land as it lies, before any levelling: shaped by the roads near
+    /// by, rising into the mountains far from them.
     fn land(&self, x: f64, z: f64) -> Sample {
         let near = self.nearest(x, z);
-        let (road, lo, hi) = self.base_height(x, z, &near);
+        self.land_near(x, z, &near)
+    }
+
+    /// The land for the mountains' mesh beyond the distant land: as `land`,
+    /// but all mountain (and quicker) where no road is near.
+    fn mountain_ground(&self, x: f64, z: f64) -> mountains::Ground {
+        let near = self.nearest(x, z);
+        if near.dist >= mountains::FULL {
+            let h = mountains::height(&self.mountains, x, z, near.dist);
+            let forest = mountains::forest(&self.mountains, x, z, h);
+            return mountains::Ground { h, forest };
+        }
+        let s = self.land_near(x, z, &near);
+        mountains::Ground {
+            h: s.h,
+            forest: s.forest,
+        }
+    }
+
+    /// `land`, given the nearest road.
+    fn land_near(&self, x: f64, z: f64, near: &Near) -> Sample {
+        let (road, lo, hi) = self.base_height(x, z, near);
         let s = self.seed;
         let flat = road - 0.25;
+        // Far from the roads the land rises into the mountains.
+        let w = mountains::share(near.dist);
+        let m = if w > 0.0 {
+            mountains::height(&self.mountains, x, z, near.dist)
+        } else {
+            0.0
+        };
+        let mountain = |h: f64, forest: f64| {
+            if w > 0.0 {
+                let h = h + (m - h) * w;
+                let f = mountains::forest(&self.mountains, x, z, h);
+                (h, forest + (f - forest) * w)
+            } else {
+                (h, forest)
+            }
+        };
+        let under = |h: f64| self.water_level.is_some_and(|level| h < level);
         let forest_noise = fbm(x / 650.0 + 31.0, z / 650.0 - 7.0, 4, s + 5);
         let mut forest = smoothstep(-0.05, 0.3, forest_noise) * smoothstep(16.0, 40.0, near.dist);
 
@@ -690,10 +752,12 @@ impl RouteGeo {
                 let bed = level - 1.0 - smoothstep(8.0 + width, 260.0, near.dist) * 16.0;
                 let mut h = flat + (bed - flat) * smoothstep(8.0, 8.0 + width, near.dist);
                 h += fbm(x / 30.0, z / 30.0, 3, s + 3) * 1.2 * smoothstep(8.0, 20.0, near.dist);
+                // Islands and headlands across the sea.
+                let (h, forest) = mountain(h, 0.0);
                 return Sample {
                     h,
                     dist: near.dist,
-                    forest: 0.0,
+                    forest,
                     water: h < level,
                 };
             }
@@ -702,6 +766,8 @@ impl RouteGeo {
             if near.side == self.water_side && near.dist > 9.0 {
                 // Lake shore falls away from the road into the water.
                 let bed = level - 0.6 - smoothstep(14.0, 70.0, near.dist) * 7.0;
+                // (The whole of it, however far from the road: no mountains
+                // rise out of the lake.)
                 let h = flat + (bed - flat) * smoothstep(9.0, 16.0, near.dist);
                 return Sample {
                     h,
@@ -713,6 +779,9 @@ impl RouteGeo {
         }
 
         let t = smoothstep(9.0, 170.0, near.dist);
+        // The hills by the road rise with the distance from it, up to where
+        // the mountains take over.
+        let far = near.dist.min(900.0);
         let hills = match self.route.scenery {
             Scenery::Alpine => {
                 let ridge = 1.0 - fbm(x / 800.0, z / 800.0, 5, s).abs();
@@ -722,32 +791,33 @@ impl RouteGeo {
                         self.max_ele + 140.0,
                         road + 160.0 * ridge * ridge * t,
                     );
-                170.0 * ridge * ridge * (0.35 + near.dist / 450.0)
+                170.0 * ridge * ridge * (0.35 + far / 450.0)
             }
             Scenery::Hills => {
                 38.0 * (0.4 + 0.6 * (0.5 + 0.5 * fbm(x / 420.0, z / 420.0, 5, s)))
-                    * (0.5 + near.dist / 650.0)
+                    * (0.5 + far / 650.0)
             }
             Scenery::Lake => {
                 26.0 * (0.4 + 0.6 * (0.5 + 0.5 * fbm(x / 420.0, z / 420.0, 5, s)))
-                    * (0.5 + near.dist / 700.0)
+                    * (0.5 + far / 700.0)
             }
             Scenery::Coast => {
                 // Rugged island hills rising inland.
                 let ridge = 1.0 - fbm(x / 600.0, z / 600.0, 5, s).abs();
-                70.0 * ridge * ridge * (0.3 + near.dist / 500.0)
+                70.0 * ridge * ridge * (0.3 + far / 500.0)
             }
         };
         let bumps = fbm(x / 55.0, z / 55.0, 3, s + 9) * 1.8;
-        // Hills and all, no steeper from any road than the land allows: the
-        // ground between the legs of a hairpin climb is the slope between
-        // them, not a ridge.
-        let h = (flat + t * (hills + bumps)).clamp(lo - 0.25, hi.max(lo - 0.25));
+        // Hills, mountains and all, no steeper from any road than the land
+        // allows: the ground between the legs of a hairpin climb is the
+        // slope between them, not a ridge.
+        let (h, forest) = mountain(flat + t * (hills + bumps), forest);
+        let h = h.clamp(lo - 0.25, hi.max(lo - 0.25));
         Sample {
             h,
             dist: near.dist,
             forest,
-            water: false,
+            water: w > 0.0 && under(h),
         }
     }
 
@@ -760,13 +830,34 @@ impl RouteGeo {
         let oz = (cz / cell).round() * cell;
         let (x0, z0) = (ox - size / 2.0, oz - size / 2.0);
         let m = n + 2;
+        // Row by row on a few threads.
+        let threads = std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .clamp(1, 4);
+        let rows: Vec<usize> = (0..m).collect();
         let mut samples = Vec::with_capacity(m * m);
-        for j in 0..m {
-            for i in 0..m {
-                samples
-                    .push(self.sample(x0 + (i as f64 - 1.0) * cell, z0 + (j as f64 - 1.0) * cell));
+        std::thread::scope(|sc| {
+            let parts: Vec<_> = rows
+                .chunks(m.div_ceil(threads))
+                .map(|js| {
+                    sc.spawn(move || {
+                        let mut out = Vec::with_capacity(js.len() * m);
+                        for &j in js {
+                            for i in 0..m {
+                                out.push(self.sample(
+                                    x0 + (i as f64 - 1.0) * cell,
+                                    z0 + (j as f64 - 1.0) * cell,
+                                ));
+                            }
+                        }
+                        out
+                    })
+                })
+                .collect();
+            for p in parts {
+                samples.extend(p.join().expect("distant land"));
             }
-        }
+        });
         let at = |i: usize, j: usize| &samples[j * m + i];
         let mut verts = Vec::with_capacity(n * n * TERRAIN_STRIDE);
         for j in 0..n {
@@ -796,13 +887,82 @@ impl RouteGeo {
                 indices.extend_from_slice(&[a, c, b, b, c, c + 1]);
             }
         }
+        let (pts, ground, edge_normals) = self.mountain_input(ox, oz, &verts);
+        let mountains = mountains::build(&self.mountains, &pts, &ground, &edge_normals);
         FarData {
             ox,
             oz,
             verts,
             indices,
+            mountains,
             route_id: self.route.id.clone(),
         }
+    }
+
+    /// What the mountains' mesh beyond the distant land centred on (`ox`,
+    /// `oz`) is made from (`mountains::build`): where its vertices are, the
+    /// land there, and the distant land's normals along its edge.
+    #[allow(clippy::type_complexity)]
+    pub fn mountain_input(
+        &self,
+        ox: f64,
+        oz: f64,
+        verts: &[f32],
+    ) -> (Vec<[f64; 2]>, Vec<mountains::Ground>, Vec<[f32; 3]>) {
+        // The mountains beyond, from the land's edge out: the first ring
+        // is the edge itself (between its vertices, along the line between
+        // them), so the two meet without a gap.
+        let (size, n) = (FAR_SIZE, FAR_VERTS);
+        let cell = size / (n - 1) as f64;
+        let half = size / 2.0;
+        let seam = mountains::seam(half, n - 1);
+        let pts = mountains::points(&seam);
+        let vert = |i: usize, j: usize| &verts[(j * n + i) * TERRAIN_STRIDE..][..TERRAIN_STRIDE];
+        let mut ground = Vec::with_capacity(pts.len());
+        let mut edge_normals = Vec::with_capacity(seam.len());
+        for q in &seam {
+            let fi = ((q[0] + half) / cell).clamp(0.0, (n - 1) as f64);
+            let fj = ((q[1] + half) / cell).clamp(0.0, (n - 1) as f64);
+            let (i0, j0) = ((fi as usize).min(n - 2), (fj as usize).min(n - 2));
+            let (ti, tj) = ((fi - i0 as f64) as f32, (fj - j0 as f64) as f32);
+            let mix = |k: usize| {
+                let a = vert(i0, j0)[k] + (vert(i0 + 1, j0)[k] - vert(i0, j0)[k]) * ti;
+                let b = vert(i0, j0 + 1)[k] + (vert(i0 + 1, j0 + 1)[k] - vert(i0, j0 + 1)[k]) * ti;
+                a + (b - a) * tj
+            };
+            ground.push(mountains::Ground {
+                h: mix(1) as f64,
+                forest: mix(7) as f64,
+            });
+            let nn = [mix(3), mix(4), mix(5)];
+            let l = (nn[0] * nn[0] + nn[1] * nn[1] + nn[2] * nn[2])
+                .sqrt()
+                .max(1e-6);
+            edge_normals.push([nn[0] / l, nn[1] / l, nn[2] / l]);
+        }
+        // The rest on a few threads (some 50,000 points, a fifth of a second
+        // on one).
+        let rest = &pts[seam.len()..];
+        let threads = std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .clamp(1, 4);
+        let chunk = rest.len().div_ceil(threads);
+        std::thread::scope(|sc| {
+            let parts: Vec<_> = rest
+                .chunks(chunk)
+                .map(|part| {
+                    sc.spawn(move || {
+                        part.iter()
+                            .map(|q| self.mountain_ground(ox + q[0], oz + q[1]))
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            for p in parts {
+                ground.extend(p.join().expect("mountain land"));
+            }
+        });
+        (pts, ground, edge_normals)
     }
 
     /// Build a square window of terrain centred on (cx, cz).
@@ -1638,6 +1798,9 @@ pub struct FarData {
     pub oz: f64,
     pub verts: Vec<f32>,
     pub indices: Vec<u32>,
+    /// The mountains beyond its edge (`mountains::build`), from the same
+    /// centre.
+    pub mountains: Vec<f32>,
     pub route_id: String,
 }
 
@@ -1650,6 +1813,8 @@ pub enum Built {
 /// Across the distant land (metres), and its vertices across: about 60 m
 /// apart. Inside the nearest mountain ring (3.9 km away).
 pub const FAR_SIZE: f64 = 7600.0;
+/// The land's snow line, above the route's highest point (alpine).
+const SNOW_ABOVE: f64 = 150.0;
 pub const FAR_VERTS: usize = 129;
 /// The distant land is built again once the camera is this far from its
 /// centre.
@@ -1788,6 +1953,43 @@ impl Worker {
 mod tests {
     use super::*;
     use crate::route;
+
+    /// The distant land rises into the mountains with no cliffs: once a
+    /// step of 300 m stood 1.5 km from the start of a climb, where the land
+    /// stopped following the nearest road all at once.
+    #[test]
+    fn distant_land_has_no_cliffs() {
+        let xml = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/data/alpe_d_huez.gpx"
+        ))
+        .unwrap();
+        let mut g = route::parse_gpx(&xml, "alpe", "Alpe d'Huez").unwrap();
+        g.scenery = Some(Scenery::Alpine);
+        let alpe = g.to_route();
+        for (r, km) in [(&alpe, 2.5), (&alpe, 12.0), (&route::builtin()[0], 3.0)] {
+            let geo = RouteGeo::new(r);
+            let p = r.at(km * 1000.0);
+            let far = geo.build_far(p.x, p.z);
+            let n = FAR_VERTS;
+            let cell = FAR_SIZE / (n - 1) as f64;
+            let h = |i: usize, j: usize| far.verts[(j * n + i) * TERRAIN_STRIDE + 1] as f64;
+            let mut steepest: f64 = 0.0;
+            for j in 1..n - 1 {
+                for i in 1..n - 1 {
+                    let g =
+                        (h(i + 1, j) - h(i - 1, j)).hypot(h(i, j + 1) - h(i, j - 1)) / (2.0 * cell);
+                    steepest = steepest.max(g);
+                }
+            }
+            println!(
+                "{} at {km} km: steepest {:.0}°",
+                r.id,
+                steepest.atan().to_degrees()
+            );
+            assert!(steepest < 2.8, "{} at {km} km: {steepest:.2}", r.id);
+        }
+    }
 
     #[test]
     fn distant_land_is_quick_to_build_and_meets_the_window() {
@@ -2643,6 +2845,94 @@ mod survey_many {
             grade,
             stray.map(|s| format!("  strays {s:4.1} m")).unwrap_or_default()
         )
+    }
+
+    /// A shaded relief map of the land around Alpe d'Huez and the first
+    /// built-in route of each scenery, to see the land and mountains whole:
+    /// `VELOFORGE_MAP_OUT=<dir>` writes one `.ppm` for each (24 km across,
+    /// north up, the road in red, snow white).
+    #[test]
+    #[ignore]
+    fn relief_map() {
+        let out = std::env::var("VELOFORGE_MAP_OUT").expect("VELOFORGE_MAP_OUT");
+        let xml = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/data/alpe_d_huez.gpx"
+        ))
+        .unwrap();
+        let mut g = route::parse_gpx(&xml, "alpe", "Alpe d'Huez").unwrap();
+        g.scenery = Some(Scenery::Alpine);
+        let mut routes = vec![("alpe".to_string(), g.to_route())];
+        for s in Scenery::ALL {
+            if let Some(r) = route::builtin().into_iter().find(|r| r.scenery == s) {
+                routes.push((r.id.clone(), r));
+            }
+        }
+        for (name, r) in routes {
+            let geo = RouteGeo::new(&r);
+            let pts = r.points();
+            let mut cx = pts.iter().map(|p| p.x).sum::<f64>() / pts.len() as f64;
+            let mut cz = pts.iter().map(|p| p.z).sum::<f64>() / pts.len() as f64;
+            let mut size = 24_000.0;
+            // `VELOFORGE_MAP_AT=<km>,<size m>`: closer, around that point.
+            if let Some((km, s)) = std::env::var("VELOFORGE_MAP_AT").ok().and_then(|v| {
+                let (a, b) = v.split_once(',')?;
+                Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?))
+            }) {
+                let p = r.at(km * 1000.0);
+                (cx, cz, size) = (p.x, p.z, s);
+            }
+            let n = 600usize;
+            let cell = size / n as f64;
+            let mut h = vec![0.0; n * n];
+            let mut water = vec![false; n * n];
+            for j in 0..n {
+                for i in 0..n {
+                    let x = cx - size / 2.0 + i as f64 * cell;
+                    let z = cz + size / 2.0 - j as f64 * cell;
+                    let s = geo.land(x, z);
+                    h[j * n + i] = s.h;
+                    water[j * n + i] = s.water;
+                }
+            }
+            let (lo, hi) = h
+                .iter()
+                .fold((f64::MAX, f64::MIN), |a, &v| (a.0.min(v), a.1.max(v)));
+            let mut img = format!("P6 {n} {n} 255\n").into_bytes();
+            for j in 0..n {
+                for i in 0..n {
+                    let at = |i: usize, j: usize| h[j.min(n - 1) * n + i.min(n - 1)];
+                    let (dx, dz) = (at(i + 1, j) - at(i, j), at(i, j + 1) - at(i, j));
+                    // Light from the north-west.
+                    let shade = (0.75 - (dx - dz) / cell * 0.9).clamp(0.15, 1.0);
+                    let t = (h[j * n + i] - lo) / (hi - lo).max(1.0);
+                    let mut c = [0.35 + 0.5 * t, 0.55 + 0.3 * t, 0.3 + 0.5 * t];
+                    if h[j * n + i] > geo.snow_level() {
+                        c = [0.95, 0.95, 1.0];
+                    }
+                    if water[j * n + i] {
+                        c = [0.2, 0.35, 0.6];
+                    }
+                    img.extend(
+                        c.iter()
+                            .map(|v| (v * shade * 255.0).clamp(0.0, 255.0) as u8),
+                    );
+                }
+            }
+            for p in pts.iter().step_by(2) {
+                let i = ((p.x - cx + size / 2.0) / cell) as usize;
+                let j = ((cz + size / 2.0 - p.z) / cell) as usize;
+                if i < n && j < n {
+                    let k = 15 + 3 * (j * n + i);
+                    img[k..k + 3].copy_from_slice(&[230, 20, 20]);
+                }
+            }
+            std::fs::write(format!("{out}/{name}.ppm"), img).unwrap();
+            println!(
+                "{name}: {lo:.0} to {hi:.0} m, snow from {:.0} m",
+                geo.snow_level()
+            );
+        }
     }
 
     #[test]

@@ -28,10 +28,21 @@ app's own `impostor.rs`, each tree dissolving from one level to the next.
 The Scenery tab's distance slider walks away from a tree (keeping it the
 same size on screen if asked) to watch it go through every level.
 
+The **Mountains** tab shows the land to the horizon at a few spots (three
+on the imported Alpe d'Huez, and a route of each scenery): the app's own
+near and distant land, baked by the app's `lab_scenes` test when the page is
+built, with the mountains' mesh beyond built in the page by the app's
+`mountains.rs`, all drawn with the app's own sky, land and mountain shaders
+in the light of a clear day (without shadow maps, which do not reach that
+far, or the finishing pass). Drag to look round. `LAB_SHOTS=<dir>` adds
+screenshots of the app at each spot (`<n>-before.jpg`, `<n>-after.jpg`).
+
 For automated checks the page has `window.lab`: set `lab.manual = true`,
 then `lab.step(dt, still)` renders one frame (`still` holds the wind);
 `lab.holdView`, `lab.pickShaders("base" | "now")` and `lab.ride()` let a
-script hold the picture still and compare the two shader versions.
+script hold the picture still and compare the two shader versions;
+`window.lab_mountains` (`scene`, `look`, `set`, `sun`, `show`, `render`)
+sets up the Mountains view.
 
 ```bash
 tools/model-lab/build.sh            # writes tools/model-lab/model-lab.html

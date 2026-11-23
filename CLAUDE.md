@@ -119,6 +119,9 @@ the Release workflow run and look again a few minutes later.
 - `src/gfx/terrain.rs`: land, road bed, placement of trees and objects,
   terrain windows built off the UI thread
 - `src/gfx/mod.rs`: the renderer (road ribbon, retaining walls, banners)
+- `src/gfx/mountains.rs`: the mountain ranges the land rises into far from
+  the roads, and their mesh beyond the distant land (no GL: the Model Lab
+  builds it too)
 - `src/gfx/shaders.rs`, `mesh.rs`, `flora.rs`, `fields.rs`, `buildings.rs`,
   `lettering.rs`: shaders and models
 - `src/store.rs`: saved settings and data
