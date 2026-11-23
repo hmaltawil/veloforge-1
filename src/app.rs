@@ -458,6 +458,11 @@ impl App {
                     }
                 }
             }
+            // `--reverse`: ride it the other way.
+            if args.iter().any(|a| a == "--reverse") && !app.routes[app.route_idx].is_reversed() {
+                let i = app.route_idx;
+                app.routes[i] = app.routes[i].reversed();
+            }
             app.demo = true;
             app.dev.send(Cmd::SimEnable(true));
             if args.iter().any(|a| a == "--heart-rate") {

@@ -45,6 +45,7 @@ counting slows the frames, so take times from a run without it).
 `--route <id or part of the name>` rides another route (built in, imported
 or random; e.g. `--bench 60 --route alpe --km 5`), with `--demo` or
 `--bench`; a name matching none or several routes stops with the list.
+`--reverse` rides it the other way (`--km` then counts from its new start).
 `VELOFORGE_DATA=<dir>` points the app at another data folder (a
 `state.json` there selects the route, e.g. `settings.route_id`).
 
