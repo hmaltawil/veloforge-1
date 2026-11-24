@@ -1925,10 +1925,13 @@ impl RouteGeo {
     }
 
     /// The Japanese countryside's woods, in the cell `gi`, `gj` (at `x`,
-    /// `z`): where the land is wooded and well back from the road, either a
-    /// cedar plantation (trees in rows, of an age, close set) or a broadleaf
-    /// wood with Japanese maples at its edges, as the stand there is.
-    /// Whether the cell is wood (and so done with).
+    /// `z`): where the land is wooded and well back from the road. Cedar
+    /// stands where the large-scale pattern says so, their trees set
+    /// unevenly, of an age but not of one height, their edges ragged and
+    /// broadleaves mixed in there; elsewhere broadleaf woods with Japanese
+    /// maples at their edges; and through both, now and then, a wild
+    /// mountain cherry in flower. Whether the cell is wood (and so done
+    /// with).
     #[allow(clippy::too_many_arguments)]
     fn japanese_woods(
         &self,
@@ -1941,70 +1944,70 @@ impl RouteGeo {
         out: &mut [Vec<f32>; KINDS],
         shadows: &mut Vec<f32>,
     ) -> bool {
-        if smp.forest < 0.18 {
+        // A ragged edge to the woods: the forest's own edge, roughened.
+        let edge = 0.18 + 0.12 * fbm(x / 60.0 + 4.0, z / 60.0 - 2.0, 2, self.seed + 31);
+        if smp.forest < edge {
             return false;
         }
         let s = self.seed;
         let mut rng = Rng(hash2(gi, gj, s + 4111));
         let cell = 11.0;
-        let stand = fbm(x / 700.0 + 13.0, z / 700.0 - 5.0, 3, s + 21);
-        if stand > -0.15 {
-            // A plantation: rows 5.5 m apart deep in it, 11 m at its edge;
-            // the trees of a stand all of an age, so near one height.
-            let age = 0.5 + 0.5 * fbm(x / 400.0 - 3.0, z / 400.0 + 9.0, 2, s + 23);
-            let n = if smp.forest > 0.5 { 2 } else { 1 };
-            for a in 0..n {
-                for b in 0..n {
-                    let px =
-                        (gi as f64 + (a as f64 + 0.5) / n as f64) * cell + 0.7 * (rng.next() - 0.5);
-                    let pz =
-                        (gj as f64 + (b as f64 + 0.5) / n as f64) * cell + 0.7 * (rng.next() - 0.5);
-                    if !self.can_plant(px, pz, 16.0, 2.5, ground, farms) {
-                        continue;
-                    }
-                    let height = 17.0 + 9.0 * age + 2.0 * rng.next();
-                    let width = height * 0.42 * (0.9 + 0.2 * rng.next());
-                    let tint = 0.88 + 0.24 * rng.next() as f32;
-                    plant(
-                        out,
-                        shadows,
-                        SUGI,
-                        rel(px, pz),
-                        ground,
-                        (px, pz),
-                        height,
-                        width,
-                        rng.next(),
-                        tint,
-                        0.0,
-                    );
-                }
-            }
-        } else {
-            // A broadleaf wood, thinner, with maples at its edge.
-            if rng.next() > smp.forest * 0.85 + 0.1
-                || !self.can_plant(x, z, 16.0, 3.0, ground, farms)
-            {
-                return true;
-            }
-            let maple = smp.forest < 0.45 && rng.next() < 0.5;
-            let (kind, height, ratio, warm) = if maple {
-                (MOMIJI, 6.0 * (0.8 + 0.4 * rng.next()), 1.3, 0.2)
+        // How cedar the stand is: deep in a plantation all cedar, at its
+        // ragged edge mixed with broadleaves, beyond it broadleaf wood.
+        let stand = fbm(x / 700.0 + 13.0, z / 700.0 - 5.0, 3, s + 21)
+            + 0.18 * fbm(x / 120.0 - 7.0, z / 120.0 + 3.0, 2, s + 25);
+        let cedar_share = smoothstep(-0.3, -0.05, stand);
+        let age = 0.5 + 0.5 * fbm(x / 400.0 - 3.0, z / 400.0 + 9.0, 2, s + 23);
+        // One tree a cell where the wood is open, sometimes two where it is
+        // thick: set anywhere in the cell, not in rows.
+        let n = 1 + usize::from(smp.forest > 0.55 && rng.next() < 0.45 * cedar_share + 0.2);
+        for _ in 0..n {
+            let px = (gi as f64 + 0.1 + 0.8 * rng.next()) * cell;
+            let pz = (gj as f64 + 0.1 + 0.8 * rng.next()) * cell;
+            let pick = rng.next();
+            let wild_cherry = rng.next() < 0.05;
+            let (kind, height, ratio, warm) = if wild_cherry {
+                (
+                    SAKURA,
+                    7.5 + 3.5 * rng.next(),
+                    1.1 + 0.4 * rng.next(),
+                    0.5 * rng.next() as f32,
+                )
+            } else if pick < cedar_share {
+                (
+                    SUGI,
+                    (15.0 + 9.0 * age) * (0.8 + 0.35 * rng.next()),
+                    0.36 + 0.12 * rng.next(),
+                    0.0,
+                )
+            } else if smp.forest < 0.45 && rng.next() < 0.45 {
+                (
+                    MOMIJI,
+                    6.0 * (0.75 + 0.5 * rng.next()),
+                    1.1 + 0.4 * rng.next(),
+                    0.2,
+                )
             } else {
-                (BROADLEAF, 10.5 * (0.7 + 0.6 * rng.next()), 1.0, 0.7)
+                (
+                    BROADLEAF,
+                    10.5 * (0.65 + 0.7 * rng.next()),
+                    0.85 + 0.3 * rng.next(),
+                    0.7 * (rng.next() as f32).powi(2),
+                )
             };
-            let width = height * ratio * (0.85 + 0.3 * rng.next());
-            let tint = 0.8 + 0.4 * rng.next() as f32;
-            let warm = (rng.next() as f32).powi(2) * warm;
+            if !self.can_plant(px, pz, 16.0, 2.5, ground, farms) {
+                continue;
+            }
+            let tint = 0.82 + 0.36 * rng.next() as f32;
             plant(
                 out,
                 shadows,
                 kind,
-                rel(x, z),
+                rel(px, pz),
                 ground,
-                (x, z),
+                (px, pz),
                 height,
-                width,
+                height * ratio,
                 rng.next(),
                 tint,
                 warm,
@@ -2013,9 +2016,12 @@ impl RouteGeo {
         true
     }
 
-    /// Along the road in the Japanese countryside: cherry avenues on some
-    /// stretches, a tree each side every 9 m so their crowns meet over the
-    /// verges, and black pines along the lake shore on the water's side.
+    /// Along the road in the Japanese countryside, planted as people plant:
+    /// cherries in groups of three to eight at uneven spacing, on one side
+    /// or both, more often near a farm, a shrine or a temple, with gaps and
+    /// the odd tree alone between; and along the lake shore black pines in
+    /// small, uneven groups with open shore between. Every tree its own
+    /// size, shape and shade.
     #[allow(clippy::too_many_arguments)]
     fn japanese_roadside(
         &self,
@@ -2028,68 +2034,124 @@ impl RouteGeo {
     ) {
         let route = &self.route;
         let s = self.seed;
-        let step = 9.0;
-        for k in 0..(route.span() / step) as i64 {
-            let d = k as f64 * step;
+        let inside = |(x, z): (f64, f64)| x >= x0 && x <= x0 + size && z >= z0 && z <= z0 + size;
+        let near_window = |x: f64, z: f64| {
+            x > x0 - 30.0 && x < x0 + size + 30.0 && z > z0 - 30.0 && z < z0 + size + 30.0
+        };
+        let beside = |d: f64, side: f64, lateral: f64| {
             let p = route.at(d);
-            if p.x < x0 - 20.0
-                || p.x > x0 + size + 20.0
-                || p.z < z0 - 20.0
-                || p.z > z0 + size + 20.0
-            {
+            (
+                p.x + side * lateral * p.heading.cos(),
+                p.z - side * lateral * p.heading.sin(),
+            )
+        };
+        // The cherries: walk along the road; now and then a group begins.
+        // Every choice is made the same whatever the window, so each
+        // stretch of road gets the same trees from every window; the
+        // window only decides which of them are written.
+        let mut rng = Rng(hash2(0, 0, s + 505));
+        let mut d = 0.0;
+        while d < route.span() {
+            let p = route.at(d);
+            let step = 20.0 + 40.0 * rng.next();
+            // Groups are likelier near the farms, shrines and temples.
+            let settled = self
+                .farms
+                .iter()
+                .any(|b| (p.x - b.x).powi(2) + (p.z - b.z).powi(2) < 150.0 * 150.0);
+            if rng.next() > if settled { 0.5 } else { 0.14 } {
+                d += step;
                 continue;
             }
-            // Avenues on some 450 m stretches of the road.
-            let avenue = hash2((d / 450.0) as i64, 7, s + 501) % 100 < 45;
-            for side in [-1.0f64, 1.0] {
-                let shore = self.water_level.is_some() && side == self.water_side;
-                let mut rng = Rng(hash2(k, side as i64, s + 503));
-                let (kind, lateral, height, ratio) = if shore {
-                    if k % 2 != 0 || rng.next() < 0.3 {
+            let trees = 1 + (rng.next() * rng.next() * 8.0) as usize;
+            let both = rng.next() < 0.35;
+            let first_side = if rng.next() < 0.5 { -1.0 } else { 1.0 };
+            let mut at = d;
+            for _ in 0..trees {
+                for side in [first_side, -first_side] {
+                    if side != first_side && !both {
                         continue;
                     }
-                    (
-                        KUROMATSU,
-                        9.6 + 2.5 * rng.next(),
-                        6.5 + 3.0 * rng.next(),
-                        1.1,
-                    )
-                } else if avenue {
-                    (
-                        SAKURA,
-                        10.0 + 0.6 * rng.next(),
-                        7.0 + 1.2 * rng.next(),
-                        1.35,
-                    )
-                } else {
-                    continue;
-                };
-                let (x, z) = (
-                    p.x + side * lateral * p.heading.cos(),
-                    p.z - side * lateral * p.heading.sin(),
-                );
-                if x < x0 || x > x0 + size || z < z0 || z > z0 + size {
-                    continue;
+                    let missing = rng.next() < 0.12;
+                    let lateral = 9.8 + 4.0 * rng.next() * rng.next();
+                    let along = at + 2.0 * (rng.next() - 0.5);
+                    let height = 5.5 + 3.5 * rng.next();
+                    let width = height * (1.1 + 0.5 * rng.next());
+                    let tint = 0.88 + 0.24 * rng.next() as f32;
+                    // Some blossom pinker, some whiter.
+                    let warm = 0.55 * (rng.next() as f32).powi(2);
+                    let turn = rng.next();
+                    // The shore is the pines' (below).
+                    let shore = self.water_level.is_some() && side == self.water_side;
+                    if missing || shore || !near_window(p.x, p.z) {
+                        continue;
+                    }
+                    let (x, z) = beside(along, side, lateral);
+                    if inside((x, z)) && self.can_plant(x, z, 9.0, 2.5, ground, farms) {
+                        let at = rel(x, z);
+                        plant(
+                            out,
+                            shadows,
+                            SAKURA,
+                            at,
+                            ground,
+                            (x, z),
+                            height,
+                            width,
+                            turn,
+                            tint,
+                            warm,
+                        );
+                    }
                 }
-                if !self.can_plant(x, z, 9.0, 2.5, ground, farms) {
-                    continue;
-                }
-                let width = height * ratio * (0.92 + 0.16 * rng.next());
-                let tint = 0.92 + 0.16 * rng.next() as f32;
-                plant(
-                    out,
-                    shadows,
-                    kind,
-                    rel(x, z),
-                    ground,
-                    (x, z),
-                    height,
-                    width,
-                    rng.next(),
-                    tint,
-                    0.0,
-                );
+                at += 7.0 + 8.0 * rng.next();
             }
+            d = at + step;
+        }
+        // The shore pines, on the water's side of a lake road.
+        if self.water_level.is_none() {
+            return;
+        }
+        let side = self.water_side;
+        let mut rng = Rng(hash2(1, 0, s + 507));
+        let mut d = 0.0;
+        while d < route.span() {
+            let p = route.at(d);
+            let step = 25.0 + 60.0 * rng.next();
+            if rng.next() > 0.45 {
+                d += step;
+                continue;
+            }
+            let trees = 1 + (rng.next() * 3.5) as usize;
+            let mut at = d;
+            for _ in 0..trees {
+                let lateral = 9.6 + 3.0 * rng.next();
+                let height = 5.0 + 5.0 * rng.next();
+                let width = height * (0.85 + 0.5 * rng.next());
+                let tint = 0.85 + 0.3 * rng.next() as f32;
+                let turn = rng.next();
+                if near_window(p.x, p.z) {
+                    let (x, z) = beside(at, side, lateral);
+                    if inside((x, z)) && self.can_plant(x, z, 9.0, 2.5, ground, farms) {
+                        let at = rel(x, z);
+                        plant(
+                            out,
+                            shadows,
+                            KUROMATSU,
+                            at,
+                            ground,
+                            (x, z),
+                            height,
+                            width,
+                            turn,
+                            tint,
+                            0.0,
+                        );
+                    }
+                }
+                at += 4.0 + 8.0 * rng.next();
+            }
+            d = at + step;
         }
     }
 
@@ -2618,6 +2680,55 @@ mod tests {
     use super::*;
     use crate::route;
     use crate::route::Scenery;
+
+    /// Two windows that overlap hold the same trees and objects where they
+    /// overlap: what stands at a spot does not hang on which window was
+    /// built, so nothing appears, vanishes or moves as the land moves on.
+    #[test]
+    fn overlapping_windows_hold_the_same_things() {
+        let r = route::builtin()
+            .into_iter()
+            .find(|r| r.scenery == Scenery::Japan)
+            .unwrap();
+        let g = RouteGeo::new(&r);
+        let (a, b) = (r.at(1000.0), r.at(1700.0));
+        let wa = g.build_window(a.x, a.z, WINDOW_SIZE, WINDOW_VERTS);
+        let wb = g.build_window(b.x, b.z, WINDOW_SIZE, WINDOW_VERTS);
+        // Well inside both windows.
+        let half = WINDOW_SIZE / 2.0 - 60.0;
+        let inside =
+            |x: f64, z: f64, w: &TerrainData| (x - w.ox).abs() < half && (w.oz - z).abs() < half;
+        // Kind, world position and height; positions are kept relative to
+        // each window's middle in single precision, so allow a fifth of a
+        // metre.
+        let things = |w: &TerrainData| {
+            let mut v = Vec::new();
+            for (kind, list) in w.instances.iter().enumerate() {
+                for i in list.chunks(INSTANCE_STRIDE) {
+                    let (x, z) = (i[0] as f64 + w.ox, w.oz - i[2] as f64);
+                    if inside(x, z, &wa) && inside(x, z, &wb) {
+                        v.push((kind, x, z, i[5]));
+                    }
+                }
+            }
+            v
+        };
+        let (ta, tb) = (things(&wa), things(&wb));
+        assert!(ta.iter().any(|t| t.0 == SAKURA), "cherries in the overlap");
+        assert_eq!(ta.len(), tb.len(), "as many things in each");
+        for t in &ta {
+            assert!(
+                tb.iter().any(|u| u.0 == t.0
+                    && (u.1 - t.1).abs() < 0.2
+                    && (u.2 - t.2).abs() < 0.2
+                    && (u.3 - t.3).abs() < 0.01),
+                "kind {} at ({:.1}, {:.1}) is in one window only",
+                t.0,
+                t.1,
+                t.2
+            );
+        }
+    }
 
     /// Each kind's number names its own entry in `OBJECTS`: the model there
     /// is the kind's.

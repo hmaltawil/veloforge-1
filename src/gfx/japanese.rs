@@ -340,8 +340,8 @@ pub fn momiji() -> Mesh {
 }
 
 /// Unit-height Japanese cedar, as it grows in the plantations that clothe
-/// the hills: a tall, straight, reddish trunk, bare of branches for its
-/// lower third, and above it a narrow cone of soft, rounded tufts, tier on
+/// the hills: a tall, straight, reddish trunk, bare only near the ground,
+/// and from there up a narrow cone of soft, rounded tufts, tier on
 /// tier, each a closed, lumpy dome with a flat, shaded underside, so the
 /// crown has no gaps and reads as soft rather than spiky. Drawn about a
 /// third as wide as tall.
@@ -360,12 +360,12 @@ pub fn sugi() -> Mesh {
         |_ring, side| scale(CEDAR_BARK, if side % 2 == 0 { 1.15 } else { 0.82 }),
     );
     m.mat = MAT_LEAF;
-    let tiers = 13;
+    let tiers = 15;
     for k in 0..tiers {
         let t = k as f32 / (tiers - 1) as f32;
         let q = |n: u32| rnd(97, k as u32, n);
-        let y = 0.34 + 0.6 * t;
-        let r = (0.17 * (1.0 - t).powf(0.9) + 0.035) * (1.0 + 0.08 * (2.0 * q(2) - 1.0));
+        let y = 0.15 + 0.79 * t;
+        let r = (0.19 * (1.0 - t).powf(0.85) + 0.035) * (1.0 + 0.08 * (2.0 * q(2) - 1.0));
         // A little off the trunk, each tier turned from the last.
         let a = k as f32 * 2.399_963 + q(4);
         let off = 0.012 * (1.0 - t);
