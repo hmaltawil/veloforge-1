@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/hmaltawil/veloforge-1/actions/workflows/ci.yml/badge.svg)](https://github.com/hmaltawil/veloforge-1/actions/workflows/ci.yml)
 
-A free, local indoor-cycling app for Linux, Windows and macOS: smart trainer control, structured workouts, training plans and a 3D world to ride in. Everything runs on your computer, with no account and no subscription. (The Windows and macOS versions are new and still in testing.)
+A free, local indoor-cycling app for Linux, Windows and macOS: smart trainer control, structured workouts, training plans and a 3D world to ride in. Everything runs on your computer, with no account and no subscription.
 
 ![A sweet spot workout on the Col Loop climb](docs/ride-workout.png)
 
