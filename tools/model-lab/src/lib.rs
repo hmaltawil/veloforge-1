@@ -207,7 +207,8 @@ pub extern "C" fn joints_ptr() -> *const f32 {
 /// 4 rock, 5 house, 6 far pine, 7 far broadleaf, 11 barn, 12 shed,
 /// 13 two-storey house, 14 oak, 15 maple, 16 a piece of stone wall,
 /// 17 a bale, 18 cherry, 19 Japanese maple, 20 Japanese cedar, 21 black
-/// pine, 22 thatched farmhouse, 23 shrine gate, 24 stone lantern. Returns
+/// pine, 22 thatched farmhouse, 23 shrine gate, 24 stone lantern, 25
+/// pagoda. Returns
 /// the float count.
 #[no_mangle]
 pub extern "C" fn model(kind: u32) -> u32 {
@@ -267,6 +268,8 @@ pub extern "C" fn model(kind: u32) -> u32 {
             23 => japanese::torii(),
             #[cfg(lab_japanese)]
             24 => japanese::toro(),
+            #[cfg(lab_japanese)]
+            25 => japanese::pagoda(),
             _ => mesh::birch(),
         };
         l.model = m.v;

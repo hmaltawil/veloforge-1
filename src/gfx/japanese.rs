@@ -1,6 +1,7 @@
 //! The Japanese countryside's trees and buildings: cherry in blossom,
 //! red-leaved Japanese maple, cedar for the wooded hills, cloud-pruned
-//! black pine, a thatched farmhouse, a shrine gate and a stone lantern.
+//! black pine, a thatched farmhouse, a shrine gate, a five-storey pagoda
+//! and a stone lantern.
 //!
 //! Trees are one unit tall, like the others in `mesh.rs` (the app sizes
 //! them); buildings are in metres, x along the building (its long side
@@ -33,9 +34,62 @@ fn banded(col: V3, seed: u32) -> impl Fn(usize, usize) -> V3 {
     }
 }
 
+/// One tier or cushion of foliage made the way the pine's tiers are
+/// (`whorl` in `mesh.rs`): a low cone of branches round `at`, from its
+/// drooping, ragged rim at `y0` up to `y1` over its middle, paler at the
+/// tips and shaded beneath. Closed all round, it leaves no gaps.
+#[allow(clippy::too_many_arguments)]
+fn cushion(
+    m: &mut Mesh,
+    at: [f32; 2],
+    y0: f32,
+    y1: f32,
+    r: f32,
+    sides: usize,
+    col: V3,
+    seed: u32,
+    turn: f32,
+) {
+    let rim = |i: usize| -> (V3, V3, V3) {
+        let i = i % sides;
+        let q = |n: u32| rnd(seed, i as u32, n);
+        let a = (i as f32 + 0.35 * (q(2) - 0.5)) / sides as f32 * std::f32::consts::TAU + turn;
+        let tip = i & 1 == 0;
+        let k = if tip {
+            0.9 + 0.2 * q(1)
+        } else {
+            0.62 + 0.16 * q(1)
+        };
+        let droop = (y1 - y0) * if tip { 0.12 + 0.2 * q(3) } else { 0.04 };
+        let p = [at[0] + a.cos() * r * k, y0 - droop, at[1] + a.sin() * r * k];
+        let n = norm([a.cos() * 0.8, 0.6, a.sin() * 0.8]);
+        let c = if tip {
+            hued(col, 0.2 * q(4), 1.15 + 0.06 * q(4))
+        } else {
+            scale(col, 0.8)
+        };
+        (p, n, c)
+    };
+    let apex = [at[0], y1, at[1]];
+    let under = [at[0], y0 + (y1 - y0) * 0.22, at[1]];
+    for i in 0..sides {
+        let (a, na, ca) = rim(i);
+        let (b, nb, cb) = rim(i + 1);
+        let nt = norm(add(add(na, nb), [0.0, 1.2, 0.0]));
+        m.push(apex, nt, scale(col, 0.7));
+        m.push(a, na, ca);
+        m.push(b, nb, cb);
+        let down = [0.0, -1.0, 0.0];
+        m.push(under, down, scale(col, 0.3));
+        m.push(b, down, scale(col, 0.45));
+        m.push(a, down, scale(col, 0.45));
+    }
+}
+
 /// Unit-height cherry in full blossom: a short, dark trunk that forks low
-/// into five limbs spreading wide and a little down at their ends, under a
-/// broad, soft umbrella of pale pink. Drawn wider than tall, it is the tree
+/// into five limbs spreading wide, a leader rising through the middle, and
+/// over them a broad, soft umbrella of pale pink, every cloud of blossom
+/// on a limb or twig of its own. Drawn wider than tall, it is the tree
 /// people stop under.
 pub fn sakura() -> Mesh {
     let mut m = Mesh::default();
@@ -46,6 +100,9 @@ pub fn sakura() -> Mesh {
             ([0.014, 0.12, 0.006], 0.05),
             ([0.01, 0.2, 0.0], 0.047),
             ([0.004, 0.26, -0.004], 0.044),
+            ([0.0, 0.5, 0.004], 0.026),
+            ([0.004, 0.68, 0.0], 0.016),
+            ([0.0, 0.8, 0.0], 0.006),
         ],
         8,
         banded(CHERRY_BARK, 3),
@@ -95,10 +152,10 @@ pub fn sakura() -> Mesh {
     }
     m.mat = MAT_LEAF;
     for (k, &(end, dir, tip)) in ends.iter().enumerate() {
-        // A wide, soft cloud at each limb's end, its underside low so the
-        // dark limbs show through beneath.
+        // A wide, soft cloud round each limb's end, its underside low so
+        // the dark limbs show beneath.
         m.leaf_mass(
-            add(end, add(scale(dir, 0.04), [0.0, 0.01, 0.0])),
+            add(end, add(scale(dir, 0.02), [0.0, 0.01, 0.0])),
             [0.2, 0.12, 0.19],
             6,
             (0.075, 0.115),
@@ -109,7 +166,7 @@ pub fn sakura() -> Mesh {
             (4, 6),
         );
         m.leaf_mass(
-            add(tip, [0.0, 0.03, 0.0]),
+            add(tip, [0.0, 0.02, 0.0]),
             [0.15, 0.1, 0.14],
             4,
             (0.07, 0.1),
@@ -120,10 +177,22 @@ pub fn sakura() -> Mesh {
             (3, 5),
         );
     }
-    // The domed top.
+    // The middle of the crown, round the leader, closing it between the
+    // limbs' clouds; and the domed top on the leader's end.
     m.leaf_mass(
-        [0.0, 0.83, 0.0],
-        [0.27, 0.11, 0.26],
+        [0.0, 0.64, 0.0],
+        [0.28, 0.12, 0.27],
+        6,
+        (0.085, 0.12),
+        (0.55, 0.85),
+        BLOSSOM,
+        169,
+        whole,
+        (4, 6),
+    );
+    m.leaf_mass(
+        [0.0, 0.8, 0.0],
+        [0.25, 0.11, 0.24],
         6,
         (0.08, 0.115),
         (0.6, 0.95),
@@ -136,9 +205,10 @@ pub fn sakura() -> Mesh {
 }
 
 /// Unit-height Japanese maple, of the red-leaved kind that is crimson from
-/// spring to autumn: a low trunk that splits into three arching stems, and
-/// fine foliage held in flat, layered tiers, deep red inside and brighter
-/// where the light comes through.
+/// spring to autumn: a low trunk that splits into four stems leaning out
+/// and curving up round a leader, and fine foliage in layered tiers that overlap into one
+/// crown, each pad on a twig of its own; deep red inside, brighter where
+/// the light comes through.
 pub fn momiji() -> Mesh {
     let mut m = Mesh::default();
     let bark = [0.1, 0.085, 0.075];
@@ -155,61 +225,92 @@ pub fn momiji() -> Mesh {
         c: [0.0, 0.6, 0.0],
         r: 0.5,
     };
-    // Four stems leaning out from the fork and curving up.
     let from = [0.008, 0.11, 0.004];
-    let mut stems = Vec::new();
+    let tiers = [(0.36f32, 0.2f32), (0.52, 0.19), (0.67, 0.16), (0.8, 0.12)];
+    let mut pads = Vec::new();
     for k in 0..4 {
         let q = |n: u32| rnd(83, k as u32, n);
         let a = k as f32 * 1.57 + 0.5 * q(1);
         let dir = [a.cos(), 0.0, a.sin()];
-        let lean = 0.2 + 0.08 * q(2);
+        let lean = 0.17 + 0.06 * q(2);
         let mid = add(from, add(scale(dir, lean * 0.55), [0.0, 0.26, 0.0]));
-        let top = add(from, add(scale(dir, lean), [0.0, 0.7 + 0.06 * q(3), 0.0]));
+        let top = add(from, add(scale(dir, lean), [0.0, 0.69 + 0.05 * q(3), 0.0]));
         m.sweep(
             &[(from, 0.024), (mid, 0.016), (top, 0.006)],
             5,
             rough(bark, 31 + k as u32),
         );
-        stems.push((a, top));
-    }
-    m.mat = MAT_LEAF;
-    // Tiers held flat, like open hands: wide low down, smaller higher up,
-    // with light between them. Each stem carries a pad at each tier,
-    // reaching out past it.
-    let tiers = [(0.36f32, 0.21f32), (0.54, 0.19), (0.71, 0.16), (0.84, 0.12)];
-    for (k, &(a, top)) in stems.iter().enumerate() {
         for (t, &(h, w)) in tiers.iter().enumerate() {
             let q = |n: u32| rnd(89, (k * 4 + t) as u32, n);
             let along = ((h - from[1]) / (top[1] - from[1])).clamp(0.0, 1.0);
             let on = lerp(from, top, along);
-            let swing = a + 0.6 * (q(1) - 0.5);
+            let swing = a + 0.5 * (q(1) - 0.5);
             let out = [swing.cos(), 0.0, swing.sin()];
-            let c = add(on, scale(out, w * (0.55 + 0.2 * q(2))));
-            // Brighter and more scarlet the higher the tier.
-            let col = hued(
-                MOMIJI,
-                0.3 * t as f32 + 0.2 * (q(3) - 0.5),
-                0.92 + 0.1 * t as f32,
-            );
-            m.leaf_mass(
-                c,
-                [w, w * 0.2, w * 0.9],
-                6,
-                (0.045, 0.07),
-                (0.75, 1.0),
-                col,
-                181 + (k * 4 + t) as u32,
-                whole,
-                (3, 6),
-            );
+            // The top tier sits on the stem's end; the others reach out
+            // from it on a twig.
+            let c = if t == 3 {
+                add(top, [0.0, 0.02, 0.0])
+            } else {
+                add(on, add(scale(out, w * 0.3), [0.0, 0.02, 0.0]))
+            };
+            if t < 3 {
+                m.sweep(
+                    &[(on, 0.011), (c, 0.006)],
+                    4,
+                    rough(bark, 41 + (k * 4 + t) as u32),
+                );
+            }
+            pads.push((c, w, t, k * 4 + t));
         }
+    }
+    // A leader up the middle, carrying a pad at each tier, so the stems'
+    // tiers close into one crown with no gap between them.
+    let leader = [0.004, 0.86, 0.0];
+    m.sweep(
+        &[
+            (from, 0.022),
+            (lerp(from, leader, 0.5), 0.014),
+            (leader, 0.005),
+        ],
+        5,
+        rough(bark, 59),
+    );
+    for (t, &(h, w)) in tiers.iter().enumerate() {
+        let on = lerp(
+            from,
+            leader,
+            ((h - from[1]) / (leader[1] - from[1])).clamp(0.0, 1.0),
+        );
+        pads.push((add(on, [0.0, 0.02, 0.0]), w * 0.8, t, 16 + t));
+    }
+    m.mat = MAT_LEAF;
+    for &(c, w, t, n) in &pads {
+        let q = |i: u32| rnd(97, n as u32, i);
+        // Brighter and more scarlet the higher the tier.
+        let col = hued(
+            MOMIJI,
+            0.3 * t as f32 + 0.2 * (q(1) - 0.5),
+            0.92 + 0.1 * t as f32,
+        );
+        m.leaf_mass(
+            c,
+            [w, w * 0.42, w * 0.9],
+            5,
+            (0.06, 0.09),
+            (0.5, 0.8),
+            col,
+            181 + n as u32,
+            whole,
+            (3, 6),
+        );
     }
     m
 }
 
-/// Unit-height Japanese cedar: a straight, reddish trunk to the top and a
-/// tall, narrow spire of dark, blue-green tufts, ragged at its edges. In
-/// stands it clothes the hillsides; drawn about a third as wide as tall.
+/// Unit-height Japanese cedar: a straight, reddish trunk to the top inside
+/// a tall, narrow spire of dark blue-green, built in overlapping tiers the
+/// way the pine is, so its outline is closed and only its tips are ragged.
+/// In stands it clothes the hillsides; drawn about a third as wide as tall.
 pub fn sugi() -> Mesh {
     let mut m = Mesh::default();
     m.sweep(
@@ -224,41 +325,33 @@ pub fn sugi() -> Mesh {
         // Bark in long strips: paler and darker by the side, not the ring.
         |_ring, side| scale(CEDAR_BARK, if side % 2 == 0 { 1.15 } else { 0.8 }),
     );
-    let whole = Crown {
-        c: [0.0, 0.6, 0.0],
-        r: 0.42,
-    };
     m.mat = MAT_LEAF;
-    let golden = std::f32::consts::PI * (3.0 - 5f32.sqrt());
-    // Tufts spiralling up the trunk, the spire narrowing to the top.
-    let n = 24;
-    for k in 0..n {
-        let q = |i: u32| rnd(97, k as u32, i);
-        let t = k as f32 / (n - 1) as f32;
-        let y = 0.12 + 0.84 * t;
-        let r = 0.24 * (1.0 - t) + 0.02;
-        let a = k as f32 * golden + q(1);
-        let off = r * 0.45;
-        let c = [a.cos() * off, y, a.sin() * off];
-        let col = hued(CEDAR_GREEN, 0.3 * (q(2) - 0.5) + 0.25 * t, 0.95 + 0.15 * t);
-        m.leaf_mass(
-            c,
-            [r, 0.075 + 0.025 * (1.0 - t), r],
-            4,
-            (0.04 + 0.035 * (1.0 - t), 0.06 + 0.04 * (1.0 - t)),
-            (0.6, 1.0),
-            col,
-            211 + k as u32,
-            whole,
-            (3, 5),
-        );
+    let tiers = 16;
+    for k in 0..tiers {
+        let t = k as f32 / (tiers - 1) as f32;
+        let q = |n: u32| rnd(97, k as u32, n);
+        let y0 = 0.1 + 0.8 * t + 0.012 * (q(1) - 0.5);
+        let vary = 1.0 + (0.03 + 0.08 * t) * (2.0 * q(2) - 1.0);
+        let r = (0.2 * (1.0 - t).powf(0.95) + 0.035) * vary;
+        let y1 = if k + 1 == tiers {
+            1.0
+        } else {
+            y0 + 0.1 - 0.03 * t
+        };
+        let lean = q(6) * std::f32::consts::TAU;
+        let off = 0.008 * (1.0 - t) * q(7);
+        let at = [lean.cos() * off, lean.sin() * off];
+        let col = hued(CEDAR_GREEN, 0.3 * (q(3) - 0.5) + 0.15 * t, 0.8 + 0.45 * t);
+        let turn = k as f32 * 2.399_963 + 0.3 * q(4);
+        cushion(&mut m, at, y0, y1, r, 12, tinted(col), 300 + k as u32, turn);
     }
     m
 }
 
 /// Unit-height black pine, pruned by generations of gardeners: a dark,
 /// plated trunk that leans out and turns back, a few long limbs held level,
-/// and on them flat cushions of needles, like clouds resting on branches.
+/// and on each limb and twig a cushion of needles, like a cloud resting on
+/// a branch: two closed tiers made the way the pine's are.
 pub fn kuromatsu() -> Mesh {
     let mut m = Mesh::default();
     // The trunk leans one way, then turns back towards the top.
@@ -272,12 +365,8 @@ pub fn kuromatsu() -> Mesh {
         ([0.03, 0.86, 0.0], 0.01),
     ];
     m.sweep(&trunk, 7, rough(PINE_BARK, 41));
-    let whole = Crown {
-        c: [0.05, 0.58, 0.0],
-        r: 0.5,
-    };
     // Limbs from the trunk, held out level: where they start (a point on
-    // the trunk), which way they go, how far, and the pads they carry.
+    // the trunk), which way they go, how far and how they rise.
     let limbs: [(usize, f32, f32, f32); 5] = [
         (3, 3.0, 0.4, -0.07),
         (3, 0.3, 0.3, -0.04),
@@ -297,29 +386,62 @@ pub fn kuromatsu() -> Mesh {
             5,
             rough(PINE_BARK, 61 + k as u32),
         );
-        // A big pad at the end, a smaller one part way along.
-        pads.push((add(end, [0.0, 0.035, 0.0]), 0.13 + 0.02 * q(1)));
+        // A big cushion on the limb's end; a smaller one on a twig from
+        // part way along.
+        pads.push((end, 0.13 + 0.02 * q(1)));
         let side = [-dir[2], 0.0, dir[0]];
         let s = if k % 2 == 0 { 1.0 } else { -1.0 };
-        pads.push((
-            add(mid, add(scale(side, 0.05 * s), [0.0, 0.04, 0.0])),
-            0.085 + 0.015 * q(2),
-        ));
+        let twig = add(mid, add(scale(side, 0.07 * s), [0.0, 0.03, 0.0]));
+        m.sweep(
+            &[(mid, 0.008), (twig, 0.004)],
+            4,
+            rough(PINE_BARK, 71 + k as u32),
+        );
+        pads.push((twig, 0.085 + 0.015 * q(2)));
     }
-    // The crown pad on top.
-    pads.push(([0.035, 0.9, 0.0], 0.12));
+    // The crown cushion on the trunk's top.
+    pads.push((trunk[6].0, 0.12));
     m.mat = MAT_LEAF;
     for (k, &(c, r)) in pads.iter().enumerate() {
-        m.leaf_mass(
-            c,
-            [r, r * 0.24, r * 0.9],
-            6,
-            (0.045, 0.065),
-            (0.7, 1.0),
-            PINE_NEEDLES,
-            231 + k as u32,
-            whole,
-            (3, 6),
+        let q = |n: u32| rnd(59, k as u32, n);
+        let col = tinted(hued(PINE_NEEDLES, 0.3 * (q(1) - 0.5), 0.9 + 0.2 * q(2)));
+        let turn = q(3) * std::f32::consts::TAU;
+        let at = [c[0], c[2]];
+        let seed = 400 + 3 * k as u32;
+        // Wide tiers close together, each nearly as wide as the one below:
+        // a rounded dome, not a point.
+        cushion(
+            &mut m,
+            at,
+            c[1] - r * 0.12,
+            c[1] + r * 0.26,
+            r,
+            14,
+            col,
+            seed,
+            turn,
+        );
+        cushion(
+            &mut m,
+            at,
+            c[1] + r * 0.06,
+            c[1] + r * 0.42,
+            r * 0.84,
+            14,
+            scale(col, 1.05),
+            seed + 1,
+            turn + 1.3,
+        );
+        cushion(
+            &mut m,
+            at,
+            c[1] + r * 0.22,
+            c[1] + r * 0.56,
+            r * 0.58,
+            12,
+            scale(col, 1.1),
+            seed + 2,
+            turn + 2.6,
         );
     }
     m
@@ -331,6 +453,14 @@ const DARK_WOOD: V3 = [0.075, 0.05, 0.035];
 const PLASTER: V3 = [0.64, 0.61, 0.54];
 const PAPER: V3 = [0.7, 0.66, 0.55];
 const STONE: V3 = [0.16, 0.155, 0.145];
+/// Shrine and temple lacquer.
+const VERMILION: V3 = [0.6, 0.11, 0.045];
+/// Copper roof tiles gone turquoise with age, and their ridges.
+const TILE: V3 = [0.085, 0.215, 0.205];
+const RIDGE: V3 = [0.045, 0.11, 0.105];
+const UNDER_EAVES: V3 = [0.16, 0.045, 0.03];
+const BRONZE: V3 = [0.1, 0.08, 0.055];
+const GOLD: V3 = [0.5, 0.36, 0.12];
 /// How deep the stone footings go (as for the farm buildings): on a slope
 /// a building stands at the top of its ground.
 const FOUNDATION: f32 = 3.5;
@@ -388,27 +518,34 @@ impl Mesh {
         }
     }
 
-    /// A beam along x from `-half` to `half`, `h` deep and `w` thick
-    /// (across z), its middle at `y` and its ends swept up by `lift` (as a
-    /// shrine gate's top beams are), cut square.
+    /// A beam along x from `-half` to `half`, `h` deep and `w` thick (across
+    /// z), its middle following `curve` (height at each x), so beams on the
+    /// same curve stack exactly; cut square at its ends.
     #[allow(clippy::too_many_arguments)]
-    fn swept_beam(&mut self, half: f32, y: f32, h: f32, w: f32, lift: f32, z: f32, col: V3) {
-        let n = 12;
+    fn swept_beam(
+        &mut self,
+        half: f32,
+        curve: &dyn Fn(f32) -> f32,
+        h: f32,
+        w: f32,
+        z: f32,
+        col: V3,
+    ) {
+        let n = 16;
         let at = |i: usize| {
             let x = -half + 2.0 * half * i as f32 / n as f32;
-            let u = (x / half).abs();
-            (x, y + lift * u.powi(3))
+            (x, curve(x))
         };
         let (z0, z1) = (z - w / 2.0, z + w / 2.0);
         for i in 0..n {
             let ((xa, ya), (xb, yb)) = (at(i), at(i + 1));
             let (ta, tb, ba, bb) = (ya + h / 2.0, yb + h / 2.0, ya - h / 2.0, yb - h / 2.0);
-            self.quad([xa, ta, z1], [xa, ta, z0], [xb, tb, z0], [xb, tb, z1], col);
+            self.quad([xa, ta, z1], [xb, tb, z1], [xb, tb, z0], [xa, ta, z0], col);
             self.quad(
                 [xa, ba, z0],
-                [xa, ba, z1],
-                [xb, bb, z1],
                 [xb, bb, z0],
+                [xb, bb, z1],
+                [xa, ba, z1],
                 scale(col, 0.55),
             );
             self.quad([xa, ba, z1], [xb, bb, z1], [xb, tb, z1], [xa, ta, z1], col);
@@ -421,6 +558,281 @@ impl Mesh {
                 self.quad([x, b, z1], [x, b, z0], [x, t, z0], [x, t, z1], col);
             } else {
                 self.quad([x, b, z0], [x, b, z1], [x, t, z1], [x, t, z0], col);
+            }
+        }
+    }
+
+    /// A square temple roof of copper tiles gone turquoise, centred on the
+    /// y axis: from its eaves, `w` out from the middle at height `eave_y`,
+    /// up to `top_w` out at `top_y`, its pitch flattening towards the eaves
+    /// and its corners swept up by `lift` and out by `flare`, the way
+    /// temple roofs curve. Rows of tiles run down it; ridges run down its
+    /// corners, each with a bronze bell hanging from its end; the eaves are
+    /// `thick` deep, edged in vermilion, dark beneath.
+    #[allow(clippy::too_many_arguments)]
+    fn temple_roof(
+        &mut self,
+        eave_y: f32,
+        w: f32,
+        top_y: f32,
+        top_w: f32,
+        lift: f32,
+        flare: f32,
+        thick: f32,
+    ) {
+        let (ns, nv) = (16usize, 6usize);
+        let sides: [([f32; 2], [f32; 2]); 4] = [
+            ([1.0, 0.0], [0.0, 1.0]),
+            ([0.0, 1.0], [-1.0, 0.0]),
+            ([-1.0, 0.0], [0.0, -1.0]),
+            ([0.0, -1.0], [1.0, 0.0]),
+        ];
+        let surface = |d: [f32; 2], t: [f32; 2], s: f32, v: f32| -> V3 {
+            // The eaves flare out towards the corners, and only their last
+            // stretch curls up; the hips still fall to the corners.
+            let a = s.abs().powi(3);
+            let curl = s.abs().powi(6) * (1.0 - v).powi(2);
+            let h = w + flare * a * (1.0 - v) + (top_w - w) * v;
+            let ye = eave_y + lift * curl;
+            let y = ye + (top_y - ye) * v.powf(1.6);
+            [d[0] * h + t[0] * s * h, y, d[1] * h + t[1] * s * h]
+        };
+        let down = |p: V3| [p[0], p[1] - thick, p[2]];
+        for (d, t) in sides {
+            let sv = |i: usize, j: usize| (-1.0 + 2.0 * i as f32 / ns as f32, j as f32 / nv as f32);
+            let pt = |i: usize, j: usize| {
+                let (s, v) = sv(i, j);
+                surface(d, t, s, v)
+            };
+            let normal = |i: usize, j: usize| {
+                let (s, v) = sv(i, j);
+                let e = 1e-3;
+                let ds = sub(
+                    surface(d, t, (s + e).min(1.0), v),
+                    surface(d, t, (s - e).max(-1.0), v),
+                );
+                let dv = sub(
+                    surface(d, t, s, (v + e).min(1.0)),
+                    surface(d, t, s, (v - e).max(0.0)),
+                );
+                let n = norm(cross(dv, ds));
+                if n[1] < 0.0 {
+                    scale(n, -1.0)
+                } else {
+                    n
+                }
+            };
+            let along = [t[0], 0.0, t[1]];
+            self.mat = MAT_GLOSS;
+            for i in 0..ns {
+                // Rows of round tiles: every other row a shade darker and
+                // each turned a little to the light, so the rows show.
+                let (tile, tilt) = if i % 2 == 0 {
+                    (TILE, 0.2)
+                } else {
+                    (scale(TILE, 0.86), -0.2)
+                };
+                for j in 0..nv {
+                    let k = [(i, j), (i, j + 1), (i + 1, j + 1), (i + 1, j)];
+                    for idx in [0, 1, 2, 0, 2, 3] {
+                        let (a, b) = k[idx];
+                        let n = norm(add(normal(a, b), scale(along, tilt)));
+                        // Weathered paler towards the top.
+                        let c = scale(tile, 0.92 + 0.16 * b as f32 / nv as f32);
+                        self.push(pt(a, b), n, c);
+                    }
+                }
+            }
+            self.mat = MAT_MATT;
+            for i in 0..ns {
+                for j in (0..nv).step_by(3) {
+                    let j1 = (j + 3).min(nv);
+                    let (a, b, c, dd) = (
+                        down(pt(i, j)),
+                        down(pt(i, j1)),
+                        down(pt(i + 1, j1)),
+                        down(pt(i + 1, j)),
+                    );
+                    self.quad(a, dd, c, b, UNDER_EAVES);
+                }
+                // The vermilion edge of the eaves.
+                let (a, b) = (pt(i, 0), pt(i + 1, 0));
+                self.quad(down(b), down(a), a, b, VERMILION);
+            }
+            // The ridge down the corner, and the bell hanging from its end.
+            let ridge: Vec<(V3, f32)> = (0..=nv)
+                .map(|j| {
+                    let v = j as f32 / nv as f32;
+                    (
+                        add(surface(d, t, 1.0, v), [0.0, 0.07, 0.0]),
+                        0.12 - 0.05 * v,
+                    )
+                })
+                .collect();
+            self.mat = MAT_GLOSS;
+            self.sweep(&ridge, 6, |_, _| RIDGE);
+            let c = down(surface(d, t, 1.0, 0.0));
+            let c = [c[0] * 0.97, c[1], c[2] * 0.97];
+            self.tube(c, add(c, [0.0, -0.32, 0.0]), 0.015, 0.015, 4, BRONZE);
+            self.tube(
+                add(c, [0.0, -0.32, 0.0]),
+                add(c, [0.0, -0.62, 0.0]),
+                0.05,
+                0.13,
+                10,
+                BRONZE,
+            );
+            self.mat = MAT_MATT;
+        }
+        let tw = top_w;
+        self.quad(
+            [-tw, top_y, tw],
+            [tw, top_y, tw],
+            [tw, top_y, -tw],
+            [-tw, top_y, -tw],
+            RIDGE,
+        );
+    }
+
+    /// One storey of a pagoda, `b` out from its middle and `h` tall from
+    /// `y`: white walls framed in vermilion posts and beams, a vermilion
+    /// door in the middle of each side and, above the ground floor, a
+    /// balcony with a railing all round.
+    fn storey(&mut self, y: f32, b: f32, h: f32, balcony: bool) {
+        self.cuboid(
+            [-b + 0.05, y, -b + 0.05],
+            [b - 0.05, y + h, b - 0.05],
+            PLASTER,
+        );
+        self.mat = MAT_GLOSS;
+        // Beams round it: at the foot, over the doors and at the head.
+        for (y0, y1) in [
+            (y, y + 0.2),
+            (y + h * 0.66, y + h * 0.66 + 0.14),
+            (y + h - 0.18, y + h),
+        ] {
+            self.cuboid(
+                [-b - 0.04, y0, -b - 0.04],
+                [b + 0.04, y1, b + 0.04],
+                VERMILION,
+            );
+        }
+        // Posts at the corners and either side of the middle bay.
+        let post = 0.1;
+        for u in [-b, -b / 3.0, b / 3.0, b] {
+            for (x, z) in [(u, -b), (u, b), (-b, u), (b, u)] {
+                self.cuboid(
+                    [x - post, y, z - post],
+                    [x + post, y + h, z + post],
+                    VERMILION,
+                );
+            }
+        }
+        // The doors: two leaves in the middle bay, a darker panel in each.
+        let (dy0, dy1) = (y + 0.2, y + h * 0.66);
+        for (d, t) in [
+            ([1.0f32, 0.0f32], [0.0f32, 1.0f32]),
+            ([0.0, 1.0], [-1.0, 0.0]),
+            ([-1.0, 0.0], [0.0, -1.0]),
+            ([0.0, -1.0], [1.0, 0.0]),
+        ] {
+            let at = |u: f32, yy: f32, out: f32| {
+                [d[0] * (b + out) + t[0] * u, yy, d[1] * (b + out) + t[1] * u]
+            };
+            let half = b / 3.0 - post;
+            self.quad(
+                at(-half, dy0, 0.02),
+                at(half, dy0, 0.02),
+                at(half, dy1, 0.02),
+                at(-half, dy1, 0.02),
+                VERMILION,
+            );
+            for (u0, u1) in [(-half + 0.12, -0.06), (0.06, half - 0.12)] {
+                self.quad(
+                    at(u0, dy0 + 0.15, 0.03),
+                    at(u1, dy0 + 0.15, 0.03),
+                    at(u1, dy1 - 0.15, 0.03),
+                    at(u0, dy1 - 0.15, 0.03),
+                    scale(VERMILION, 0.55),
+                );
+            }
+            self.quad(
+                at(-0.03, dy0, 0.035),
+                at(0.03, dy0, 0.035),
+                at(0.03, dy1, 0.035),
+                at(-0.03, dy1, 0.035),
+                [0.04, 0.02, 0.015],
+            );
+        }
+        if balcony {
+            let o = b + 0.6;
+            self.cuboid([-o, y - 0.14, -o], [o, y, o], VERMILION);
+            for (y0, y1) in [(y + 0.36, y + 0.42), (y + 0.74, y + 0.82)] {
+                for (a, c) in [
+                    ([-o, -o], [o, -o + 0.07]),
+                    ([-o, o - 0.07], [o, o]),
+                    ([-o, -o], [-o + 0.07, o]),
+                    ([o - 0.07, -o], [o, o]),
+                ] {
+                    self.cuboid([a[0], y0, a[1]], [c[0], y1, c[1]], VERMILION);
+                }
+            }
+            let n = ((2.0 * o) / 0.75).round() as usize;
+            for k in 0..=n {
+                let u = -o + 2.0 * o * k as f32 / n as f32;
+                for (x, z) in [(u, -o), (u, o), (-o, u), (o, u)] {
+                    self.cuboid(
+                        [x - 0.035, y, z - 0.035],
+                        [x + 0.035, y + 0.82, z + 0.035],
+                        VERMILION,
+                    );
+                }
+            }
+        }
+        self.mat = MAT_MATT;
+    }
+
+    /// The brackets that carry the eaves, over a storey `b` out from its
+    /// middle at `y`: two vermilion tiers stepping out, the ends of their
+    /// blocks painted white.
+    fn brackets(&mut self, y: f32, b: f32) {
+        self.mat = MAT_GLOSS;
+        self.cuboid(
+            [-b - 0.18, y, -b - 0.18],
+            [b + 0.18, y + 0.26, b + 0.18],
+            VERMILION,
+        );
+        self.cuboid(
+            [-b - 0.45, y + 0.26, -b - 0.45],
+            [b + 0.45, y + 0.52, b + 0.45],
+            VERMILION,
+        );
+        self.mat = MAT_MATT;
+        for (o, y0) in [(b + 0.18, y + 0.07), (b + 0.45, y + 0.33)] {
+            let n = ((2.0 * o) / 0.42).round() as usize;
+            for (d, t) in [
+                ([1.0f32, 0.0f32], [0.0f32, 1.0f32]),
+                ([0.0, 1.0], [-1.0, 0.0]),
+                ([-1.0, 0.0], [0.0, -1.0]),
+                ([0.0, -1.0], [1.0, 0.0]),
+            ] {
+                let at = |u: f32, yy: f32| {
+                    [
+                        d[0] * (o + 0.01) + t[0] * u,
+                        yy,
+                        d[1] * (o + 0.01) + t[1] * u,
+                    ]
+                };
+                for k in 0..n {
+                    let u = -o + (k as f32 + 0.5) * 2.0 * o / n as f32;
+                    self.quad(
+                        at(u - 0.07, y0),
+                        at(u + 0.07, y0),
+                        at(u + 0.07, y0 + 0.12),
+                        at(u - 0.07, y0 + 0.12),
+                        PLASTER,
+                    );
+                }
             }
         }
     }
@@ -802,59 +1214,235 @@ pub fn minka() -> Mesh {
     m
 }
 
-/// A shrine gate (torii) in vermilion: two pillars on black feet, leaning
-/// in a little, a tie beam through them, and the great top beam swept up
-/// at its ends and capped in black, with the shrine's name board between.
-/// 5 m tall and 5.4 m across the top.
+/// A shrine gate (torii) in the old, grand style: vermilion pillars on
+/// black feet, leaning in a little and banded in black at their heads; a
+/// tie beam through them, held by wedges; a name board in a black frame
+/// edged in gold; and the great top beams, vermilion under black, swept up
+/// at their ends and roofed in turquoise copper tiles with gilded end caps.
+/// The pillars rise into the beams, which sit on them and on each other.
+/// About 5.7 m tall and 6 m across the top.
 pub fn torii() -> Mesh {
     let mut m = Mesh::default();
-    let red = [0.6, 0.13, 0.05];
     let black = [0.025, 0.022, 0.02];
-    let (base, top) = (1.75f32, 1.62f32);
+    let (hk, yk, lift) = (3.0f32, 4.95f32, 0.36f32);
+    let (kh, sh) = (0.3f32, 0.28f32);
+    let kasagi = move |x: f32| yk + lift * (x.abs() / hk).powf(2.5);
+    let shimaki = move |x: f32| kasagi(x) - (kh + sh) / 2.0;
+    let (base, top) = (1.8f32, 1.66f32);
+    // Where each pillar meets the lower beam: a little into it.
+    let pillar_top = shimaki(top) - sh / 2.0 + 0.06;
+    let pillar_x = |y: f32| base + (top - base) * (y - 0.6) / (pillar_top - 0.6);
     for s in [-1.0f32, 1.0] {
-        // Stone footings, black feet, then the pillar.
-        m.prism(
-            [s * base, 0.0],
-            -FOUNDATION,
-            0.08,
-            0.34,
-            0.34,
-            8,
-            0.2,
-            STONE,
-        );
-        m.tube(
-            [s * base, 0.0, 0.0],
-            [s * base, 0.55, 0.0],
-            0.23,
-            0.23,
-            12,
-            black,
-        );
+        m.prism([s * base, 0.0], -FOUNDATION, 0.1, 0.38, 0.38, 8, 0.2, STONE);
         m.mat = MAT_GLOSS;
         m.tube(
-            [s * base, 0.55, 0.0],
-            [s * top, 4.25, 0.0],
+            [s * base, 0.1, 0.0],
+            [s * pillar_x(0.62), 0.62, 0.0],
+            0.25,
+            0.24,
+            14,
+            black,
+        );
+        m.tube(
+            [s * base, 0.6, 0.0],
+            [s * top, pillar_top, 0.0],
+            0.2,
+            0.175,
+            14,
+            VERMILION,
+        );
+        // A black band at the pillar's head, just under the beam.
+        let yb = pillar_top - 0.3;
+        m.tube(
+            [s * pillar_x(yb), yb, 0.0],
+            [s * pillar_x(yb + 0.14), yb + 0.14, 0.0],
             0.19,
-            0.165,
-            12,
-            red,
+            0.19,
+            14,
+            black,
         );
         m.mat = MAT_MATT;
     }
     m.mat = MAT_GLOSS;
-    // The tie beam, through the pillars and out past them.
-    m.cuboid([-2.35, 3.55, -0.1], [2.35, 3.85, 0.1], red);
-    // The name board on its strut between the beams.
-    m.cuboid([-0.1, 3.85, -0.08], [0.1, 4.25, 0.08], red);
+    // The tie beam through the pillars, and a wedge outside each.
+    let (ny0, ny1) = (3.62f32, 3.94f32);
+    m.cuboid([-2.45, ny0, -0.11], [2.45, ny1, 0.11], VERMILION);
+    for s in [-1.0f32, 1.0] {
+        let x = pillar_x((ny0 + ny1) / 2.0) + 0.2;
+        let (x0, x1) = if s > 0.0 {
+            (x, x + 0.12)
+        } else {
+            (-x - 0.12, -x)
+        };
+        m.cuboid([x0, ny0 - 0.06, -0.13], [x1, ny1 + 0.06, 0.13], black);
+    }
+    // The strut between the beams, and the name board on it.
+    let under = shimaki(0.0) - sh / 2.0;
+    m.cuboid([-0.12, ny1, -0.1], [0.12, under, 0.1], VERMILION);
     m.mat = MAT_MATT;
-    m.cuboid([-0.36, 3.88, 0.08], [0.36, 4.5, 0.14], black);
-    m.cuboid([-0.3, 3.94, 0.14], [0.3, 4.44, 0.15], [0.42, 0.33, 0.12]);
-    // The top beams: the lower in vermilion, the cap above it black, both
-    // swept up towards their ends.
+    let (py0, py1) = (ny1 + 0.04, under - 0.02);
+    m.cuboid([-0.36, py0, 0.1], [0.36, py1, 0.18], black);
     m.mat = MAT_GLOSS;
-    m.swept_beam(2.55, 4.38, 0.26, 0.34, 0.22, 0.0, red);
-    m.swept_beam(2.75, 4.66, 0.3, 0.42, 0.32, 0.0, black);
+    m.cuboid([-0.31, py0 + 0.05, 0.18], [0.31, py1 - 0.05, 0.195], GOLD);
+    m.mat = MAT_MATT;
+    m.cuboid(
+        [-0.26, py0 + 0.1, 0.195],
+        [0.26, py1 - 0.1, 0.205],
+        [0.03, 0.035, 0.04],
+    );
+    m.mat = MAT_GLOSS;
+    for k in 0..3 {
+        let y = py0 + 0.14 + k as f32 * (py1 - py0 - 0.28) / 3.0;
+        m.cuboid([-0.07, y, 0.205], [0.07, y + 0.07, 0.212], GOLD);
+    }
+    // The top beams, the lower vermilion and the upper black, on one curve.
+    m.swept_beam(2.78, &shimaki, sh, 0.38, 0.0, VERMILION);
+    m.swept_beam(hk, &kasagi, kh, 0.46, 0.0, black);
+    // The roof of copper tiles along the top beam, rows running across it,
+    // its ends closed and capped in gold.
+    let n = 30;
+    let (ez, rise) = (0.31f32, 0.13f32);
+    let roof = |x: f32, z: f32| {
+        let y = kasagi(x) + kh / 2.0;
+        [x, y + rise * (1.0 - z.abs() / ez), z]
+    };
+    for i in 0..n {
+        let x0 = -hk - 0.06 + (2.0 * hk + 0.12) * i as f32 / n as f32;
+        let x1 = -hk - 0.06 + (2.0 * hk + 0.12) * (i + 1) as f32 / n as f32;
+        let tile = if i % 2 == 0 { TILE } else { scale(TILE, 0.86) };
+        m.quad(
+            roof(x0, ez),
+            roof(x1, ez),
+            roof(x1, 0.0),
+            roof(x0, 0.0),
+            tile,
+        );
+        m.quad(
+            roof(x1, -ez),
+            roof(x0, -ez),
+            roof(x0, 0.0),
+            roof(x1, 0.0),
+            tile,
+        );
+        // Its eaves' edge.
+        let dn = |p: V3| [p[0], p[1] - 0.05, p[2]];
+        m.quad(
+            dn(roof(x0, ez)),
+            dn(roof(x1, ez)),
+            roof(x1, ez),
+            roof(x0, ez),
+            RIDGE,
+        );
+        m.quad(
+            dn(roof(x1, -ez)),
+            dn(roof(x0, -ez)),
+            roof(x0, -ez),
+            roof(x1, -ez),
+            RIDGE,
+        );
+    }
+    let ridge: Vec<(V3, f32)> = (0..=n)
+        .map(|i| {
+            let x = -hk - 0.06 + (2.0 * hk + 0.12) * i as f32 / n as f32;
+            (add(roof(x, 0.0), [0.0, 0.02, 0.0]), 0.045)
+        })
+        .collect();
+    m.sweep(&ridge, 6, |_, _| RIDGE);
+    for s in [-1.0f32, 1.0] {
+        let x = s * (hk + 0.06);
+        let (a, b, c) = (roof(x, ez), roof(x, -ez), roof(x, 0.0));
+        if s > 0.0 {
+            m.tri(a, b, c, RIDGE);
+        } else {
+            m.tri(b, a, c, RIDGE);
+        }
+        let y = kasagi(x);
+        let (x0, x1) = if s > 0.0 {
+            (x - 0.02, x + 0.06)
+        } else {
+            (x - 0.06, x + 0.02)
+        };
+        m.cuboid(
+            [x0, y - kh / 2.0 - 0.02, -0.25],
+            [x1, y + kh / 2.0 + 0.05, 0.25],
+            GOLD,
+        );
+    }
+    m.mat = MAT_MATT;
+    m
+}
+
+/// A five-storey pagoda on a stone platform, about 26 m to the tip of its
+/// spire: white walls framed in vermilion, a balcony with a railing round
+/// every storey above the first, rows of brackets carrying deep eaves, and
+/// five roofs of turquoise copper tiles, each smaller than the one below,
+/// their corners swept up and hung with bronze bells. A bronze spire of
+/// nine rings rises from the top, finished with a gilded jewel.
+pub fn pagoda() -> Mesh {
+    let mut m = Mesh::default();
+    // The stone platform, and steps up to it at the front.
+    m.cuboid([-4.7, -FOUNDATION, -4.7], [4.7, 0.9, 4.7], STONE);
+    m.cuboid([-4.85, 0.82, -4.85], [4.85, 0.95, 4.85], scale(STONE, 1.12));
+    for k in 0..3 {
+        let y = 0.3 * (k + 1) as f32;
+        m.cuboid(
+            [-1.5, -0.5, 4.7],
+            [1.5, y, 4.7 + 0.42 * (3 - k) as f32],
+            scale(STONE, 1.06),
+        );
+    }
+    let storeys = 5;
+    let mut y = 0.95;
+    let mut top = 0.0;
+    for k in 0..storeys {
+        let b = 2.55 - 0.27 * k as f32;
+        let h = if k == 0 { 2.5 } else { 1.75 };
+        m.storey(y, b, h, k > 0);
+        m.brackets(y + h, b);
+        let eave = y + h + 0.62;
+        let w = b + if k == 0 { 2.7 } else { 2.4 };
+        let last = k + 1 == storeys;
+        let top_w = if last {
+            0.42
+        } else {
+            2.55 - 0.27 * (k + 1) as f32 + 0.15
+        };
+        top = eave + if last { 2.4 } else { 1.65 };
+        m.temple_roof(eave, w, top, top_w, 0.5, 0.5, 0.45);
+        y = top - 0.12;
+    }
+    // The spire: a base, a pole through nine rings, and the jewel.
+    m.mat = MAT_GLOSS;
+    m.prism([0.0, 0.0], top - 0.1, top + 0.45, 0.5, 0.42, 8, 0.0, BRONZE);
+    m.tube(
+        [0.0, top + 0.45, 0.0],
+        [0.0, top + 5.6, 0.0],
+        0.1,
+        0.07,
+        10,
+        BRONZE,
+    );
+    for k in 0..9 {
+        let yr = top + 1.0 + k as f32 * 0.42;
+        m.torus(
+            [0.0, yr, 0.0],
+            [0.0, 1.0, 0.0],
+            0.36 - 0.012 * k as f32,
+            0.05,
+            16,
+            6,
+            BRONZE,
+        );
+    }
+    m.disc([0.0, top + 4.95, 0.0], 0.3, [0.0, 1.0, 0.0], 12, GOLD);
+    m.ellipsoid_in(
+        [0.0, top + 5.25, 0.0],
+        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        [0.2, 0.28, 0.2],
+        6,
+        10,
+        GOLD,
+    );
     m.mat = MAT_MATT;
     m
 }
