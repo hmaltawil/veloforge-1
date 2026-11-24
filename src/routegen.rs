@@ -59,6 +59,8 @@ impl Hills {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RandomRoute {
     pub seed: u64,
+    /// (Farmland and hills if it is not one this version knows.)
+    #[serde(deserialize_with = "Scenery::or_hills")]
     pub scenery: Scenery,
     pub km: u32,
     pub hills: Hills,

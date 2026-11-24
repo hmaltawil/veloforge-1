@@ -192,18 +192,78 @@ impl Paths {
 
 impl Store {
     pub fn load(path: &Path) -> Store {
-        match std::fs::read_to_string(path) {
-            Ok(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
-                eprintln!(
-                    "veloforge: could not parse {}: {e}; starting fresh",
-                    path.display()
-                );
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return Store::default();
+        };
+        match serde_json::from_str(&text) {
+            Ok(store) => store,
+            Err(e) => {
+                // Keep the file as it was, then read what can be read.
+                eprintln!("veloforge: could not read all of {}: {e}", path.display());
                 let backup = path.with_extension("json.bak");
                 let _ = std::fs::copy(path, backup);
-                Store::default()
-            }),
-            Err(_) => Store::default(),
+                let (store, lost) = Store::from_readable(&text);
+                for part in &lost {
+                    eprintln!("veloforge: left out {part} (kept in state.json.bak)");
+                }
+                store
+            }
         }
+    }
+
+    /// The state in `text`, leaving out only the parts that cannot be
+    /// read (each named in the list returned): a setting, or an entry in a
+    /// list (a ride, a route, a workout), rather than everything. Every
+    /// field has a default, so each part can be tried on its own.
+    fn from_readable(text: &str) -> (Store, Vec<String>) {
+        use serde_json::{Map, Value};
+        let Ok(Value::Object(all)) = serde_json::from_str::<Value>(text) else {
+            return (Store::default(), vec!["all of it (not JSON)".into()]);
+        };
+        let reads = |key: &str, v: Value| {
+            let mut m = Map::new();
+            m.insert(key.to_string(), v);
+            serde_json::from_value::<Store>(Value::Object(m)).is_ok()
+        };
+        let mut kept = Map::new();
+        let mut lost = Vec::new();
+        for (key, v) in all {
+            if reads(&key, v.clone()) {
+                kept.insert(key, v);
+                continue;
+            }
+            match v {
+                // A list: keep the entries that read.
+                Value::Array(items) => {
+                    let mut good = Vec::new();
+                    for (i, item) in items.into_iter().enumerate() {
+                        if reads(&key, Value::Array(vec![item.clone()])) {
+                            good.push(item);
+                        } else {
+                            lost.push(format!("{key}[{i}]"));
+                        }
+                    }
+                    kept.insert(key, Value::Array(good));
+                }
+                // The settings: keep the ones that read.
+                Value::Object(fields) => {
+                    let mut good = Map::new();
+                    for (field, x) in fields {
+                        let mut one = Map::new();
+                        one.insert(field.clone(), x.clone());
+                        if reads(&key, Value::Object(one)) {
+                            good.insert(field, x);
+                        } else {
+                            lost.push(format!("{key}.{field}"));
+                        }
+                    }
+                    kept.insert(key, Value::Object(good));
+                }
+                _ => lost.push(key),
+            }
+        }
+        let store = serde_json::from_value(Value::Object(kept)).unwrap_or_default();
+        (store, lost)
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
@@ -214,5 +274,69 @@ impl Store {
         std::fs::write(&tmp, serde_json::to_string_pretty(self)?).context("writing state")?;
         std::fs::rename(&tmp, path).context("replacing state")?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::route::Scenery;
+
+    /// State saved by a newer version, with a scenery this one does not
+    /// know, keeps everything: the routes with that scenery read as
+    /// farmland and hills.
+    #[test]
+    fn a_scenery_from_a_newer_version_keeps_everything_else() {
+        let mut store = Store::default();
+        store.settings.ftp = 287.0;
+        let spec = crate::routegen::RandomRoute::default();
+        store.random_routes.push(spec.clone());
+        store.settings.random_route = spec;
+        store.gpx_routes.push(GpxRoute {
+            id: "gpx-1".into(),
+            name: "Somewhere".into(),
+            pts: vec![(0.0, 100.0, 0.0, 0.0), (5.0, 100.0, 5.0, 0.0)],
+            scenery: Some(Scenery::Coast),
+            shape: None,
+        });
+        let text = serde_json::to_string(&store)
+            .unwrap()
+            .replace("\"Hills\"", "\"Desert\"")
+            .replace("\"Coast\"", "\"Desert\"");
+        assert!(text.contains("Desert"));
+        let back: Store = serde_json::from_str(&text).expect("reads it all");
+        assert_eq!(back.settings.ftp, 287.0);
+        assert_eq!(back.random_routes.len(), 1);
+        assert_eq!(back.random_routes[0].scenery, Scenery::Hills);
+        assert_eq!(back.settings.random_route.scenery, Scenery::Hills);
+        assert_eq!(back.gpx_routes[0].scenery, Some(Scenery::Hills));
+    }
+
+    /// Anything else that cannot be read loses only itself: one setting,
+    /// one entry in a list; and the file is kept as it was.
+    #[test]
+    fn what_cannot_be_read_loses_only_itself() {
+        let mut store = Store::default();
+        store.settings.ftp = 301.0;
+        store.settings.rider_kg = 71.5;
+        let spec = crate::routegen::RandomRoute::default();
+        store.random_routes = vec![spec.clone(), spec.clone(), spec];
+        let mut v = serde_json::to_value(&store).unwrap();
+        // A setting with a value no version knows, and a random route
+        // spoiled beyond reading.
+        v["settings"]["time_of_day"] = "Twilight".into();
+        v["random_routes"][1] = "not a route".into();
+        let dir = std::env::temp_dir().join(format!("veloforge-store-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        std::fs::write(&path, v.to_string()).unwrap();
+        let back = Store::load(&path);
+        assert_eq!(back.settings.ftp, 301.0);
+        assert_eq!(back.settings.rider_kg, 71.5);
+        assert_eq!(back.settings.time_of_day, Settings::default().time_of_day);
+        assert_eq!(back.random_routes.len(), 2);
+        let kept = std::fs::read_to_string(dir.join("state.json.bak")).unwrap();
+        assert!(kept.contains("Twilight") && kept.contains("not a route"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

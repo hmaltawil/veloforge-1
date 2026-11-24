@@ -33,6 +33,31 @@ impl Scenery {
         self.spec().label
     }
 
+    /// Read a saved scenery, as a field's `deserialize_with`: one this
+    /// version does not know (saved by a newer one) reads as farmland and
+    /// hills, so the route keeps everything else rather than everything
+    /// saved with it becoming unreadable.
+    pub fn or_hills<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Scenery, D::Error> {
+        let v = serde_json::Value::deserialize(d)?;
+        Ok(Scenery::deserialize(&v).unwrap_or_else(|_| {
+            eprintln!("veloforge: unknown scenery {v}; using farmland and hills");
+            Scenery::Hills
+        }))
+    }
+
+    /// `or_hills` for a scenery that may be unset.
+    pub fn maybe_or_hills<'de, D: serde::Deserializer<'de>>(
+        d: D,
+    ) -> Result<Option<Scenery>, D::Error> {
+        let v = Option::<serde_json::Value>::deserialize(d)?;
+        Ok(v.map(|v| {
+            Scenery::deserialize(&v).unwrap_or_else(|_| {
+                eprintln!("veloforge: unknown scenery {v}; using farmland and hills");
+                Scenery::Hills
+            })
+        }))
+    }
+
     /// Water at a fixed level beside the road (lake or sea).
     pub fn has_water(self) -> bool {
         self.spec().water != crate::scenery::Water::None
@@ -110,8 +135,8 @@ pub struct GpxRoute {
     pub name: String,
     /// (distance m, elevation m, x m, z m), resampled every STEP metres.
     pub pts: Vec<(f64, f64, f64, f64)>,
-    /// Chosen scenery (hills if unset).
-    #[serde(default)]
+    /// Chosen scenery (hills if unset, or not one this version knows).
+    #[serde(default, deserialize_with = "Scenery::maybe_or_hills")]
     pub scenery: Option<Scenery>,
     /// Loop or point to point (worked out from its ends if unset).
     #[serde(default)]
