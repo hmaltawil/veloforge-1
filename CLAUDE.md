@@ -113,11 +113,22 @@ the Release workflow run and look again a few minutes later.
 
 ## Where things are
 
-- `src/app.rs`: the app, ride screen, menus, command-line arguments
+- `src/app.rs`: the app's state, startup and command-line arguments, the
+  frame loop, top bar, trainer events and ticking the ride; `src/app/`
+  holds the rest of the app, a file per screen or part: `ride_screen.rs`
+  (ride tab, dashboard), `workouts_screen.rs`, `calendar_screen.rs`,
+  `progress_screen.rs`, `history_screen.rs`, `devices_screen.rs`,
+  `settings_ui.rs`, `hud.rs` (glass panels over the 3D view), `windows.rs`
+  (welcome, dialogs), `recording.rs` (finishing, saving, checkpoints,
+  import), `segments.rs` (segments, ghosts, pacer), `sync.rs`
+  (intervals.icu, Strava, updates, phone remote), `widgets.rs` (shared
+  interface pieces), `bench.rs` (`--bench`)
+- `src/scenery.rs`: each scenery's settings (sky, water, land, fields,
+  plants, random routes, simple view), one entry each
 - `src/route.rs`: routes, GPX import and cleaning (`clean_track`)
 - `src/routegen.rs`: random routes
 - `src/gfx/terrain.rs`: land, road bed, placement of trees and objects,
-  terrain windows built off the UI thread
+  each kind of object (`OBJECTS`), terrain windows built off the UI thread
 - `src/gfx/mod.rs`: the renderer (road ribbon, retaining walls, banners)
 - `src/gfx/mountains.rs`: the mountain ranges the land rises into far from
   the roads, and their mesh beyond the distant land (no GL: the Model Lab

@@ -205,7 +205,7 @@ VeloForge is written in Rust with [egui](https://github.com/emilk/egui) for the 
 | `src/activity.rs` | Reading saved rides back (ride details, crash recovery) |
 | `src/gfx/` | OpenGL 3D world: terrain generation, meshes, shaders, renderer (shadow maps, HDR, post-processing) |
 | `src/gfx/body.rs` | The rider: a sculpted body bent by a skeleton |
-| `src/hud.rs` | The glass panels over the 3D view |
+| `src/app/hud.rs` | The glass panels over the 3D view |
 | `src/theme.rs` | Colours, typefaces (Inter, in `assets/fonts/`) and widget styling |
 | `src/world.rs` | Simple software 3D view (fallback), time of day and weather |
 | `src/sound.rs` | Audio cues |
@@ -215,7 +215,7 @@ VeloForge is written in Rust with [egui](https://github.com/emilk/egui) for the 
 | `build.rs` | Gives the Windows `.exe` its icon, name and version |
 | `packaging/linux/` | Builds and tests the Linux `.deb` and `.tar.gz` downloads |
 | `packaging/macos/` | Builds and tests the macOS `.app` in a `.dmg` |
-| `src/app.rs`, `src/settings_ui.rs` | The user interface |
+| `src/app.rs`, `src/app/` | The user interface: the app's state and frame loop, and a file per screen |
 | `src/demo_data.rs` | A made-up season of riding, for the screenshots in `docs/` |
 
 **Screenshots**: the pictures in `docs/` show a made-up rider's season, generated with the app's own ride engine. To make it again:
