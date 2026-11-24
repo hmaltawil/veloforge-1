@@ -420,6 +420,18 @@ struct NearGrid {
     idx: Vec<u32>,
 }
 
+/// A building's view from the road, kept clear of trees: lines to it from
+/// points `from` along the road, and `half` either side of them.
+struct View {
+    at: [f64; 2],
+    /// How far the building stands from the road.
+    depth: f64,
+    from: Vec<[f64; 2]>,
+    half: f64,
+    /// Nothing farther than this from the building is in the view.
+    reach: f64,
+}
+
 pub struct RouteGeo {
     pub route: Route,
     pts: Vec<(f64, f64)>,
@@ -441,6 +453,9 @@ pub struct RouteGeo {
     pads: Vec<(f64, f64, f64, f64)>,
     /// The farm buildings and their gardens' trees, for the whole route.
     farms: Vec<Building>,
+    /// Where the view from the road to a building is kept clear of trees
+    /// (Japan's planting), one for each building.
+    views: Vec<View>,
 }
 
 impl RouteGeo {
@@ -490,6 +505,7 @@ impl RouteGeo {
             },
             pads: Vec::new(),
             farms: Vec::new(),
+            views: Vec::new(),
         };
         // The farms: first where the buildings go on the land as it is, and
         // a level pad for each at the average height of its ground; then
@@ -527,6 +543,49 @@ impl RouteGeo {
                 })
                 .collect();
             geo.farms = geo.farmsteads(everywhere.0, everywhere.1, everywhere.2);
+            // In Japan, a clear view from the road to each building (a
+            // lantern is small enough to see past): no tree between them,
+            // the buildings' own gardens' trees included.
+            if spec.planting == Planting::Japanese {
+                geo.views = geo
+                    .farms
+                    .iter()
+                    .filter(|b| is(b.kind, Group::Building) && b.kind != TORO)
+                    .map(|b| {
+                        // Seen as the rider comes up to it and rides away,
+                        // either way round: lines to it from the road up to
+                        // 160 m before and after.
+                        let near = geo.nearest(b.x, b.z);
+                        let d = near.d;
+                        let from: Vec<[f64; 2]> = (-4..=4)
+                            .map(|k| {
+                                let p = geo.route.at(d + 40.0 * k as f64);
+                                [p.x, p.z]
+                            })
+                            .collect();
+                        let half = 0.7 * b.reach + 3.0;
+                        let reach = from
+                            .iter()
+                            .map(|p| (p[0] - b.x).hypot(p[1] - b.z))
+                            .fold(0.0, f64::max)
+                            + half;
+                        View {
+                            at: [b.x, b.z],
+                            depth: near.dist,
+                            from,
+                            half,
+                            reach,
+                        }
+                    })
+                    .collect();
+                let keep: Vec<bool> = geo
+                    .farms
+                    .iter()
+                    .map(|b| !is(b.kind, Group::Tree) || !geo.hides(b.x, b.z))
+                    .collect();
+                let mut k = keep.iter();
+                geo.farms.retain(|_| *k.next().unwrap());
+            }
         }
         geo
     }
@@ -1434,19 +1493,21 @@ impl RouteGeo {
                 for x in [-3.4, 3.4] {
                     place(TORO, at(x, 22.5), facing, 1.0, 1.4);
                 }
-                // Maples either side of the gate.
-                for x in [-6.5, 6.5] {
+                // Maples either side of the gate, outside the view of it.
+                for x in [-10.5, 10.5] {
                     trees.push((MOMIJI, at(x, 25.0 + 2.0 * rng.next()), 5.0 + rng.next()));
                 }
-                for x in [-9.0, 9.0] {
+                // Cherries beside the pagoda and along the approach, either
+                // side of the view up to it.
+                for x in [-13.5, 13.5] {
                     trees.push((
                         SAKURA,
-                        at(x, back - 6.0 - 4.0 * rng.next()),
+                        at(x, back - 2.0 - 4.0 * rng.next()),
                         7.0 + 1.5 * rng.next(),
                     ));
                     trees.push((
                         SAKURA,
-                        at(x * 0.8, 36.0 + 6.0 * rng.next()),
+                        at(x, 36.0 + 6.0 * rng.next()),
                         6.5 + 1.5 * rng.next(),
                     ));
                 }
@@ -1454,10 +1515,9 @@ impl RouteGeo {
                 let lateral = 26.0 + 24.0 * rng.next();
                 let scale = (0.92 + 0.16 * rng.next()) as f32;
                 place(MINKA, at(0.0, lateral), facing, scale, 11.0);
-                // A tree in the front garden, beyond the azaleas or the
-                // water basin.
-                let x = if rng.next() < 0.5 { -1.0 } else { 1.0 } * (6.0 + 1.2 * rng.next());
-                let front = lateral - 4.0 * scale as f64 - 1.5 - 1.5 * rng.next();
+                // A tree beside the house, off the view of it from the road.
+                let x = if rng.next() < 0.5 { -1.0 } else { 1.0 } * (11.5 + 1.5 * rng.next());
+                let front = lateral - 2.0 + 4.0 * rng.next();
                 let pick = rng.next();
                 let (kind, h) = if pick < 0.5 {
                     (SAKURA, 6.5 + 2.0 * rng.next())
@@ -1481,8 +1541,8 @@ impl RouteGeo {
                 for x in [-3.2, 3.2] {
                     place(TORO, at(x, lateral - 1.5), facing, 0.9, 1.4);
                 }
-                // A maple beside the gate.
-                let x = if rng.next() < 0.5 { -5.5 } else { 5.5 };
+                // A maple beside the gate, off the view of it.
+                let x = if rng.next() < 0.5 { -7.0 } else { 7.0 };
                 trees.push((MOMIJI, at(x, lateral + 1.0), 4.5 + 1.2 * rng.next()));
                 for j in 0..4 {
                     let x = -6.0 + 4.0 * j as f64 + 1.5 * (rng.next() - 0.5);
@@ -1956,6 +2016,30 @@ impl RouteGeo {
             && self.nearest(x, z).side == self.water_side
     }
 
+    /// Whether a tree at `x`, `z` would hide a building from the road: in
+    /// its view (`views`), and not beside or behind it.
+    fn hides(&self, x: f64, z: f64) -> bool {
+        self.in_view(x, z)
+            && !self.views.iter().any(|v| {
+                (x - v.at[0]).hypot(z - v.at[1]) < 20.0 && self.nearest(x, z).dist > v.depth - 3.0
+            })
+    }
+
+    /// Whether `x`, `z` is in the view from the road to a building (`views`).
+    fn in_view(&self, x: f64, z: f64) -> bool {
+        self.views.iter().any(|v| {
+            let b = v.at;
+            (x - b[0]).hypot(z - b[1]) < v.reach
+                && v.from.iter().any(|a| {
+                    let (ab, ap) = ([b[0] - a[0], b[1] - a[1]], [x - a[0], z - a[1]]);
+                    let t = ((ap[0] * ab[0] + ap[1] * ab[1])
+                        / (ab[0] * ab[0] + ab[1] * ab[1]).max(1e-9))
+                    .clamp(0.0, 1.0);
+                    (ap[0] - ab[0] * t).hypot(ap[1] - ab[1] * t) < v.half
+                })
+        })
+    }
+
     /// Whether a tree may be planted at `x`, `z`: on dry land at least
     /// `from_road` from the road, with room for `reach` around it, not in
     /// a field or on a building's ground.
@@ -1973,6 +2057,7 @@ impl RouteGeo {
             && smp.dist >= from_road
             && self.room_to_stand(x, z, reach, ground)
             && !self.in_field(x, z, &smp, ground)
+            && !self.hides(x, z)
             && farms
                 .iter()
                 .all(|b| (x - b.x).powi(2) + (z - b.z).powi(2) >= (b.reach + 2.0).powi(2))
@@ -2775,6 +2860,33 @@ mod tests {
             }
         }
         assert!(checked > 1000, "{checked} things checked");
+    }
+
+    /// In Japan no tree stands between the road and a building: the view of
+    /// each farmhouse, shrine gate and pagoda from the road is clear.
+    #[test]
+    fn no_tree_hides_a_building_from_the_road() {
+        let r = route::builtin()
+            .into_iter()
+            .find(|r| r.scenery == Scenery::Japan)
+            .unwrap();
+        let g = RouteGeo::new(&r);
+        assert!(g.views.len() >= 5, "{} views", g.views.len());
+        let mut checked = 0;
+        for b in g.views.iter().map(|v| v.at) {
+            let w = g.build_window(b[0], b[1], WINDOW_SIZE, WINDOW_VERTS);
+            for (kind, list) in w.instances.iter().enumerate() {
+                if !is(kind, Group::Tree) {
+                    continue;
+                }
+                for i in list.chunks(INSTANCE_STRIDE) {
+                    let (x, z) = (i[0] as f64 + w.ox, w.oz - i[2] as f64);
+                    assert!(!g.hides(x, z), "kind {kind} in a view at ({x:.0}, {z:.0})");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 1000, "{checked} trees checked");
     }
 
     /// Two windows that overlap hold the same trees and objects where they
