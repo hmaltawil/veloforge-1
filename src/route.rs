@@ -969,6 +969,50 @@ pub fn parse_gpx(xml: &str, id: &str, name: &str) -> Result<GpxRoute> {
 mod tests {
     use super::*;
 
+    /// `Scenery::ALL` lists every scenery, once each. The menus and the tests
+    /// go through `ALL`, so a scenery left out of it would be missing from
+    /// both with nothing to say so. Every scenery is taken from the names
+    /// saved routes are read by (serde's list of them), not a list kept by
+    /// hand that could be left out as easily.
+    #[test]
+    fn every_scenery_is_in_the_list_of_them() {
+        use serde::de::{self, Visitor};
+        /// Takes the names of an enum's variants from its `Deserialize`.
+        struct Names<'a>(&'a mut &'static [&'static str]);
+        impl<'de> serde::Deserializer<'de> for Names<'_> {
+            type Error = de::value::Error;
+            fn deserialize_any<V: Visitor<'de>>(self, _: V) -> Result<V::Value, Self::Error> {
+                Err(de::Error::custom("not an enum"))
+            }
+            fn deserialize_enum<V: Visitor<'de>>(
+                self,
+                _: &'static str,
+                variants: &'static [&'static str],
+                _: V,
+            ) -> Result<V::Value, Self::Error> {
+                *self.0 = variants;
+                Err(de::Error::custom("names taken"))
+            }
+            serde::forward_to_deserialize_any! {
+                bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+                bytes byte_buf option unit unit_struct newtype_struct seq tuple
+                tuple_struct map struct identifier ignored_any
+            }
+        }
+        let mut names: &'static [&'static str] = &[];
+        let _ = <Scenery as serde::Deserialize>::deserialize(Names(&mut names));
+        assert!(!names.is_empty(), "no names taken from Scenery");
+        for name in names {
+            let s: Scenery = serde_json::from_str(&format!("\"{name}\"")).unwrap();
+            let listed = Scenery::ALL.iter().filter(|&&a| a == s).count();
+            assert_eq!(
+                listed, 1,
+                "{name} is in Scenery::ALL {listed} times, not once"
+            );
+        }
+        assert_eq!(Scenery::ALL.len(), names.len());
+    }
+
     #[test]
     fn the_grade_is_the_same_on_every_lap() {
         for r in builtin() {

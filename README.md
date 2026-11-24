@@ -222,7 +222,7 @@ VeloForge is written in Rust with [egui](https://github.com/emilk/egui) for the 
 | `src/demo_data.rs` | A made-up season of riding, for the screenshots in `docs/` |
 | `tools/model-lab/` | A web page showing the app's own models and scenery, for looking at changes before they go into the app |
 
-**Adding a scenery**: add it to `Scenery` and to `Scenery::ALL` in `src/route.rs` (saved routes name it; the menus and the tests go through `ALL`), and give it an entry in `src/scenery.rs`, which the compiler insists on. **Adding a kind of object**: give it a number and an entry in `OBJECTS` in `src/gfx/terrain.rs`, and place it where trees and objects are placed; the renderer draws it from its entry, and the ground tests say what they need to know about it.
+**Adding a scenery**: add it to `Scenery` and to `Scenery::ALL` in `src/route.rs` (saved routes name it; the menus and the tests go through `ALL`, and a test fails if it is missing there), and give it an entry in `src/scenery.rs`, which the compiler insists on. **Adding a kind of object**: give it a number and an entry in `OBJECTS` in `src/gfx/terrain.rs`, and place it where trees and objects are placed; the renderer draws it from its entry, and the ground tests say what they need to know about it.
 
 **Screenshots**: the pictures in `docs/` show a made-up rider's season, generated with the app's own ride engine. To make it again:
 
