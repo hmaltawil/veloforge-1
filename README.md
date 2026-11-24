@@ -201,9 +201,11 @@ VeloForge is written in Rust with [egui](https://github.com/emilk/egui) for the 
 | `src/update.rs` | The check for a newer version |
 | `src/route.rs` | Built-in routes (including the hairpin climb) and GPX import |
 | `src/routegen.rs` | Random routes: bends, hills and names from a seed |
+| `src/scenery.rs` | Each scenery's settings in one entry: sky, water, land, fields, fences and walls, what grows, random routes, simple-view colours |
 | `src/segment.rs` | Climbs found on each route, timing and personal records |
 | `src/activity.rs` | Reading saved rides back (ride details, crash recovery) |
 | `src/gfx/` | OpenGL 3D world: terrain generation, meshes, shaders, renderer (shadow maps, HDR, post-processing) |
+| `src/gfx/terrain.rs` | The land and road bed, where trees and objects stand, and each kind of object (`OBJECTS`: its group, size and model) |
 | `src/gfx/body.rs` | The rider: a sculpted body bent by a skeleton |
 | `src/app/hud.rs` | The glass panels over the 3D view |
 | `src/theme.rs` | Colours, typefaces (Inter, in `assets/fonts/`) and widget styling |
@@ -212,11 +214,15 @@ VeloForge is written in Rust with [egui](https://github.com/emilk/egui) for the 
 | `src/charts.rs` | Charts and zone colours |
 | `src/units.rs` | Metric and imperial units |
 | `src/platform.rs` | The few differences between Linux, Windows and macOS |
+| `src/store.rs` | Saved settings, routes and rides, and where they are kept |
 | `build.rs` | Gives the Windows `.exe` its icon, name and version |
 | `packaging/linux/` | Builds and tests the Linux `.deb` and `.tar.gz` downloads |
 | `packaging/macos/` | Builds and tests the macOS `.app` in a `.dmg` |
 | `src/app.rs`, `src/app/` | The user interface: the app's state and frame loop, and a file per screen |
 | `src/demo_data.rs` | A made-up season of riding, for the screenshots in `docs/` |
+| `tools/model-lab/` | A web page showing the app's own models and scenery, for looking at changes before they go into the app |
+
+**Adding a scenery**: add it to `Scenery` and to `Scenery::ALL` in `src/route.rs` (saved routes name it; the menus and the tests go through `ALL`), and give it an entry in `src/scenery.rs`, which the compiler insists on. **Adding a kind of object**: give it a number and an entry in `OBJECTS` in `src/gfx/terrain.rs`, and place it where trees and objects are placed; the renderer draws it from its entry, and the ground tests say what they need to know about it.
 
 **Screenshots**: the pictures in `docs/` show a made-up rider's season, generated with the app's own ride engine. To make it again:
 
