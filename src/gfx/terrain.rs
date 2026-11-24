@@ -6,7 +6,7 @@ use super::fields;
 use super::flora::{Cover, Palette, Spot};
 use super::mountains;
 use crate::route::{Route, STEP};
-use crate::scenery::{Buildings, LandShape, Water};
+use crate::scenery::{Buildings, LandShape, Planting, Water};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
@@ -27,7 +27,7 @@ pub struct Tile {
 pub const INSTANCE_STRIDE: usize = 9;
 
 /// Kinds of scattered object, indexing [`TerrainData::instances`].
-pub const KINDS: usize = 21;
+pub const KINDS: usize = 22;
 pub const PINE: usize = 0;
 pub const BROADLEAF: usize = 1;
 pub const ROCK: usize = 2;
@@ -49,6 +49,7 @@ pub const MINKA: usize = 17;
 pub const TORII: usize = 18;
 pub const TORO: usize = 19;
 pub const PAGODA: usize = 20;
+pub const TEA: usize = 21;
 
 /// How the renderer treats a kind of scattered object.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -83,6 +84,8 @@ pub struct ObjectKind {
     pub reach: Reach,
     /// Its model.
     pub model: fn() -> super::mesh::Mesh,
+    /// How far off it is drawn, if nearer than its group's distance.
+    pub draw_to: Option<f32>,
 }
 
 /// Every kind of scattered object, in the order of the numbers above. A
@@ -95,6 +98,7 @@ pub const OBJECTS: [ObjectKind; KINDS] = {
             group,
             reach,
             model,
+            draw_to: None,
         }
     }
     // Buildings reach up to about 12 m from their middle.
@@ -125,6 +129,13 @@ pub const OBJECTS: [ObjectKind; KINDS] = {
         kind(Group::Building, Reach::Scaled(4.5), japanese::torii),
         kind(Group::Building, Reach::Scaled(1.4), japanese::toro),
         kind(Group::Building, Reach::Scaled(16.0), japanese::pagoda),
+        // Tea fields are many small rows: drawn only nearer.
+        ObjectKind {
+            group: Group::Still,
+            reach: Reach::Fixed(2.2),
+            model: japanese::tea_row,
+            draw_to: Some(300.0),
+        },
     ]
 };
 
@@ -178,6 +189,38 @@ pub(super) const TREE_FOOT: f64 = 0.1;
 pub(super) const BUSH_FOOT: f64 = 0.3;
 pub(super) const ROCK_FOOT: f64 = 0.35;
 pub(super) const BALE_FOOT: f64 = 0.7;
+
+/// A tree's instance and its blob shadow: `kind`, at `rel` (`at` in the
+/// world), `height` and `width` (metres), turned by `turn` (0..1 of a
+/// circle), its shade and its warmth.
+#[allow(clippy::too_many_arguments)]
+fn plant(
+    out: &mut [Vec<f32>; KINDS],
+    shadows: &mut Vec<f32>,
+    kind: usize,
+    (rx, rz): (f32, f32),
+    ground: &dyn Fn(f64, f64) -> f64,
+    (x, z): (f64, f64),
+    height: f64,
+    width: f64,
+    turn: f64,
+    tint: f32,
+    warm: f32,
+) {
+    let foot = lowest(ground, x, z, TREE_FOOT * width) as f32;
+    out[kind].extend_from_slice(&[
+        rx,
+        foot - 0.2,
+        rz,
+        (turn * std::f64::consts::TAU) as f32,
+        width as f32,
+        height as f32,
+        tint * (0.95 + 0.4 * warm),
+        tint * (1.0 + 0.08 * warm),
+        tint * (0.9 - 0.3 * warm),
+    ]);
+    shadows.extend_from_slice(&[rx, ground(x, z) as f32 + 0.08, rz, width as f32 * 0.5]);
+}
 
 /// The lowest the `ground` is under something standing at `x`, `z` with
 /// a base `r` across (radius): its middle and eight points round its edge.
@@ -1327,6 +1370,10 @@ impl RouteGeo {
                 for x in [-3.4, 3.4] {
                     place(TORO, at(x, 22.5), facing, 1.0, 1.4);
                 }
+                // Maples either side of the gate.
+                for x in [-6.5, 6.5] {
+                    trees.push((MOMIJI, at(x, 25.0 + 2.0 * rng.next()), 5.0 + rng.next()));
+                }
                 for x in [-9.0, 9.0] {
                     trees.push((
                         SAKURA,
@@ -1370,6 +1417,9 @@ impl RouteGeo {
                 for x in [-3.2, 3.2] {
                     place(TORO, at(x, lateral - 1.5), facing, 0.9, 1.4);
                 }
+                // A maple beside the gate.
+                let x = if rng.next() < 0.5 { -5.5 } else { 5.5 };
+                trees.push((MOMIJI, at(x, lateral + 1.0), 4.5 + 1.2 * rng.next()));
                 for j in 0..4 {
                     let x = -6.0 + 4.0 * j as f64 + 1.5 * (rng.next() - 0.5);
                     trees.push((
@@ -1813,6 +1863,286 @@ impl RouteGeo {
         true
     }
 
+    /// Whether a tree may be planted at `x`, `z`: on dry land at least
+    /// `from_road` from the road, with room for `reach` around it, not in
+    /// a field or on a building's ground.
+    fn can_plant(
+        &self,
+        x: f64,
+        z: f64,
+        from_road: f64,
+        reach: f64,
+        ground: &dyn Fn(f64, f64) -> f64,
+        farms: &[&Building],
+    ) -> bool {
+        let smp = self.sample(x, z);
+        !smp.water
+            && smp.dist >= from_road
+            && self.room_to_stand(x, z, reach, ground)
+            && !self.in_field(x, z, &smp, ground)
+            && farms
+                .iter()
+                .all(|b| (x - b.x).powi(2) + (z - b.z).powi(2) >= (b.reach + 2.0).powi(2))
+    }
+
+    /// The Japanese countryside's woods, in the cell `gi`, `gj` (at `x`,
+    /// `z`): where the land is wooded and well back from the road, either a
+    /// cedar plantation (trees in rows, of an age, close set) or a broadleaf
+    /// wood with Japanese maples at its edges, as the stand there is.
+    /// Whether the cell is wood (and so done with).
+    #[allow(clippy::too_many_arguments)]
+    fn japanese_woods(
+        &self,
+        (gi, gj): (i64, i64),
+        (x, z): (f64, f64),
+        smp: &Sample,
+        ground: &dyn Fn(f64, f64) -> f64,
+        rel: &dyn Fn(f64, f64) -> (f32, f32),
+        farms: &[&Building],
+        out: &mut [Vec<f32>; KINDS],
+        shadows: &mut Vec<f32>,
+    ) -> bool {
+        if smp.forest < 0.18 {
+            return false;
+        }
+        let s = self.seed;
+        let mut rng = Rng(hash2(gi, gj, s + 4111));
+        let cell = 11.0;
+        let stand = fbm(x / 700.0 + 13.0, z / 700.0 - 5.0, 3, s + 21);
+        if stand > -0.15 {
+            // A plantation: rows 5.5 m apart deep in it, 11 m at its edge;
+            // the trees of a stand all of an age, so near one height.
+            let age = 0.5 + 0.5 * fbm(x / 400.0 - 3.0, z / 400.0 + 9.0, 2, s + 23);
+            let n = if smp.forest > 0.5 { 2 } else { 1 };
+            for a in 0..n {
+                for b in 0..n {
+                    let px =
+                        (gi as f64 + (a as f64 + 0.5) / n as f64) * cell + 0.7 * (rng.next() - 0.5);
+                    let pz =
+                        (gj as f64 + (b as f64 + 0.5) / n as f64) * cell + 0.7 * (rng.next() - 0.5);
+                    if !self.can_plant(px, pz, 16.0, 2.5, ground, farms) {
+                        continue;
+                    }
+                    let height = 17.0 + 9.0 * age + 2.0 * rng.next();
+                    let width = height * 0.42 * (0.9 + 0.2 * rng.next());
+                    let tint = 0.88 + 0.24 * rng.next() as f32;
+                    plant(
+                        out,
+                        shadows,
+                        SUGI,
+                        rel(px, pz),
+                        ground,
+                        (px, pz),
+                        height,
+                        width,
+                        rng.next(),
+                        tint,
+                        0.0,
+                    );
+                }
+            }
+        } else {
+            // A broadleaf wood, thinner, with maples at its edge.
+            if rng.next() > smp.forest * 0.85 + 0.1
+                || !self.can_plant(x, z, 16.0, 3.0, ground, farms)
+            {
+                return true;
+            }
+            let maple = smp.forest < 0.45 && rng.next() < 0.5;
+            let (kind, height, ratio, warm) = if maple {
+                (MOMIJI, 6.0 * (0.8 + 0.4 * rng.next()), 1.3, 0.2)
+            } else {
+                (BROADLEAF, 10.5 * (0.7 + 0.6 * rng.next()), 1.0, 0.7)
+            };
+            let width = height * ratio * (0.85 + 0.3 * rng.next());
+            let tint = 0.8 + 0.4 * rng.next() as f32;
+            let warm = (rng.next() as f32).powi(2) * warm;
+            plant(
+                out,
+                shadows,
+                kind,
+                rel(x, z),
+                ground,
+                (x, z),
+                height,
+                width,
+                rng.next(),
+                tint,
+                warm,
+            );
+        }
+        true
+    }
+
+    /// Along the road in the Japanese countryside: cherry avenues on some
+    /// stretches, a tree each side every 9 m so their crowns meet over the
+    /// verges, and black pines along the lake shore on the water's side.
+    #[allow(clippy::too_many_arguments)]
+    fn japanese_roadside(
+        &self,
+        (x0, z0, size): (f64, f64, f64),
+        ground: &dyn Fn(f64, f64) -> f64,
+        rel: &dyn Fn(f64, f64) -> (f32, f32),
+        farms: &[&Building],
+        out: &mut [Vec<f32>; KINDS],
+        shadows: &mut Vec<f32>,
+    ) {
+        let route = &self.route;
+        let s = self.seed;
+        let step = 9.0;
+        for k in 0..(route.span() / step) as i64 {
+            let d = k as f64 * step;
+            let p = route.at(d);
+            if p.x < x0 - 20.0
+                || p.x > x0 + size + 20.0
+                || p.z < z0 - 20.0
+                || p.z > z0 + size + 20.0
+            {
+                continue;
+            }
+            // Avenues on some 450 m stretches of the road.
+            let avenue = hash2((d / 450.0) as i64, 7, s + 501) % 100 < 45;
+            for side in [-1.0f64, 1.0] {
+                let shore = self.water_level.is_some() && side == self.water_side;
+                let mut rng = Rng(hash2(k, side as i64, s + 503));
+                let (kind, lateral, height, ratio) = if shore {
+                    if k % 2 != 0 || rng.next() < 0.3 {
+                        continue;
+                    }
+                    (
+                        KUROMATSU,
+                        9.6 + 2.5 * rng.next(),
+                        6.5 + 3.0 * rng.next(),
+                        1.1,
+                    )
+                } else if avenue {
+                    (
+                        SAKURA,
+                        10.0 + 0.6 * rng.next(),
+                        7.0 + 1.2 * rng.next(),
+                        1.35,
+                    )
+                } else {
+                    continue;
+                };
+                let (x, z) = (
+                    p.x + side * lateral * p.heading.cos(),
+                    p.z - side * lateral * p.heading.sin(),
+                );
+                if x < x0 || x > x0 + size || z < z0 || z > z0 + size {
+                    continue;
+                }
+                if !self.can_plant(x, z, 9.0, 2.5, ground, farms) {
+                    continue;
+                }
+                let width = height * ratio * (0.92 + 0.16 * rng.next());
+                let tint = 0.92 + 0.16 * rng.next() as f32;
+                plant(
+                    out,
+                    shadows,
+                    kind,
+                    rel(x, z),
+                    ground,
+                    (x, z),
+                    height,
+                    width,
+                    rng.next(),
+                    tint,
+                    0.0,
+                );
+            }
+        }
+    }
+
+    /// Tea fields: here and there on a gentle slope near the road, a field
+    /// of clipped rows following the contour, 1.9 m apart, laid end to end.
+    fn tea_fields(
+        &self,
+        (x0, z0, size): (f64, f64, f64),
+        ground: &dyn Fn(f64, f64) -> f64,
+        rel: &dyn Fn(f64, f64) -> (f32, f32),
+        farms: &[&Building],
+        out: &mut Vec<f32>,
+    ) {
+        let s = self.seed;
+        let estate = 150.0;
+        let (ei0, ej0) = (
+            (x0 / estate).floor() as i64 - 1,
+            (z0 / estate).floor() as i64 - 1,
+        );
+        let (ei1, ej1) = (
+            ((x0 + size) / estate).floor() as i64 + 1,
+            ((z0 + size) / estate).floor() as i64 + 1,
+        );
+        for ej in ej0..=ej1 {
+            for ei in ei0..=ei1 {
+                let mut rng = Rng(hash2(ei, ej, s + 777));
+                if rng.next() > 0.3 {
+                    continue;
+                }
+                let cx = (ei as f64 + 0.25 + 0.5 * rng.next()) * estate;
+                let cz = (ej as f64 + 0.25 + 0.5 * rng.next()) * estate;
+                let smp = self.sample(cx, cz);
+                if smp.water || smp.dist < 30.0 || smp.dist > 170.0 || smp.forest > 0.3 {
+                    continue;
+                }
+                let e = 3.0;
+                let gx = (self.sample(cx + e, cz).h - self.sample(cx - e, cz).h) / (2.0 * e);
+                let gz = (self.sample(cx, cz + e).h - self.sample(cx, cz - e).h) / (2.0 * e);
+                let slope = gx.hypot(gz);
+                if !(0.03..=0.16).contains(&slope) {
+                    continue;
+                }
+                // Rows along the contour (`u`), one after another up the
+                // slope (`v`).
+                let (ux, uz) = (-gz / slope, gx / slope);
+                let (vx, vz) = (gx / slope, gz / slope);
+                let rot = uz.atan2(ux) as f32;
+                let (ra, rb) = (38.0 + 14.0 * rng.next(), 26.0 + 10.0 * rng.next());
+                let rows = (rb / 1.9) as i64;
+                let lengths = (ra / 4.05) as i64;
+                for r in -rows..=rows {
+                    for l in -lengths..=lengths {
+                        let (u, v) = (l as f64 * 4.05, r as f64 * 1.9);
+                        // An oval field with a ragged edge.
+                        let edge = 1.0 + 0.12 * (hash2(r, l, s + 779) % 100) as f64 / 100.0;
+                        if (u / ra).powi(2) + (v / rb).powi(2) > edge {
+                            continue;
+                        }
+                        let (x, z) = (cx + ux * u + vx * v, cz + uz * u + vz * v);
+                        if x < x0 || x > x0 + size || z < z0 || z > z0 + size {
+                            continue;
+                        }
+                        let here = self.sample(x, z);
+                        if here.water || here.dist < 12.0 || here.forest > 0.35 {
+                            continue;
+                        }
+                        if !self.room_to_stand(x, z, 2.2, ground)
+                            || farms.iter().any(|b| {
+                                (x - b.x).powi(2) + (z - b.z).powi(2) < (b.reach + 3.0).powi(2)
+                            })
+                        {
+                            continue;
+                        }
+                        let (rx, rz) = rel(x, z);
+                        let tone = 0.9 + 0.2 * (hash2(l, r, s + 781) % 100) as f32 / 100.0;
+                        out.extend_from_slice(&[
+                            rx,
+                            lowest(ground, x, z, 2.0) as f32 - 0.05,
+                            rz,
+                            rot,
+                            1.0,
+                            1.0,
+                            tone,
+                            tone,
+                            tone,
+                        ]);
+                    }
+                }
+            }
+        }
+    }
+
     fn scatter(
         &self,
         ox: f64,
@@ -1830,6 +2160,7 @@ impl RouteGeo {
         let (gi0, gj0) = ((x0 / cell).floor() as i64, (z0 / cell).floor() as i64);
         let cells = (size / cell).ceil() as i64;
         let palette = Palette::of(self.route.scenery);
+        let japan = self.route.scenery.spec().planting == Planting::Japanese;
         let farms: Vec<&Building> = self
             .farms
             .iter()
@@ -1856,6 +2187,20 @@ impl RouteGeo {
                     forest: smp.forest,
                     dist: smp.dist,
                 };
+                if japan
+                    && self.japanese_woods(
+                        (gi, gj),
+                        (x, z),
+                        &smp,
+                        ground,
+                        &rel,
+                        &farms,
+                        &mut out,
+                        &mut shadows,
+                    )
+                {
+                    continue;
+                }
                 // Bales lie in mown fields, open and away from the road; with
                 // numbers of their own, so the trees stay where they were.
                 if let Some(b) = self.bale(&palette, gi, gj, x, z, &spot, ground) {
@@ -1886,6 +2231,9 @@ impl RouteGeo {
                 let r = rng.next();
                 let (rx, rz) = rel(x, z);
                 match palette.cover(&spot, r) {
+                    // Japan's open land is left open: its trees are planted
+                    // (`japanese_woods`, `japanese_roadside`).
+                    Some(Cover::Tree) if japan => {}
                     Some(Cover::Tree) => {
                         let t = palette.tree(&spot, || rng.next());
                         let tall = 0.7 + 0.6 * rng.next() + smp.forest * 0.3;
@@ -1950,6 +2298,11 @@ impl RouteGeo {
             }
         }
         self.walls(x0, z0, size, &rel, ground, &mut out[WALL]);
+        if japan {
+            let window = (x0, z0, size);
+            self.japanese_roadside(window, ground, &rel, &farms, &mut out, &mut shadows);
+            self.tea_fields(window, ground, &rel, &farms, &mut out[TEA]);
+        }
         for b in farms {
             let (rx, rz) = rel(b.x, b.z);
             let gh = ground(b.x, b.z) as f32;
@@ -2255,6 +2608,7 @@ mod tests {
             (TORII, japanese::torii, Group::Building),
             (TORO, japanese::toro, Group::Building),
             (PAGODA, japanese::pagoda, Group::Building),
+            (TEA, japanese::tea_row, Group::Still),
         ];
         for (k, model, group) in kinds {
             assert!(
@@ -2463,6 +2817,7 @@ mod tests {
                 ROCK => (0.0, |i| ROCK_FOOT * i[4] as f64),
                 BALE => (0.06, |_| BALE_FOOT),
                 WALL => (0.03, |_| 0.4),
+                TEA => (0.0, |_| 2.0),
                 _ => panic!("kind {k}: say here how it stands on the ground"),
             };
             (k, sunk, foot)

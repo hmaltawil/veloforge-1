@@ -387,6 +387,7 @@ struct FrameData {
     origin: (f64, f64),
     /// What the scenery has (`scenery.rs`): farmland, snow.
     fields: bool,
+    paddies: bool,
     snowy: bool,
     water: f32,
     snow: f32,
@@ -1209,6 +1210,7 @@ impl GpuWorld {
             time: self.time as f32,
             origin,
             fields: route.scenery.spec().fields,
+            paddies: route.scenery.spec().paddies,
             snowy: route.scenery.spec().snow,
             water,
             snow,
@@ -2519,7 +2521,10 @@ impl GlState {
             for inst in list.as_chunks::<INSTANCE_STRIDE>().0 {
                 let rel = sub([inst[0], inst[1], inst[2]], f.cam);
                 let dist = len(rel);
-                if dist > FAR_CULL || (small && dist > SMALL_CULL) {
+                if dist > FAR_CULL
+                    || (small && dist > SMALL_CULL)
+                    || object.draw_to.is_some_and(|d| dist > d)
+                {
                     continue;
                 }
                 // How far it reaches: trees carry their height, buildings
@@ -4141,6 +4146,7 @@ impl GlState {
                 self.common(gl, "terrain", f);
                 let p = self.programs.get_mut("terrain").unwrap();
                 p.i1(gl, "u_fields", f.fields as i32);
+                p.i1(gl, "u_paddies", f.paddies as i32);
                 p.i1(gl, "u_snowy", f.snowy as i32);
                 p.i1(gl, "u_beach", f.sea as i32);
                 p.f1(gl, "u_water", f.water);
@@ -4154,6 +4160,7 @@ impl GlState {
                     self.common(gl, "terrain_far", f);
                     let p = self.programs.get_mut("terrain_far").unwrap();
                     p.i1(gl, "u_fields", f.fields as i32);
+                    p.i1(gl, "u_paddies", f.paddies as i32);
                     p.i1(gl, "u_snowy", f.snowy as i32);
                     p.i1(gl, "u_beach", f.sea as i32);
                     p.f1(gl, "u_water", f.water);
@@ -4579,6 +4586,7 @@ mod tests {
                 // lab compares with; this build's takes the three below.
                 "scenery": Scenery::ALL.iter().position(|&s| s == r.scenery),
                 "fields": r.scenery.spec().fields,
+                "paddies": r.scenery.spec().paddies,
                 "snowy": r.scenery.spec().snow,
                 "origin": [win.ox, win.oz],
                 "eye": rel(eye),

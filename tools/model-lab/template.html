@@ -207,6 +207,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
           <button data-m="25">Pagoda</button>
           <button data-m="23">Shrine gate</button>
           <button data-m="24">Stone lantern</button>
+          <button data-m="26">Tea field</button>
         </div>
         <label class="check"><input id="scale-rider" type="checkbox" checked> Rider beside it, for scale</label>
         <div id="walk" hidden>
@@ -624,6 +625,16 @@ const ROOFS = { 5: [0.55, 0.22, 0.15], 11: [0.4, 0.4, 0.4], 12: [0.45, 0.28, 0.1
 // its own, stepping down a gentle slope, with a gateway; bales lying in a
 // row the field's way, some end to end, of each sort.
 const FIELD_GROUPS = {
+  // Rows of tea as the app lays them: end to end, side by side with a
+  // path between, stepping down a gentle slope.
+  26: () => {
+    const out = [];
+    for (let r = 0; r < 6; r++) for (let n = 0; n < 5; n++) {
+      const tone = 0.9 + 0.2 * (((r * 7 + n * 3) % 10) / 10);
+      out.push(MODEL_AT.x - 10 + n * 4.05, -0.05 - 0.15 * r, MODEL_AT.z - 4 + r * 1.9, 0, 1, 1, tone, tone, tone);
+    }
+    return out;
+  },
   16: () => {
     const out = [], piece = 3.3, rot = 0.0;
     for (let n = 0; n < 9; n++) {
@@ -1084,7 +1095,8 @@ class Forest {
       const set = [];
       for (let t = 0; t < TREE_MODELS.length; t++) {
         const cap = trees[t].length / 9;
-        const far = t === 0 ? 6 : 7;
+        // Conifers far off as the far pine (as the app: pine and cedar).
+        const far = TREE_MODELS[t] === 0 || TREE_MODELS[t] === 20 ? 6 : 7;
         const k = {
           full: dynamicObjects(modelVerts(v, TREE_MODELS[t]), cap, false, v, this.u),
           mid: dynamicObjects(modelVerts(v, midModel(t)), cap, false, v, this.u),
@@ -1638,7 +1650,7 @@ function mtnFrame() {
     if (k === "far" && !mtn.far) continue;
     mtnCommon(gl, mtn.progs[k], sc, vp);
     const p = mtn.progs[k];
-    gl.uniform1i(p.loc("u_scenery"), sc.scenery); gl.uniform1i(p.loc("u_fields"), sc.fields ? 1 : 0); gl.uniform1i(p.loc("u_snowy"), sc.snowy ? 1 : 0); gl.uniform1i(p.loc("u_beach"), sc.sea ? 1 : 0); gl.uniform1f(p.loc("u_water"), sc.water); gl.uniform1f(p.loc("u_snow"), sc.snow); gl.uniform1f(p.loc("u_wet"), 0);
+    gl.uniform1i(p.loc("u_scenery"), sc.scenery); gl.uniform1i(p.loc("u_fields"), sc.fields ? 1 : 0); gl.uniform1i(p.loc("u_paddies"), sc.paddies ? 1 : 0); gl.uniform1i(p.loc("u_snowy"), sc.snowy ? 1 : 0); gl.uniform1i(p.loc("u_beach"), sc.sea ? 1 : 0); gl.uniform1f(p.loc("u_water"), sc.water); gl.uniform1f(p.loc("u_snow"), sc.snow); gl.uniform1f(p.loc("u_wet"), 0);
     gl.uniform1f(p.loc("u_cut"), sc.window.size / 2 - 40);
     draw(b);
   }

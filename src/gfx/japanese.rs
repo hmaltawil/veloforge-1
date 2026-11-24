@@ -21,8 +21,8 @@ const CHERRY_BARK: V3 = [0.085, 0.062, 0.06];
 const BLOSSOM: V3 = [0.6, 0.38, 0.49];
 /// Japanese maple: deep crimson.
 const MOMIJI: V3 = [0.34, 0.035, 0.045];
-const CEDAR_BARK: V3 = [0.16, 0.085, 0.055];
-const CEDAR_GREEN: V3 = [0.03, 0.068, 0.042];
+const CEDAR_BARK: V3 = [0.2, 0.095, 0.06];
+const CEDAR_GREEN: V3 = [0.035, 0.07, 0.036];
 const PINE_BARK: V3 = [0.085, 0.075, 0.07];
 const PINE_NEEDLES: V3 = [0.032, 0.074, 0.036];
 
@@ -34,58 +34,6 @@ fn banded(col: V3, seed: u32) -> impl Fn(usize, usize) -> V3 {
             col,
             band * (0.85 + 0.3 * rnd(seed, ring as u32, side as u32)),
         )
-    }
-}
-
-/// One tier or cushion of foliage made the way the pine's tiers are
-/// (`whorl` in `mesh.rs`): a low cone of branches round `at`, from its
-/// drooping, ragged rim at `y0` up to `y1` over its middle, paler at the
-/// tips and shaded beneath. Closed all round, it leaves no gaps.
-#[allow(clippy::too_many_arguments)]
-fn cushion(
-    m: &mut Mesh,
-    at: [f32; 2],
-    y0: f32,
-    y1: f32,
-    r: f32,
-    sides: usize,
-    col: V3,
-    seed: u32,
-    turn: f32,
-) {
-    let rim = |i: usize| -> (V3, V3, V3) {
-        let i = i % sides;
-        let q = |n: u32| rnd(seed, i as u32, n);
-        let a = (i as f32 + 0.35 * (q(2) - 0.5)) / sides as f32 * std::f32::consts::TAU + turn;
-        let tip = i & 1 == 0;
-        let k = if tip {
-            0.9 + 0.2 * q(1)
-        } else {
-            0.62 + 0.16 * q(1)
-        };
-        let droop = (y1 - y0) * if tip { 0.12 + 0.2 * q(3) } else { 0.04 };
-        let p = [at[0] + a.cos() * r * k, y0 - droop, at[1] + a.sin() * r * k];
-        let n = norm([a.cos() * 0.8, 0.6, a.sin() * 0.8]);
-        let c = if tip {
-            hued(col, 0.2 * q(4), 1.15 + 0.06 * q(4))
-        } else {
-            scale(col, 0.8)
-        };
-        (p, n, c)
-    };
-    let apex = [at[0], y1, at[1]];
-    let under = [at[0], y0 + (y1 - y0) * 0.22, at[1]];
-    for i in 0..sides {
-        let (a, na, ca) = rim(i);
-        let (b, nb, cb) = rim(i + 1);
-        let nt = norm(add(add(na, nb), [0.0, 1.2, 0.0]));
-        m.push(apex, nt, scale(col, 0.7));
-        m.push(a, na, ca);
-        m.push(b, nb, cb);
-        let down = [0.0, -1.0, 0.0];
-        m.push(under, down, scale(col, 0.3));
-        m.push(b, down, scale(col, 0.45));
-        m.push(a, down, scale(col, 0.45));
     }
 }
 
@@ -391,43 +339,102 @@ pub fn momiji() -> Mesh {
     m
 }
 
-/// Unit-height Japanese cedar: a straight, reddish trunk to the top inside
-/// a tall, narrow spire of dark blue-green, built in overlapping tiers the
-/// way the pine is, so its outline is closed and only its tips are ragged.
-/// In stands it clothes the hillsides; drawn about a third as wide as tall.
+/// Unit-height Japanese cedar, as it grows in the plantations that clothe
+/// the hills: a tall, straight, reddish trunk, bare of branches for its
+/// lower third, and above it a narrow cone of soft, rounded tufts, tier on
+/// tier, each a closed, lumpy dome with a flat, shaded underside, so the
+/// crown has no gaps and reads as soft rather than spiky. Drawn about a
+/// third as wide as tall.
 pub fn sugi() -> Mesh {
     let mut m = Mesh::default();
     m.sweep(
         &[
-            ([0.0, 0.0, 0.0], 0.036),
-            ([0.0, 0.03, 0.0], 0.026),
-            ([0.002, 0.4, 0.0], 0.02),
-            ([0.0, 0.75, 0.002], 0.012),
-            ([0.0, 0.97, 0.0], 0.003),
+            ([0.0, 0.0, 0.0], 0.034),
+            ([0.0, 0.025, 0.0], 0.025),
+            ([0.002, 0.35, 0.0], 0.02),
+            ([0.0, 0.7, 0.002], 0.012),
+            ([0.0, 0.96, 0.0], 0.003),
         ],
-        6,
+        7,
         // Bark in long strips: paler and darker by the side, not the ring.
-        |_ring, side| scale(CEDAR_BARK, if side % 2 == 0 { 1.15 } else { 0.8 }),
+        |_ring, side| scale(CEDAR_BARK, if side % 2 == 0 { 1.15 } else { 0.82 }),
     );
     m.mat = MAT_LEAF;
-    let tiers = 16;
+    let tiers = 13;
     for k in 0..tiers {
         let t = k as f32 / (tiers - 1) as f32;
         let q = |n: u32| rnd(97, k as u32, n);
-        let y0 = 0.1 + 0.8 * t + 0.012 * (q(1) - 0.5);
-        let vary = 1.0 + (0.03 + 0.08 * t) * (2.0 * q(2) - 1.0);
-        let r = (0.2 * (1.0 - t).powf(0.95) + 0.035) * vary;
-        let y1 = if k + 1 == tiers {
+        let y = 0.34 + 0.6 * t;
+        let r = (0.17 * (1.0 - t).powf(0.9) + 0.035) * (1.0 + 0.08 * (2.0 * q(2) - 1.0));
+        // A little off the trunk, each tier turned from the last.
+        let a = k as f32 * 2.399_963 + q(4);
+        let off = 0.012 * (1.0 - t);
+        let c = [a.cos() * off, y, a.sin() * off];
+        let col = tinted(hued(
+            CEDAR_GREEN,
+            0.25 * (q(3) - 0.5) + 0.15 * t,
+            0.85 + 0.35 * t,
+        ));
+        needle_dome(&mut m, c, r, (r * 0.55).max(0.07), col, 300 + k as u32);
+    }
+    // The tip.
+    let tip = tinted(hued(CEDAR_GREEN, 0.2, 1.2));
+    needle_dome(&mut m, [0.0, 0.93, 0.0], 0.035, 0.07, tip, 330);
+    m
+}
+
+/// A row of tea bushes, clipped into a long, rounded hedge as the tea
+/// fields are: 4 m long (x), 1.3 m across and a metre high, its top in the
+/// bright green of new leaves, darker down its sides, the clipped surface
+/// a little lumpy. Laid end to end, rows make a field.
+pub fn tea_row() -> Mesh {
+    let mut m = Mesh {
+        mat: MAT_LEAF,
+        ..Default::default()
+    };
+    let (half, w, h) = (2.0f32, 0.65f32, 1.0f32);
+    let (n, arc) = (6usize, 6usize);
+    let fresh = [0.085, 0.19, 0.035];
+    let dark = [0.03, 0.075, 0.025];
+    // The hedge's surface: a rounded arch swept along x, from ground on
+    // one side over the top to ground on the other.
+    let pt = |i: usize, j: usize| -> (V3, V3, V3) {
+        let x = -half + 2.0 * half * i as f32 / n as f32;
+        let a = j as f32 / arc as f32 * std::f32::consts::PI;
+        let lump = if i == 0 || i == n {
             1.0
         } else {
-            y0 + 0.1 - 0.03 * t
+            1.0 + 0.07 * (rnd(41, i as u32, j as u32) - 0.5)
         };
-        let lean = q(6) * std::f32::consts::TAU;
-        let off = 0.008 * (1.0 - t) * q(7);
-        let at = [lean.cos() * off, lean.sin() * off];
-        let col = hued(CEDAR_GREEN, 0.3 * (q(3) - 0.5) + 0.15 * t, 0.8 + 0.45 * t);
-        let turn = k as f32 * 2.399_963 + 0.3 * q(4);
-        cushion(&mut m, at, y0, y1, r, 12, tinted(col), 300 + k as u32, turn);
+        // A flatter, wider top than a half circle, as clipped tea is.
+        let (cz, sy) = (a.cos(), a.sin().max(0.0).powf(0.6));
+        let p = [x, -0.2 + (h + 0.2) * sy * lump, w * cz * lump];
+        let nrm = norm([0.0, sy, cz]);
+        let col = tinted(lerp(dark, fresh, sy.powi(3)));
+        (p, nrm, col)
+    };
+    for i in 0..n {
+        for j in 0..arc {
+            let q = [pt(i, j), pt(i, j + 1), pt(i + 1, j + 1), pt(i + 1, j)];
+            for idx in [0, 2, 1, 0, 3, 2] {
+                let (p, nn, c) = q[idx];
+                m.push(p, nn, c);
+            }
+        }
+    }
+    // Its ends.
+    for (i, s) in [(0usize, -1.0f32), (n, 1.0)] {
+        let x = -half + 2.0 * half * i as f32 / n as f32;
+        let mid = [x, 0.2, 0.0];
+        for j in 0..arc {
+            let (a, b) = (pt(i, j).0, pt(i, j + 1).0);
+            let c = tinted(lerp(dark, fresh, 0.4));
+            if s > 0.0 {
+                m.tri(mid, a, b, c);
+            } else {
+                m.tri(mid, b, a, c);
+            }
+        }
     }
     m
 }

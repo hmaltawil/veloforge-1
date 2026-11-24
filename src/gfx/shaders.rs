@@ -454,6 +454,7 @@ pub const TERRAIN_FS: &str = r#"
 // What the scenery has (`scenery.rs`): farmland, snow and rock above a
 // snow line, beaches by the sea.
 uniform int u_fields;
+uniform int u_paddies;
 uniform int u_snowy;
 uniform int u_beach;
 uniform float u_water;   // water level, or a large negative number
@@ -507,6 +508,8 @@ void main() {
     float far_off = smoothstep(600.0, 2000.0, dcam);
     grass = mix(grass, far_meadow(grass), far_off);
     vec3 col = grass;
+    // How much of here is the open water of a flooded paddy.
+    float paddy = 0.0;
 
     if (u_fields != 0) {
         // Farmland: a patchwork of fields with crop rows and hedges.
@@ -528,6 +531,28 @@ void main() {
         crop *= rows * (0.86 + 0.28 * n2);
         float edge = min(min(f.x, 1.0 - f.x) * 150.0, min(f.y, 1.0 - f.y) * 105.0);
         crop = mix(vec3(0.028, 0.065, 0.014) * (0.7 + 0.6 * n3), crop, smoothstep(1.5, 4.5, edge));
+        if (u_paddies != 0) {
+            // Rice paddies: each field terraced into paddies about 30 m by
+            // 35 m between low grassy banks; most flooded for planting,
+            // mirroring the sky, rows of seedlings showing close by; some
+            // already green with young rice.
+            vec2 pq = q * vec2(5.0, 3.0);
+            vec2 pf = fract(pq);
+            float pid = hash12(floor(pq) + 7.1);
+            float bank = min(min(pf.x, 1.0 - pf.x) * 30.0, min(pf.y, 1.0 - pf.y) * 35.0);
+            float flooded = pid < 0.72 ? 1.0 : 0.0;
+            float seedlings = 0.5 + 0.5 * sin(dot(w, vec2(0.34, 0.94)) * 18.0);
+            vec3 mud = vec3(0.035, 0.045, 0.035) * (0.85 + 0.3 * n3);
+            vec3 rice = vec3(0.07, 0.17, 0.03) * (0.85 + 0.3 * n2);
+            vec3 sown = mix(mud, rice, flooded > 0.5 ? 0.35 * seedlings * near : 1.0);
+            vec3 banks = vec3(0.06, 0.12, 0.03) * (0.75 + 0.5 * n3);
+            float on_bank = 1.0 - smoothstep(0.5, 1.1, bank);
+            crop = mix(sown, banks, on_bank);
+            // Inside a field, as the patchwork's crops are.
+            float field = id < 0.74 ? smoothstep(1.5, 4.5, edge) : 0.0;
+            paddy = mask * field * flooded * (1.0 - on_bank) * (1.0 - 0.45 * seedlings * near);
+            crop = id < 0.74 ? crop : grass;
+        }
         col = mix(col, crop, mask);
     }
     // Forest floor: needles, moss and leaf litter.
@@ -607,6 +632,15 @@ void main() {
     vec3 view = normalize(u_cam - v_pos);
     vec3 hv = normalize(view + u_sun);
     lit += u_sun_col * vis * gloss * 0.35 * pow(max(dot(nb, hv), 0.0), 24.0);
+    if (paddy > 0.0) {
+        // The paddy's still water mirrors the sky, more as you look along
+        // it, and the sun glints on it.
+        float fres = 0.2 + 0.8 * pow(1.0 - max(view.y, 0.0), 4.0);
+        // Muddy, shallow water: the sky's colour, darkened and greened.
+        vec3 mirror = sky_color(reflect(-view, vec3(0.0, 1.0, 0.0))) * vec3(0.6, 0.68, 0.64);
+        lit = mix(lit, mirror, paddy * fres * 0.85);
+        lit += u_sun_col * vis * paddy * 0.6 * pow(max(dot(vec3(0.0, 1.0, 0.0), hv), 0.0), 120.0);
+    }
     frag = out_col(apply_fog(lit, v_pos));
 }
 "#;

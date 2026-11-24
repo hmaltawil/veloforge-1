@@ -27,6 +27,9 @@ pub struct Spec {
     /// Farmland: the ground painted as a patchwork of fields (kept clear of
     /// trees, bushes and rocks).
     pub fields: bool,
+    /// Its fields are rice paddies: terraces flooded in spring, mirroring
+    /// the sky, between low earth banks (else crops and pasture).
+    pub paddies: bool,
     /// Wooden fences along the road: on both sides, or with water beside
     /// the road only on the land side (like the dry-stone walls).
     pub fences: bool,
@@ -35,6 +38,7 @@ pub struct Spec {
     pub walled: Range<u64>,
     pub plants: Plants,
     pub buildings: Buildings,
+    pub planting: Planting,
     pub look: Look,
     pub routes: RouteStyle,
     /// The simple 3D view (no detailed graphics).
@@ -137,6 +141,18 @@ pub enum Tree {
     BlackPine,
 }
 
+/// How the trees are planted.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Planting {
+    /// Where the land suits them, the kinds mixed by their shares.
+    Natural,
+    /// The Japanese countryside's planting: cedar plantations in stands on
+    /// the hills, broadleaf woods with maples at their edges, cherry
+    /// avenues along stretches of road, black pines along the lake shore,
+    /// tea fields on gentle slopes; open land left open.
+    Japanese,
+}
+
 /// The buildings along the road.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Buildings {
@@ -233,6 +249,7 @@ const HILLS: Spec = Spec {
     mountains: mountains::Kind::Hills,
     snow: false,
     fields: true,
+    paddies: false,
     fences: true,
     walled: 2..3,
     plants: Plants {
@@ -247,6 +264,7 @@ const HILLS: Spec = Spec {
         bales: 0.45,
     },
     buildings: Buildings::Farms,
+    planting: Planting::Natural,
     look: Look {
         sky_top: [44, 108, 196],
         sky_horizon: [176, 204, 228],
@@ -306,6 +324,7 @@ const LAKE: Spec = Spec {
     mountains: mountains::Kind::Lake,
     snow: false,
     fields: true,
+    paddies: false,
     fences: true,
     walled: 2..3,
     plants: Plants {
@@ -320,6 +339,7 @@ const LAKE: Spec = Spec {
         bales: 0.35,
     },
     buildings: Buildings::Farms,
+    planting: Planting::Natural,
     look: Look {
         sky_top: [48, 118, 208],
         sky_horizon: [186, 212, 234],
@@ -381,6 +401,7 @@ const ALPINE: Spec = Spec {
     mountains: mountains::Kind::Alpine,
     snow: true,
     fields: false,
+    paddies: false,
     fences: false,
     walled: 2..3,
     plants: Plants {
@@ -395,6 +416,7 @@ const ALPINE: Spec = Spec {
         bales: 0.0,
     },
     buildings: Buildings::None,
+    planting: Planting::Natural,
     look: Look {
         sky_top: [28, 86, 190],
         sky_horizon: [160, 194, 228],
@@ -458,6 +480,7 @@ const COAST: Spec = Spec {
     mountains: mountains::Kind::Coast,
     snow: false,
     fields: false,
+    paddies: false,
     fences: false,
     walled: 0..2,
     plants: Plants {
@@ -472,6 +495,7 @@ const COAST: Spec = Spec {
         bales: 0.0,
     },
     buildings: Buildings::Farms,
+    planting: Planting::Natural,
     look: Look {
         sky_top: [40, 116, 212],
         sky_horizon: [182, 216, 238],
@@ -534,6 +558,7 @@ const JAPAN: Spec = Spec {
     mountains: mountains::Kind::Lake,
     snow: false,
     fields: true,
+    paddies: true,
     fences: false,
     walled: 0..0,
     plants: Plants {
@@ -550,6 +575,7 @@ const JAPAN: Spec = Spec {
         bales: 0.0,
     },
     buildings: Buildings::Japanese,
+    planting: Planting::Japanese,
     look: Look {
         // A soft spring sky, a little hazy.
         sky_top: [50, 112, 200],
