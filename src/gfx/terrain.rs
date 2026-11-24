@@ -1336,7 +1336,37 @@ impl RouteGeo {
             }
             let d = k as f64 * spacing + rng.next() * 100.0;
             let p = route.at(d);
-            let side = if rng.next() < 0.5 { -1.0 } else { 1.0 };
+            let mut side = if rng.next() < 0.5 { -1.0 } else { 1.0 };
+            // A temple's pagoda stands back from the road: on the first of
+            // a few sites, either side and nearer or further back, that is
+            // dry land off the lake's bank and off the paddies.
+            let mut back = 0.0;
+            if temple {
+                back = 58.0 + 8.0 * rng.next();
+                let land = |x: f64, z: f64| self.sample(x, z).h;
+                let free = |sd: f64, b: f64| {
+                    let (x, z) = (
+                        p.x + sd * b * p.heading.cos(),
+                        p.z - sd * b * p.heading.sin(),
+                    );
+                    let smp = self.sample(x, z);
+                    !smp.water
+                        && smp.dist >= 15.0
+                        && !self.by_the_lake(x, z)
+                        && !self.on_paddies(x, z, &smp, &land)
+                };
+                let sites = [
+                    (side, back),
+                    (side, back + 18.0),
+                    (-side, back),
+                    (-side, back + 18.0),
+                    (side, back - 14.0),
+                    (-side, back - 14.0),
+                ];
+                if let Some(&(sd, b)) = sites.iter().find(|&&(sd, b)| free(sd, b)) {
+                    (side, back) = (sd, b);
+                }
+            }
             let along = (p.heading.sin(), p.heading.cos());
             let away = (side * p.heading.cos(), -side * p.heading.sin());
             let facing = (std::f64::consts::FRAC_PI_2 - p.heading
@@ -1360,7 +1390,12 @@ impl RouteGeo {
                     return;
                 }
                 let smp = self.sample(x, z);
-                if smp.water || smp.dist < 15.0 || self.by_the_lake(x, z) {
+                let land = |x: f64, z: f64| self.sample(x, z).h;
+                if smp.water
+                    || smp.dist < 15.0
+                    || self.by_the_lake(x, z)
+                    || self.on_paddies(x, z, &smp, &land)
+                {
                     return;
                 }
                 // It stands at the top of its ground; not on ground too
@@ -1394,7 +1429,6 @@ impl RouteGeo {
             // Trees: a kind, a spot, and its height (metres).
             let mut trees: Vec<(usize, (f64, f64), f64)> = Vec::new();
             if temple {
-                let back = 58.0 + 8.0 * rng.next();
                 place(PAGODA, at(0.0, back), facing, 1.0, 9.0);
                 place(TORII, at(0.0, 24.0), facing, 1.0, 4.5);
                 for x in [-3.4, 3.4] {
@@ -1464,7 +1498,8 @@ impl RouteGeo {
                     continue;
                 }
                 let smp = self.sample(x, z);
-                if smp.water || smp.dist < 11.0 {
+                let land = |x: f64, z: f64| self.sample(x, z).h;
+                if smp.water || smp.dist < 11.0 || self.on_paddies(x, z, &smp, &land) {
                     continue;
                 }
                 let width = match kind {
@@ -1731,6 +1766,9 @@ impl RouteGeo {
     /// no tree, bush or rock stands there (trees grow along the edges,
     /// as hedgerows).
     fn in_field(&self, x: f64, z: f64, smp: &Sample, ground: &dyn Fn(f64, f64) -> f64) -> bool {
+        if self.route.scenery.spec().paddies {
+            return self.on_paddies(x, z, smp, ground);
+        }
         if !self.route.scenery.spec().fields || smp.forest > 0.2 || smp.dist < 36.0 {
             return false;
         }
@@ -1743,6 +1781,22 @@ impl RouteGeo {
         }
         let field = Field::at(x, z);
         field.crop < 0.74 && field.edge > 5.0
+    }
+
+    /// Whether `x`, `z` is on rice paddies, or so near them that the ground
+    /// may be painted as one (`TERRAIN_FS`): anywhere in a paddy field (not
+    /// only away from its edge: rice fields have no hedgerows), with a
+    /// margin round where the painting fades in by the road, at the
+    /// woods' edge and on slopes. Nothing grows or stands there.
+    fn on_paddies(&self, x: f64, z: f64, smp: &Sample, ground: &dyn Fn(f64, f64) -> f64) -> bool {
+        if smp.forest > 0.36 || smp.dist < 26.0 {
+            return false;
+        }
+        let e = 2.0;
+        let slope = (ground(x + e, z) - ground(x - e, z))
+            .hypot(ground(x, z + e) - ground(x, z - e))
+            / (2.0 * e);
+        slope < 0.4 && Field::at(x, z).crop < 0.74
     }
 
     /// Dry-stone walls along the fields beside the road, piece by piece,
@@ -2215,7 +2269,11 @@ impl RouteGeo {
                             continue;
                         }
                         let here = self.sample(x, z);
-                        if here.water || here.dist < 12.0 || here.forest > 0.35 {
+                        if here.water
+                            || here.dist < 12.0
+                            || here.forest > 0.35
+                            || self.on_paddies(x, z, &here, ground)
+                        {
                             continue;
                         }
                         if !self.room_to_stand(x, z, 2.2, ground)
@@ -2680,6 +2738,44 @@ mod tests {
     use super::*;
     use crate::route;
     use crate::route::Scenery;
+
+    /// Nothing stands on the rice paddies: no tree, bush, rock, tea row
+    /// or building anywhere the ground is painted as a paddy (the land
+    /// shader's mask: flat, open, back from the road, in a paddy field).
+    #[test]
+    fn nothing_stands_on_the_rice_paddies() {
+        let r = route::builtin()
+            .into_iter()
+            .find(|r| r.scenery == Scenery::Japan)
+            .unwrap();
+        let g = RouteGeo::new(&r);
+        let mut checked = 0;
+        for at in [800.0, 4200.0, 9000.0, 12500.0] {
+            let p = r.at(at);
+            let w = g.build_window(p.x, p.z, WINDOW_SIZE, WINDOW_VERTS);
+            let ground = |x: f64, z: f64| w.ground(x, z).unwrap_or_else(|| g.sample(x, z).h);
+            for (kind, list) in w.instances.iter().enumerate() {
+                for i in list.chunks(INSTANCE_STRIDE) {
+                    let (x, z) = (i[0] as f64 + w.ox, w.oz - i[2] as f64);
+                    let smp = g.sample(x, z);
+                    let e = 2.0;
+                    let slope = (ground(x + e, z) - ground(x - e, z))
+                        .hypot(ground(x, z + e) - ground(x, z - e))
+                        / (2.0 * e);
+                    let f = Field::at(x, z);
+                    // Where the shader paints paddy at all.
+                    let painted = slope < 0.395
+                        && smp.forest < 0.35
+                        && smp.dist > 28.0
+                        && f.crop < 0.74
+                        && f.edge > 1.5;
+                    assert!(!painted, "kind {kind} on the paddies at ({x:.0}, {z:.0})");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 1000, "{checked} things checked");
+    }
 
     /// Two windows that overlap hold the same trees and objects where they
     /// overlap: what stands at a spot does not hang on which window was
