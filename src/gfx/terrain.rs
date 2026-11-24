@@ -952,9 +952,16 @@ impl RouteGeo {
             if near.side == self.water_side && near.dist > 9.0 {
                 // Lake shore falls away from the road into the water.
                 let bed = level - 0.6 - smoothstep(14.0, 70.0, near.dist) * 7.0;
+                // The higher the road stands above the lake, the further back
+                // its shore lies: a bank about 1.8 m wide for each metre the
+                // road is more than 4 m up, so a road climbing away from the
+                // water runs above a slope, not along the top of a cliff (the
+                // drawn ground would reach under its edge as a wall). A road
+                // near the water keeps its shore 9 to 16 m off, as before.
+                let bank = 7.0 + 1.8 * (flat - level - 4.0).max(0.0);
                 // (The whole of it, however far from the road: no mountains
                 // rise out of the lake.)
-                let h = flat + (bed - flat) * smoothstep(9.0, 16.0, near.dist);
+                let h = flat + (bed - flat) * smoothstep(9.0, 9.0 + bank, near.dist);
                 return Sample {
                     h,
                     dist: near.dist,
@@ -1353,7 +1360,7 @@ impl RouteGeo {
                     return;
                 }
                 let smp = self.sample(x, z);
-                if smp.water || smp.dist < 15.0 {
+                if smp.water || smp.dist < 15.0 || self.by_the_lake(x, z) {
                     return;
                 }
                 // It stands at the top of its ground; not on ground too
@@ -1534,7 +1541,7 @@ impl RouteGeo {
                     return;
                 }
                 let smp = self.sample(x, z);
-                if smp.water || smp.dist < 15.0 {
+                if smp.water || smp.dist < 15.0 || self.by_the_lake(x, z) {
                     return;
                 }
                 // It stands at the top of its ground, its footing showing
@@ -1884,6 +1891,15 @@ impl RouteGeo {
             }
         }
         true
+    }
+
+    /// Whether `x`, `z` is on a lake's bank, between the road and the
+    /// water: no place for a building (the bank slopes down to the lake,
+    /// and the higher the road, the wider it is).
+    fn by_the_lake(&self, x: f64, z: f64) -> bool {
+        self.route.scenery.spec().water == Water::Lake
+            && self.water_level.is_some()
+            && self.nearest(x, z).side == self.water_side
     }
 
     /// Whether a tree may be planted at `x`, `z`: on dry land at least
@@ -3146,7 +3162,7 @@ mod tests {
                         scenery,
                         km: 20,
                         hills: crate::routegen::Hills::Rolling,
-                        shape: route::Shape::Loop,
+                        shape: crate::route::Shape::Loop,
                     }
                     .route(),
                 );
