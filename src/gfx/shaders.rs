@@ -451,7 +451,11 @@ float mountain_ribs(vec2 w, float y, vec2 t) {
 "#;
 
 pub const TERRAIN_FS: &str = r#"
-uniform int u_scenery;   // 0 hills, 1 lake, 2 alpine, 3 coast
+// What the scenery has (`scenery.rs`): farmland, snow and rock above a
+// snow line, beaches by the sea.
+uniform int u_fields;
+uniform int u_snowy;
+uniform int u_beach;
 uniform float u_water;   // water level, or a large negative number
 uniform float u_snow;    // snow line (alpine)
 uniform float u_wet;
@@ -504,7 +508,7 @@ void main() {
     grass = mix(grass, far_meadow(grass), far_off);
     vec3 col = grass;
 
-    if (u_scenery < 2) {
+    if (u_fields != 0) {
         // Farmland: a patchwork of fields with crop rows and hedges.
         float flat_ground = smoothstep(0.93, 0.985, n.y);
         float open_land = 1.0 - smoothstep(0.12, 0.35, v_forest);
@@ -533,7 +537,7 @@ void main() {
     float rock = smoothstep(0.8, 0.62, n.y);
     float ribs = 0.5;
     vec3 rib_dir = vec3(0.0);
-    if (u_scenery == 2) {
+    if (u_snowy != 0) {
         rock = max(rock, smoothstep(u_snow - 220.0, u_snow - 90.0, v_pos.y + n1 * 70.0) * 0.85);
     }
     if (rock > 0.0) {
@@ -574,13 +578,13 @@ void main() {
         col = mix(col, rockc, rock);
     }
     float gloss = 0.0;
-    if (u_scenery == 2) {
+    if (u_snowy != 0) {
         float snow = smoothstep(u_snow - 15.0, u_snow + 25.0, v_pos.y + n1 * 90.0) * smoothstep(0.5, 0.75, n.y);
         col = mix(col, vec3(0.86, 0.89, 0.95), snow);
         gloss = snow;
     }
     // Sand and mud at the waterline; wide pale beaches by the sea.
-    if (u_scenery == 3) {
+    if (u_beach != 0) {
         float beach = (1.0 - smoothstep(1.5, 3.5, v_pos.y - u_water + n1 * 1.5)) * smoothstep(0.75, 0.9, n.y);
         float ripples = 0.9 + 0.1 * sin(dot(w, vec2(0.9, 0.5)) * 3.0 + n2 * 6.0) * near;
         col = mix(col, vec3(0.52, 0.44, 0.3) * (0.85 + 0.25 * n3) * ripples, beach);

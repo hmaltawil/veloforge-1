@@ -200,12 +200,7 @@ impl RandomRoute {
             };
             (p, vec![0.0; n + 1])
         });
-        let base = match self.scenery {
-            Scenery::Hills => 110.0,
-            Scenery::Lake => 40.0,
-            Scenery::Alpine => 680.0,
-            Scenery::Coast => 18.0,
-        };
+        let base = self.scenery.spec().routes.base_ele;
         for (p, e) in pts.iter_mut().zip(&eles) {
             p.ele = base + e;
         }
@@ -262,12 +257,8 @@ fn turns(rng: &mut Rng, km: f64, scenery: Scenery, n: usize, calm: f64, looped: 
             step_turn * (base + lobes.iter().map(|w| w.at(u)).sum::<f64>())
         })
         .collect();
-    let (per_km, angles, radii) = match scenery {
-        Scenery::Alpine => ((1.3, 2.2), (0.35, 1.9), (40.0, 180.0)),
-        Scenery::Coast => ((0.9, 1.6), (0.25, 1.4), (55.0, 260.0)),
-        Scenery::Lake => ((0.6, 1.1), (0.2, 1.1), (80.0, 380.0)),
-        Scenery::Hills => ((0.8, 1.5), (0.25, 1.4), (60.0, 320.0)),
-    };
+    let style = &scenery.spec().routes;
+    let (per_km, angles, radii) = (style.bends_per_km, style.bend_angles, style.bend_radii);
     let len = n as f64 * STEP;
     let bends = (km * rng.range(per_km.0, per_km.1)).round() as usize;
     for _ in 0..bends {
@@ -593,38 +584,7 @@ pub fn beyond(course: &[RoutePt], scenery: Scenery, seed: u64) -> Vec<RoutePt> {
 
 /// A name for a route, from words that suit its scenery.
 fn name(rng: &mut Rng, scenery: Scenery, looped: bool) -> String {
-    let (first, second): (&[&str], &[&str]) = match scenery {
-        Scenery::Hills => (
-            &[
-                "Oak", "Mill", "Hay", "Thorn", "Fox", "Ash", "Elder", "Bramble", "Kestrel",
-                "Barley", "Hazel", "Lark",
-            ],
-            &[
-                "field", "ford", "hurst", "ley", "wick", "combe", "dale", "bury", "wood",
-            ],
-        ),
-        Scenery::Lake => (
-            &[
-                "Still", "Reed", "Heron", "Willow", "Swan", "Glass", "Silver", "Alder", "Otter",
-                "Rush",
-            ],
-            &["water", "mere", "shore", "haven", "holm", "wick", "bank"],
-        ),
-        Scenery::Alpine => (
-            &[
-                "High", "Eagle", "Ice", "Granite", "Larch", "Cloud", "Chamois", "Grey", "Storm",
-                "Pine",
-            ],
-            &[" Col", " Pass", "horn", " Fell", " Peak", " Alp", " Ridge"],
-        ),
-        Scenery::Coast => (
-            &[
-                "Gull", "Salt", "Cliff", "Tide", "Kelp", "Puffin", "Amber", "Shell", "Wren",
-                "Spray",
-            ],
-            &["head", " Cove", " Point", " Bay", "strand", "ness", "haven"],
-        ),
-    };
+    let (first, second) = scenery.spec().routes.names;
     let a = rng.pick(first);
     // A second word that joins the first cleanly ("Glassshore" does not).
     let mut b = rng.pick(second);

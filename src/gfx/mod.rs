@@ -15,7 +15,7 @@ mod impostor;
 mod lettering;
 mod math;
 mod mesh;
-mod mountains;
+pub(crate) mod mountains;
 mod shaders;
 mod terrain;
 
@@ -193,51 +193,12 @@ fn mix3(a: V3, b: V3, t: f32) -> V3 {
 }
 
 fn look(s: Scenery, sky: Sky) -> Look {
-    let (sky_top, sky_hor, sun_col, fog) = match s {
-        Scenery::Hills => (
-            srgb(44, 108, 196),
-            srgb(176, 204, 228),
-            [1.1, 1.0, 0.86],
-            0.00125,
-        ),
-        Scenery::Lake => (
-            srgb(48, 118, 208),
-            srgb(186, 212, 234),
-            [1.1, 1.01, 0.88],
-            0.0011,
-        ),
-        Scenery::Coast => (
-            srgb(40, 116, 212),
-            srgb(182, 216, 238),
-            [1.12, 1.03, 0.9],
-            0.00095,
-        ),
-        Scenery::Alpine => (
-            srgb(28, 86, 190),
-            srgb(160, 194, 228),
-            [1.16, 1.07, 0.94],
-            // Clear mountain air: the distant land shows, out to the peaks.
-            0.0006,
-        ),
-    };
-    let grass = match s {
-        Scenery::Hills => [[0.036, 0.09, 0.02], [0.08, 0.15, 0.036], [0.16, 0.16, 0.06]],
-        Scenery::Lake => [
-            [0.032, 0.09, 0.024],
-            [0.07, 0.15, 0.04],
-            [0.135, 0.16, 0.058],
-        ],
-        Scenery::Alpine => [
-            [0.032, 0.092, 0.028],
-            [0.072, 0.155, 0.042],
-            [0.125, 0.165, 0.065],
-        ],
-        Scenery::Coast => [
-            [0.05, 0.095, 0.024],
-            [0.11, 0.155, 0.042],
-            [0.21, 0.185, 0.08],
-        ],
-    };
+    let spec = &s.spec().look;
+    let [r, g, b] = spec.sky_top;
+    let sky_top = srgb(r, g, b);
+    let [r, g, b] = spec.sky_horizon;
+    let sky_hor = srgb(r, g, b);
+    let (sun_col, fog, grass) = (spec.sun, spec.fog, spec.grass);
     let mut l = Look {
         sky_top,
         sky_hor,
@@ -423,7 +384,9 @@ struct FrameData {
     look: Look,
     time: f32,
     origin: (f64, f64),
-    scenery: i32,
+    /// What the scenery has (`scenery.rs`): farmland, snow.
+    fields: bool,
+    snowy: bool,
     water: f32,
     snow: f32,
     road: Vec<f32>,
@@ -1092,11 +1055,11 @@ impl GpuWorld {
         rider.extend(lettering.v);
 
         // --- fences along the fields -----------------------------------------
-        let fence_sides: &[f64] = match (route.scenery, self.water_side) {
-            (Scenery::Hills, _) => &[-1.0, 1.0],
-            (Scenery::Lake, w) if w > 0.0 => &[-1.0],
-            (Scenery::Lake, _) => &[1.0],
-            _ => &[],
+        let spec = route.scenery.spec();
+        let fence_sides: &[f64] = if spec.fences {
+            spec.edge_sides(self.water_side)
+        } else {
+            &[]
         };
         let wood = [0.17, 0.125, 0.085];
         for &side in fence_sides {
@@ -1223,7 +1186,7 @@ impl GpuWorld {
             Some(t) => (
                 t.water.map(|w| w as f32).unwrap_or(-1.0e9),
                 // Only the Alps climb above the snow line.
-                if route.scenery == Scenery::Alpine {
+                if route.scenery.spec().snow {
                     t.snow as f32
                 } else {
                     1.0e9
@@ -1244,12 +1207,8 @@ impl GpuWorld {
             look,
             time: self.time as f32,
             origin,
-            scenery: match route.scenery {
-                Scenery::Hills => 0,
-                Scenery::Lake => 1,
-                Scenery::Alpine => 2,
-                Scenery::Coast => 3,
-            },
+            fields: route.scenery.spec().fields,
+            snowy: route.scenery.spec().snow,
             water,
             snow,
             road,
@@ -1276,7 +1235,7 @@ impl GpuWorld {
                     )
                 })
                 .collect(),
-            sea: route.scenery == Scenery::Coast,
+            sea: route.scenery.spec().water == crate::scenery::Water::Sea,
             lamp_pos,
             lamp_dir,
             terrain: upload,
@@ -4216,7 +4175,9 @@ impl GlState {
                 let (vao, count) = (t.vao, t.count);
                 self.common(gl, "terrain", f);
                 let p = self.programs.get_mut("terrain").unwrap();
-                p.i1(gl, "u_scenery", f.scenery);
+                p.i1(gl, "u_fields", f.fields as i32);
+                p.i1(gl, "u_snowy", f.snowy as i32);
+                p.i1(gl, "u_beach", f.sea as i32);
                 p.f1(gl, "u_water", f.water);
                 p.f1(gl, "u_snow", f.snow);
                 gl.bind_vertex_array(Some(vao));
@@ -4227,7 +4188,9 @@ impl GlState {
                     let (fvao, fcount) = (far.vao, far.count);
                     self.common(gl, "terrain_far", f);
                     let p = self.programs.get_mut("terrain_far").unwrap();
-                    p.i1(gl, "u_scenery", f.scenery);
+                    p.i1(gl, "u_fields", f.fields as i32);
+                    p.i1(gl, "u_snowy", f.snowy as i32);
+                    p.i1(gl, "u_beach", f.sea as i32);
                     p.f1(gl, "u_water", f.water);
                     p.f1(gl, "u_snow", f.snow);
                     p.f1(gl, "u_cut", (terrain::WINDOW_SIZE / 2.0) as f32 - 40.0);
@@ -4647,18 +4610,17 @@ mod tests {
                 "name": name,
                 "route": r.id,
                 "km": km,
-                "scenery": match r.scenery {
-                    Scenery::Hills => 0,
-                    Scenery::Lake => 1,
-                    Scenery::Alpine => 2,
-                    Scenery::Coast => 3,
-                },
+                // Its place in the list, for the released land shader the
+                // lab compares with; this build's takes the three below.
+                "scenery": Scenery::ALL.iter().position(|&s| s == r.scenery),
+                "fields": r.scenery.spec().fields,
+                "snowy": r.scenery.spec().snow,
                 "origin": [win.ox, win.oz],
                 "eye": rel(eye),
                 "target": rel(target),
                 "snow": geo.snow_level(),
                 "water": geo.water_level.unwrap_or(-1.0e4),
-                "sea": r.scenery == Scenery::Coast,
+                "sea": r.scenery.spec().water == crate::scenery::Water::Sea,
                 "mountains": {
                     "kind": m.kind as u32,
                     "seed": m.seed.to_string(),

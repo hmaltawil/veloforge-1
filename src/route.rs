@@ -26,17 +26,12 @@ impl Scenery {
     ];
 
     pub fn label(self) -> &'static str {
-        match self {
-            Scenery::Hills => "Farmland and hills",
-            Scenery::Lake => "Lakeside",
-            Scenery::Alpine => "Mountains",
-            Scenery::Coast => "Coast",
-        }
+        self.spec().label
     }
 
     /// Water at a fixed level beside the road (lake or sea).
     pub fn has_water(self) -> bool {
-        matches!(self, Scenery::Lake | Scenery::Coast)
+        self.spec().water != crate::scenery::Water::None
     }
 }
 
@@ -392,12 +387,7 @@ impl Route {
         let ramp = ((a - 9.0) / 90.0).clamp(0.0, 1.0);
         let ramp = ramp * ramp * (3.0 - 2.0 * ramp);
         let s = self.seed as f64 * 0.37 + if lateral > 0.0 { 0.0 } else { 17.0 };
-        let amp = match self.scenery {
-            Scenery::Alpine => 45.0,
-            Scenery::Hills => 22.0,
-            Scenery::Lake => 14.0,
-            Scenery::Coast => 26.0,
-        };
+        let amp = self.scenery.spec().routes.side_hills;
         let hill =
             0.55 + 0.25 * (d / 140.0 + s).sin() + 0.2 * (d / 53.0 + a / 31.0 + s * 2.0).sin();
         road + ramp * amp * hill - (1.0 - ramp) * 0.3 * (a / 9.0).min(1.0)

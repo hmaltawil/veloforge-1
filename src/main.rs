@@ -19,6 +19,7 @@ mod remote;
 mod ride;
 mod route;
 mod routegen;
+mod scenery;
 mod segment;
 mod sound;
 mod store;

@@ -1627,7 +1627,7 @@ function mtnFrame() {
     if (k === "far" && !mtn.far) continue;
     mtnCommon(gl, mtn.progs[k], sc, vp);
     const p = mtn.progs[k];
-    gl.uniform1i(p.loc("u_scenery"), sc.scenery); gl.uniform1f(p.loc("u_water"), sc.water); gl.uniform1f(p.loc("u_snow"), sc.snow); gl.uniform1f(p.loc("u_wet"), 0);
+    gl.uniform1i(p.loc("u_scenery"), sc.scenery); gl.uniform1i(p.loc("u_fields"), sc.fields ? 1 : 0); gl.uniform1i(p.loc("u_snowy"), sc.snowy ? 1 : 0); gl.uniform1i(p.loc("u_beach"), sc.sea ? 1 : 0); gl.uniform1f(p.loc("u_water"), sc.water); gl.uniform1f(p.loc("u_snow"), sc.snow); gl.uniform1f(p.loc("u_wet"), 0);
     gl.uniform1f(p.loc("u_cut"), sc.window.size / 2 - 40);
     draw(b);
   }

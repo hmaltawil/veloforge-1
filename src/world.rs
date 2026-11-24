@@ -187,76 +187,24 @@ struct Palette {
 }
 
 fn palette(s: Scenery) -> Palette {
-    let c = Color32::from_rgb;
-    match s {
-        Scenery::Hills => Palette {
-            sky_top: c(66, 128, 214),
-            sky_horizon: c(186, 216, 240),
-            haze: c(178, 202, 210),
-            grass_a: c(92, 158, 70),
-            grass_b: c(84, 148, 64),
-            road: c(78, 80, 86),
-            shoulder: c(150, 140, 120),
-            mtn_far: c(132, 156, 182),
-            mtn_near: c(98, 134, 112),
-            mtn_top: c(150, 172, 192),
-            tree_a: c(46, 110, 52),
-            tree_b: c(74, 136, 58),
-            trunk: c(98, 70, 46),
-            water: c(60, 120, 170),
-            rock: c(128, 126, 118),
-        },
-        Scenery::Lake => Palette {
-            sky_top: c(84, 146, 222),
-            sky_horizon: c(204, 226, 244),
-            haze: c(190, 212, 224),
-            grass_a: c(110, 168, 76),
-            grass_b: c(102, 160, 70),
-            road: c(84, 86, 92),
-            shoulder: c(190, 176, 140),
-            mtn_far: c(140, 164, 192),
-            mtn_near: c(110, 146, 126),
-            mtn_top: c(166, 186, 206),
-            tree_a: c(54, 120, 60),
-            tree_b: c(90, 150, 66),
-            trunk: c(104, 76, 50),
-            water: c(52, 118, 176),
-            rock: c(140, 136, 126),
-        },
-        Scenery::Coast => Palette {
-            sky_top: c(60, 130, 220),
-            sky_horizon: c(200, 226, 246),
-            haze: c(190, 214, 230),
-            grass_a: c(118, 160, 78),
-            grass_b: c(110, 152, 72),
-            road: c(84, 86, 92),
-            shoulder: c(206, 190, 150),
-            mtn_far: c(150, 176, 200),
-            mtn_near: c(120, 150, 128),
-            mtn_top: c(170, 190, 210),
-            tree_a: c(52, 112, 64),
-            tree_b: c(96, 140, 70),
-            trunk: c(104, 76, 50),
-            water: c(30, 104, 170),
-            rock: c(150, 140, 124),
-        },
-        Scenery::Alpine => Palette {
-            sky_top: c(44, 104, 196),
-            sky_horizon: c(176, 206, 236),
-            haze: c(170, 192, 212),
-            grass_a: c(96, 148, 74),
-            grass_b: c(88, 138, 68),
-            road: c(72, 74, 80),
-            shoulder: c(140, 136, 128),
-            mtn_far: c(118, 136, 162),
-            mtn_near: c(92, 112, 118),
-            mtn_top: c(240, 244, 250),
-            tree_a: c(30, 84, 52),
-            tree_b: c(44, 104, 62),
-            trunk: c(86, 62, 42),
-            water: c(60, 120, 170),
-            rock: c(124, 122, 120),
-        },
+    let p = &s.spec().simple;
+    let c = |[r, g, b]: [u8; 3]| Color32::from_rgb(r, g, b);
+    Palette {
+        sky_top: c(p.sky_top),
+        sky_horizon: c(p.sky_horizon),
+        haze: c(p.haze),
+        grass_a: c(p.grass_a),
+        grass_b: c(p.grass_b),
+        road: c(p.road),
+        shoulder: c(p.shoulder),
+        mtn_far: c(p.mtn_far),
+        mtn_near: c(p.mtn_near),
+        mtn_top: c(p.mtn_top),
+        tree_a: c(p.tree_a),
+        tree_b: c(p.tree_b),
+        trunk: c(p.trunk),
+        water: c(p.water),
+        rock: c(p.rock),
     }
 }
 
@@ -653,11 +601,7 @@ impl World {
 
         // --- distant mountains (a ring at infinity) -----------------------
         let s = route.seed as f64;
-        let alp = match route.scenery {
-            Scenery::Alpine => 2.2,
-            Scenery::Coast => 0.6,
-            _ => 1.0,
-        };
+        let alp = route.scenery.spec().simple.mountains;
         type Layer = (Box<dyn Fn(f64) -> f64>, Color32, Color32);
         let layers: [Layer; 2] = [
             (
@@ -764,7 +708,7 @@ impl World {
                 } else {
                     pal.grass_b
                 };
-                if route.scenery == Scenery::Alpine && lc.abs() > 60.0 {
+                if route.scenery.spec().simple.rocky && lc.abs() > 60.0 {
                     col = lerp(col, pal.rock, 0.45);
                 }
                 // Lambert shading from the quad normal (camera space).
@@ -812,13 +756,7 @@ impl World {
             for k in (k_lo..=k_hi).rev() {
                 for side in [-1i64, 1] {
                     let h = hash(k as u64 ^ (route.seed << 40), side as u64 + 7);
-                    let density = match route.scenery {
-                        Scenery::Alpine => 62,
-                        Scenery::Hills => 48,
-                        Scenery::Lake => 40,
-                        Scenery::Coast => 34,
-                    };
-                    if (h % 100) as u32 >= density {
+                    if h % 100 >= route.scenery.spec().simple.trees {
                         continue;
                     }
                     let lat = side as f64
@@ -839,11 +777,8 @@ impl World {
                 if base[2] < NEAR + 0.5 {
                     continue;
                 }
-                let pine = match route.scenery {
-                    Scenery::Alpine => true,
-                    Scenery::Hills => h % 5 < 2,
-                    Scenery::Lake | Scenery::Coast => h % 4 == 0,
-                };
+                let (every, pines) = route.scenery.spec().simple.pines;
+                let pine = h % every < pines;
                 let height = 6.0 + ((h >> 36) % 90) as f64 / 10.0;
                 self.tree(&mut cv, &cam, base, height, pine, h, &pal, fog(base[2]));
             }

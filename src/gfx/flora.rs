@@ -130,36 +130,19 @@ const BROADLEAF_TREE: TreeKind = TreeKind {
 
 impl Palette {
     pub fn of(scenery: Scenery) -> Palette {
-        // Shares of the trees left after the kinds before them: pines, then
-        // birches, oaks and maples; the rest broadleaves.
-        let (pines, birches, oaks, maples, bushes) = match scenery {
-            Scenery::Alpine => (0.95, 0.3, 0.0, 0.25, 0.02),
-            Scenery::Hills => (0.35, 0.3, 0.35, 0.3, 0.05),
-            Scenery::Lake => (0.45, 0.4, 0.25, 0.35, 0.05),
-            Scenery::Coast => (0.7, 0.15, 0.3, 0.15, 0.07),
-        };
+        let p = &scenery.spec().plants;
         Palette {
             trees: vec![
-                pine(pines),
-                birch(birches),
-                oak(oaks),
-                maple(maples),
+                pine(p.pines),
+                birch(p.birches),
+                oak(p.oaks),
+                maple(p.maples),
                 BROADLEAF_TREE,
             ],
-            bushes,
-            rocks: if scenery == Scenery::Alpine {
-                0.05
-            } else {
-                0.006
-            },
-            farmhouses: scenery != Scenery::Alpine,
-            bales: match scenery {
-                // Of the mown fields near farms; only farmland and lakeside
-                // country has fields.
-                Scenery::Hills => 0.45,
-                Scenery::Lake => 0.35,
-                Scenery::Coast | Scenery::Alpine => 0.0,
-            },
+            bushes: p.bushes,
+            rocks: p.rocks,
+            farmhouses: p.farmhouses,
+            bales: p.bales,
         }
     }
 

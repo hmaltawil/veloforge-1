@@ -5,7 +5,8 @@
 use super::fields;
 use super::flora::{Cover, Palette, Spot};
 use super::mountains;
-use crate::route::{Route, Scenery, STEP};
+use crate::route::{Route, STEP};
+use crate::scenery::{LandShape, Water};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
@@ -260,18 +261,11 @@ impl RouteGeo {
             .map(|w| w[0].0 * w[1].1 - w[1].0 * w[0].1)
             .sum();
         let inside = if area > 0.0 { -1.0 } else { 1.0 };
-        let water_level = match route.scenery {
-            Scenery::Lake if looped => Some(min_ele - 0.8),
-            Scenery::Coast => Some(min_ele - 4.0),
-            _ => None,
-        };
+        let spec = route.scenery.spec();
+        let water_level = spec.water.level(min_ele, looped);
         // A lake fills the inside of a loop; the sea surrounds it (or lies
         // to the left of a point-to-point route).
-        let water_side = match (route.scenery, looped) {
-            (Scenery::Coast, true) => -inside,
-            (Scenery::Coast, false) => -1.0,
-            _ => inside,
-        };
+        let water_side = spec.water.side(inside, looped);
         let grid = NearGrid::build(&pts);
         let mut segs: std::collections::HashMap<(i64, i64), Vec<u32>> = Default::default();
         for (i, &(x, z)) in pts.iter().enumerate() {
@@ -291,12 +285,7 @@ impl RouteGeo {
             max_ele,
             seed: route.seed,
             mountains: mountains::Params {
-                kind: match route.scenery {
-                    Scenery::Hills => mountains::Kind::Hills,
-                    Scenery::Lake => mountains::Kind::Lake,
-                    Scenery::Alpine => mountains::Kind::Alpine,
-                    Scenery::Coast => mountains::Kind::Coast,
-                },
+                kind: spec.mountains,
                 seed: route.seed,
                 min_ele,
                 max_ele,
@@ -740,7 +729,8 @@ impl RouteGeo {
         let forest_noise = fbm(x / 650.0 + 31.0, z / 650.0 - 7.0, 4, s + 5);
         let mut forest = smoothstep(-0.05, 0.3, forest_noise) * smoothstep(16.0, 40.0, near.dist);
 
-        if let (Some(level), Scenery::Coast) = (self.water_level, self.route.scenery) {
+        let spec = self.route.scenery.spec();
+        if let (Some(level), Water::Sea) = (self.water_level, spec.water) {
             if near.side == self.water_side && near.dist > 8.0 {
                 // A beach where the road is low, a cliff where it runs high.
                 let above = road - level;
@@ -782,29 +772,25 @@ impl RouteGeo {
         // The hills by the road rise with the distance from it, up to where
         // the mountains take over.
         let far = near.dist.min(900.0);
-        let hills = match self.route.scenery {
-            Scenery::Alpine => {
-                let ridge = 1.0 - fbm(x / 800.0, z / 800.0, 5, s).abs();
-                forest *= 1.0
-                    - smoothstep(
-                        self.max_ele + 40.0,
-                        self.max_ele + 140.0,
-                        road + 160.0 * ridge * ridge * t,
-                    );
-                170.0 * ridge * ridge * (0.35 + far / 450.0)
+        let land = &spec.land;
+        let hills = match land.shape {
+            LandShape::Ridged => {
+                let ridge = 1.0 - fbm(x / land.size, z / land.size, 5, s).abs();
+                if spec.snow {
+                    // Forest thins out towards the bare tops.
+                    forest *= 1.0
+                        - smoothstep(
+                            self.max_ele + 40.0,
+                            self.max_ele + 140.0,
+                            road + 160.0 * ridge * ridge * t,
+                        );
+                }
+                land.height * ridge * ridge * (land.near + far / land.growth)
             }
-            Scenery::Hills => {
-                38.0 * (0.4 + 0.6 * (0.5 + 0.5 * fbm(x / 420.0, z / 420.0, 5, s)))
-                    * (0.5 + far / 650.0)
-            }
-            Scenery::Lake => {
-                26.0 * (0.4 + 0.6 * (0.5 + 0.5 * fbm(x / 420.0, z / 420.0, 5, s)))
-                    * (0.5 + far / 700.0)
-            }
-            Scenery::Coast => {
-                // Rugged island hills rising inland.
-                let ridge = 1.0 - fbm(x / 600.0, z / 600.0, 5, s).abs();
-                70.0 * ridge * ridge * (0.3 + far / 500.0)
+            LandShape::Rounded => {
+                land.height
+                    * (0.4 + 0.6 * (0.5 + 0.5 * fbm(x / land.size, z / land.size, 5, s)))
+                    * (land.near + far / land.growth)
             }
         };
         let bumps = fbm(x / 55.0, z / 55.0, 3, s + 9) * 1.8;
@@ -1123,7 +1109,7 @@ impl RouteGeo {
             route_id: self.route.id.clone(),
             water_level: self.water_level,
             snow_level: self.snow_level(),
-            sea: self.route.scenery == Scenery::Coast,
+            sea: self.route.scenery.spec().water == Water::Sea,
         }
     }
 
@@ -1366,10 +1352,7 @@ impl RouteGeo {
     /// no tree, bush or rock stands there (trees grow along the edges,
     /// as hedgerows).
     fn in_field(&self, x: f64, z: f64, smp: &Sample, ground: &dyn Fn(f64, f64) -> f64) -> bool {
-        if !matches!(self.route.scenery, Scenery::Hills | Scenery::Lake)
-            || smp.forest > 0.2
-            || smp.dist < 36.0
-        {
+        if !self.route.scenery.spec().fields || smp.forest > 0.2 || smp.dist < 36.0 {
             return false;
         }
         let e = 2.0;
@@ -1398,16 +1381,8 @@ impl RouteGeo {
         out: &mut Vec<f32>,
     ) {
         let route = &self.route;
-        let sides: &[f64] = match route.scenery {
-            Scenery::Hills | Scenery::Alpine => &[-1.0, 1.0],
-            Scenery::Lake | Scenery::Coast => {
-                if self.water_side > 0.0 {
-                    &[-1.0]
-                } else {
-                    &[1.0]
-                }
-            }
-        };
+        let spec = route.scenery.spec();
+        let sides = spec.edge_sides(self.water_side);
         const STRETCH: f64 = 140.0;
         const LATERAL: f64 = 8.8;
         let piece = fields::WALL_PIECE as f64;
@@ -1425,10 +1400,7 @@ impl RouteGeo {
         for &side in sides {
             for k in 0..stretches {
                 let pick = super::terrain_hash(k, side as i64, route.seed) % 5;
-                let walled = match route.scenery {
-                    Scenery::Coast => pick < 2,
-                    _ => pick == 2,
-                };
+                let walled = spec.walled.contains(&pick);
                 let (s0, s1) = (
                     k as f64 * STRETCH,
                     ((k + 1) as f64 * STRETCH).min(route.span()),
@@ -1954,6 +1926,7 @@ impl Worker {
 mod tests {
     use super::*;
     use crate::route;
+    use crate::route::Scenery;
 
     /// The distant land rises into the mountains with no cliffs: once a
     /// step of 300 m stood 1.5 km from the start of a climb, where the land
@@ -2681,6 +2654,7 @@ mod survey {
 mod survey_many {
     use super::*;
     use crate::route;
+    use crate::route::Scenery;
 
     fn gpx(pts: &[(f64, f64, f64)]) -> String {
         let mut xml = String::from("<gpx><trk><trkseg>");
