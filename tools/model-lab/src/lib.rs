@@ -16,6 +16,11 @@ mod buildings;
 mod fields;
 #[path = "../../../src/gfx/impostor.rs"]
 mod impostor;
+// The Japanese scenery's trees and buildings (build.sh sets lab_japanese
+// when the code has them).
+#[cfg(lab_japanese)]
+#[path = "../../../src/gfx/japanese.rs"]
+mod japanese;
 #[path = "../../../src/gfx/math.rs"]
 mod math;
 #[path = "../../../src/gfx/mesh.rs"]
@@ -201,7 +206,9 @@ pub extern "C" fn joints_ptr() -> *const f32 {
 /// Build one of the scenery models: 0 pine, 1 broadleaf, 2 birch, 3 bush,
 /// 4 rock, 5 house, 6 far pine, 7 far broadleaf, 11 barn, 12 shed,
 /// 13 two-storey house, 14 oak, 15 maple, 16 a piece of stone wall,
-/// 17 a bale. Returns the float count.
+/// 17 a bale, 18 cherry, 19 Japanese maple, 20 Japanese cedar, 21 black
+/// pine, 22 thatched farmhouse, 23 shrine gate, 24 stone lantern. Returns
+/// the float count.
 #[no_mangle]
 pub extern "C" fn model(kind: u32) -> u32 {
     LAB.with(|l| {
@@ -246,6 +253,20 @@ pub extern "C" fn model(kind: u32) -> u32 {
             16 => fields::stone_wall(),
             #[cfg(lab_fields)]
             17 => fields::hay_bale(),
+            #[cfg(lab_japanese)]
+            18 => japanese::sakura(),
+            #[cfg(lab_japanese)]
+            19 => japanese::momiji(),
+            #[cfg(lab_japanese)]
+            20 => japanese::sugi(),
+            #[cfg(lab_japanese)]
+            21 => japanese::kuromatsu(),
+            #[cfg(lab_japanese)]
+            22 => japanese::minka(),
+            #[cfg(lab_japanese)]
+            23 => japanese::torii(),
+            #[cfg(lab_japanese)]
+            24 => japanese::toro(),
             _ => mesh::birch(),
         };
         l.model = m.v;
@@ -279,7 +300,7 @@ pub extern "C" fn model_ptr() -> *const f32 {
 }
 
 /// Make the card pictures of tree `kind` (0 pine, 1 broadleaf, 2 birch,
-/// 3 oak, 4 maple) as
+/// 3 oak, 4 maple, 5 cherry, 6 Japanese maple, 7 cedar, 8 black pine) as
 /// the app does (`impostor::bake`). Returns the number of mipmap levels;
 /// `card_size`, `card_albedo`, `card_normal` and `card_depth` give each.
 #[no_mangle]
@@ -293,6 +314,14 @@ pub extern "C" fn card_bake(kind: u32) -> u32 {
             3 => mesh::oak(),
             #[cfg(lab_oak)]
             4 => mesh::maple(),
+            #[cfg(lab_japanese)]
+            5 => japanese::sakura(),
+            #[cfg(lab_japanese)]
+            6 => japanese::momiji(),
+            #[cfg(lab_japanese)]
+            7 => japanese::sugi(),
+            #[cfg(lab_japanese)]
+            8 => japanese::kuromatsu(),
             _ => mesh::birch(),
         };
         let a = impostor::bake(&m.v);

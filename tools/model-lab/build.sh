@@ -12,6 +12,7 @@ if [ -f "$here/../../src/gfx/buildings.rs" ]; then now_cfg="--cfg lab_buildings"
 if grep -q "pub fn oak" "$here/../../src/gfx/mesh.rs"; then now_cfg="$now_cfg --cfg lab_oak"; fi
 if [ -f "$here/../../src/gfx/fields.rs" ]; then now_cfg="$now_cfg --cfg lab_fields"; fi
 if [ -f "$here/../../src/gfx/mountains.rs" ]; then now_cfg="$now_cfg --cfg lab_mountains"; fi
+if [ -f "$here/../../src/gfx/japanese.rs" ]; then now_cfg="$now_cfg --cfg lab_japanese"; fi
 RUSTFLAGS="$now_cfg" cargo build --release --target wasm32-unknown-unknown --quiet
 wasm="$here/target/wasm32-unknown-unknown/release/model_lab.wasm"
 # The released models too (main's model code with this page's exports), so

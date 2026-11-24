@@ -321,9 +321,9 @@ pub(super) fn rnd(a: u32, b: u32, c: u32) -> f32 {
 /// The crown of a tree: where it is and how far it reaches. Foliage is
 /// shaded as one soft volume around it.
 #[derive(Clone, Copy)]
-struct Crown {
-    c: V3,
-    r: f32,
+pub(super) struct Crown {
+    pub(super) c: V3,
+    pub(super) r: f32,
 }
 
 impl Mesh {
@@ -393,7 +393,12 @@ impl Mesh {
     /// A trunk or limb: one tube swept along `path` (points and radii), its
     /// rings shared at every bend so it never gaps, with each vertex's
     /// colour from `col(ring, side)`.
-    fn sweep(&mut self, path: &[(V3, f32)], sides: usize, col: impl Fn(usize, usize) -> V3) {
+    pub(super) fn sweep(
+        &mut self,
+        path: &[(V3, f32)],
+        sides: usize,
+        col: impl Fn(usize, usize) -> V3,
+    ) {
         if path.len() < 2 {
             return;
         }
@@ -445,7 +450,7 @@ impl Mesh {
     /// own mass, so the masses read as separate volumes, and shaded by its
     /// place in the `whole` crown, darker inside and below.
     #[allow(clippy::too_many_arguments)]
-    fn leaf_mass(
+    pub(super) fn leaf_mass(
         &mut self,
         c: V3,
         r: V3,
@@ -572,7 +577,7 @@ impl Mesh {
     }
 
     /// A faceted lump of stone.
-    fn boulder(&mut self, c: V3, r: V3, rings: usize, segs: usize, col: V3, seed: u32) {
+    pub(super) fn boulder(&mut self, c: V3, r: V3, rings: usize, segs: usize, col: V3, seed: u32) {
         let pt = |i: usize, j: usize| -> V3 {
             let j = if i == 0 || i == rings { 0 } else { j % segs };
             let th = i as f32 / rings as f32 * std::f32::consts::PI;
@@ -605,7 +610,7 @@ const LEAF_GREEN: V3 = [0.068, 0.142, 0.036];
 
 /// `col` with its hue nudged: towards yellow for `h` > 0, towards blue-green
 /// for `h` < 0, and its brightness scaled by `b`.
-fn hued(col: V3, h: f32, b: f32) -> V3 {
+pub(super) fn hued(col: V3, h: f32, b: f32) -> V3 {
     [
         col[0] * b * (1.0 + 0.35 * h),
         col[1] * b * (1.0 + 0.06 * h),
@@ -941,7 +946,7 @@ const MAPLE_GREEN: V3 = [0.078, 0.158, 0.036];
 
 /// Bark that is rough: each vertex a little lighter or darker, so the
 /// furrows show even from afar.
-fn rough(col: V3, seed: u32) -> impl Fn(usize, usize) -> V3 {
+pub(super) fn rough(col: V3, seed: u32) -> impl Fn(usize, usize) -> V3 {
     move |ring, side| scale(col, 0.78 + 0.4 * rnd(seed, ring as u32, side as u32))
 }
 

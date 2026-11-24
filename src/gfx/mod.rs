@@ -12,6 +12,10 @@ mod buildings;
 mod fields;
 mod flora;
 mod impostor;
+// The Japanese scenery's models: shown in the Model Lab before they go into
+// the app.
+#[allow(dead_code)]
+mod japanese;
 mod lettering;
 mod math;
 mod mesh;
