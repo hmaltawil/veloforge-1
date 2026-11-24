@@ -395,12 +395,24 @@ pub extern "C" fn mountains_input(floats: u32) -> *mut f32 {
 pub extern "C" fn mountains_build(kind: u32, min_ele: f64, max_ele: f64, water: f64, snow: f64, half: f64, cells: u32) -> u32 {
     use mountains::*;
     let p = Params {
-        kind: [Kind::Hills, Kind::Lake, Kind::Alpine, Kind::Coast][kind as usize],
+        kind: match kind {
+            1 => Kind::Lake,
+            2 => Kind::Alpine,
+            3 => Kind::Coast,
+            // Japan's mountains, in code that has them (build.sh sets
+            // lab_volcano).
+            #[cfg(lab_volcano)]
+            4 => Kind::Japan,
+            _ => Kind::Hills,
+        },
         seed: 0,
         min_ele,
         max_ele,
         water: if water.is_nan() { None } else { Some(water) },
         snow,
+        // The volcano's heights come with the land the page is given.
+        #[cfg(lab_volcano)]
+        volcano: None,
     };
     let seam = seam(half, cells as usize);
     let pts = points(&seam);

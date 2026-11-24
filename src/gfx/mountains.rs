@@ -21,6 +21,9 @@ pub enum Kind {
     Alpine,
     /// Islands and headlands across the sea.
     Coast,
+    /// Green, rounded mountains, and one great volcano rising alone above
+    /// them, snow on its upper slopes.
+    Japan,
 }
 
 /// The mountains around one route.
@@ -35,7 +38,14 @@ pub struct Params {
     pub water: Option<f64>,
     /// The land's snow line (alpine).
     pub snow: f64,
+    /// Where a lone volcano stands (world x, z), if one does.
+    pub volcano: Option<[f64; 2]>,
 }
+
+/// The volcano: how high its summit stands above the valley floors, and
+/// how far from it (m) its slopes reach.
+pub const VOLCANO_HEIGHT: f64 = 2000.0;
+pub const VOLCANO_REACH: f64 = 7500.0;
 
 /// From this far from the nearest road the land starts to rise into the
 /// mountains, and by `FULL` it is all mountain.
@@ -53,7 +63,7 @@ impl Params {
         match self.kind {
             Kind::Alpine => self.min_ele - 80.0,
             Kind::Hills => self.min_ele - 30.0,
-            Kind::Lake => self.water.unwrap_or(self.min_ele) - 15.0,
+            Kind::Lake | Kind::Japan => self.water.unwrap_or(self.min_ele) - 15.0,
             // Open sea between the islands.
             Kind::Coast => self.water.unwrap_or(self.min_ele) - 90.0,
         }
@@ -67,6 +77,7 @@ impl Params {
             Kind::Lake => 1300.0 + 0.8 * climb,
             Kind::Hills => 380.0 + 0.6 * climb,
             Kind::Coast => 420.0 + 0.6 * climb,
+            Kind::Japan => 900.0 + 0.6 * climb,
         }
     }
 
@@ -78,6 +89,8 @@ impl Params {
             Kind::Lake => self.floor() + 0.5 * self.relief(),
             Kind::Hills => 1.0e9,
             Kind::Coast => self.floor() + 0.55 * self.relief(),
+            // Bare volcanic rock above it on the volcano.
+            Kind::Japan => self.floor() + 900.0,
         }
     }
 
@@ -89,6 +102,8 @@ impl Params {
             // Only the highest tops.
             Kind::Lake => self.floor() + 0.8 * self.relief(),
             Kind::Hills | Kind::Coast => 1.0e9,
+            // The volcano's upper half: above every other top.
+            Kind::Japan => self.floor() + 0.55 * VOLCANO_HEIGHT,
         }
     }
 }
@@ -120,6 +135,12 @@ pub fn height(p: &Params, x: f64, z: f64, dist: f64) -> f64 {
             1.0 - (1.0 - b) * (1.0 - b)
         }
         Kind::Coast => ridged(wx / 4500.0, wz / 4500.0, 5, 0.45, s + 4) * 1.15,
+        Kind::Japan => {
+            // Rounded, wooded tops, a little ridged.
+            let b = 0.5 + 0.5 * fbm(wx / 2600.0, wz / 2600.0, 5, s + 4);
+            0.75 * (1.0 - (1.0 - b) * (1.0 - b))
+                + 0.35 * ridged(wx / 6000.0, wz / 6000.0, 4, 0.45, s + 6)
+        }
     };
     let rise = match p.kind {
         // Islands: where the massif mask is low, open sea.
@@ -128,7 +149,24 @@ pub fn height(p: &Params, x: f64, z: f64, dist: f64) -> f64 {
         Kind::Alpine => (0.35 + 0.65 * mass) * shape,
         _ => (0.16 + 0.84 * mass) * shape,
     };
-    p.floor() + p.relief() * env * rise
+    let land = p.floor() + p.relief() * env * rise;
+    match p.volcano {
+        Some(v) => land.max(p.floor() + volcano(x - v[0], z - v[1])),
+        None => land,
+    }
+}
+
+/// The volcano's height above the valley floors, (`dx`, `dz`) from its
+/// summit: a lone cone whose slopes steepen gently towards the top, as
+/// such volcanoes' do, with a shallow crater at its summit.
+pub fn volcano(dx: f64, dz: f64) -> f64 {
+    let r = dx.hypot(dz);
+    if r >= VOLCANO_REACH {
+        return 0.0;
+    }
+    let t = 1.0 - r / VOLCANO_REACH;
+    let crater = 140.0 * (1.0 - smoothstep(0.0, 320.0, r));
+    VOLCANO_HEIGHT * t.powf(1.35) - crater
 }
 
 /// How much forest grows on the mountains at (`x`, `z`), `h` high.
@@ -469,7 +507,33 @@ mod tests {
             max_ele: 1830.0,
             water: None,
             snow: 1980.0,
+            volcano: None,
         }
+    }
+
+    /// The volcano: a lone cone, highest at its summit but for a shallow
+    /// crater, falling evenly away all round to nothing at its foot, with
+    /// slopes steeper towards the top (as Fuji's).
+    #[test]
+    fn the_volcano_rises_to_one_summit_with_a_crater() {
+        let rim = (0..=40)
+            .map(|k| volcano(k as f64 * 20.0, 0.0))
+            .fold(0.0, f64::max);
+        assert!(volcano(0.0, 0.0) < rim, "a crater at the summit");
+        assert!(rim > 0.92 * VOLCANO_HEIGHT);
+        for a in [0.0f64, 1.3, 2.9, 4.4] {
+            let at = |r: f64| volcano(a.cos() * r, a.sin() * r);
+            assert!((at(3000.0) - volcano(3000.0, 0.0)).abs() < 1e-6, "round");
+            let mut last = at(1000.0);
+            for r in (1500..7500).step_by(500) {
+                let h = at(r as f64);
+                assert!(h < last, "falls away at {r} m");
+                last = h;
+            }
+            assert_eq!(at(VOLCANO_REACH + 1.0), 0.0);
+        }
+        let steep = |r: f64| (volcano(r - 50.0, 0.0) - volcano(r + 50.0, 0.0)) / 100.0;
+        assert!(steep(1500.0) > steep(6000.0), "steeper towards the top");
     }
 
     #[test]

@@ -555,7 +555,7 @@ const JAPAN: Spec = Spec {
         near: 0.45,
         growth: 600.0,
     },
-    mountains: mountains::Kind::Lake,
+    mountains: mountains::Kind::Japan,
     snow: false,
     fields: true,
     paddies: true,
@@ -577,11 +577,12 @@ const JAPAN: Spec = Spec {
     buildings: Buildings::Japanese,
     planting: Planting::Japanese,
     look: Look {
-        // A soft spring sky, a little hazy.
+        // A soft spring sky; the air clear enough that the volcano
+        // stands out across the land.
         sky_top: [50, 112, 200],
         sky_horizon: [198, 214, 232],
         sun: [1.12, 1.02, 0.9],
-        fog: 0.00115,
+        fog: 0.00072,
         grass: [
             [0.034, 0.095, 0.03],
             [0.074, 0.16, 0.045],

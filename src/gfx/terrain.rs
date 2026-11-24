@@ -222,6 +222,26 @@ fn plant(
     shadows.extend_from_slice(&[rx, ground(x, z) as f32 + 0.08, rz, width as f32 * 0.5]);
 }
 
+/// Where Japan's volcano stands for a route through `pts`: beyond the
+/// route on a side its seed picks, its summit 7.5 km past the route's
+/// furthest point from its middle, so it rises across the land from much
+/// of the ride and stands wholly in the mountains.
+fn volcano_site(pts: &[(f64, f64)], seed: u64) -> [f64; 2] {
+    let n = pts.len().max(1) as f64;
+    let (cx, cz) = pts
+        .iter()
+        .fold((0.0, 0.0), |(x, z), p| (x + p.0 / n, z + p.1 / n));
+    let reach = pts
+        .iter()
+        .map(|p| (p.0 - cx).hypot(p.1 - cz))
+        .fold(0.0, f64::max);
+    let a = (hash2(17, 23, seed) % 3600) as f64 / 3600.0 * std::f64::consts::TAU;
+    [
+        cx + a.cos() * (reach + 7500.0),
+        cz + a.sin() * (reach + 7500.0),
+    ]
+}
+
 /// The lowest the `ground` is under something standing at `x`, `z` with
 /// a base `r` across (radius): its middle and eight points round its edge.
 /// Set there (and a little lower), no side of it stands over the slope.
@@ -440,6 +460,8 @@ impl RouteGeo {
         // to the left of a point-to-point route).
         let water_side = spec.water.side(inside, looped);
         let grid = NearGrid::build(&pts);
+        let volcano =
+            (spec.mountains == mountains::Kind::Japan).then(|| volcano_site(&pts, route.seed));
         let mut segs: std::collections::HashMap<(i64, i64), Vec<u32>> = Default::default();
         for (i, &(x, z)) in pts.iter().enumerate() {
             segs.entry(((x / SEG_CELL).floor() as i64, (z / SEG_CELL).floor() as i64))
@@ -464,6 +486,7 @@ impl RouteGeo {
                 max_ele,
                 water: water_level,
                 snow: max_ele + SNOW_ABOVE,
+                volcano,
             },
             pads: Vec::new(),
             farms: Vec::new(),
