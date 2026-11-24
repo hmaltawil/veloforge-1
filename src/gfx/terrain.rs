@@ -42,6 +42,120 @@ pub const MAPLE: usize = 10;
 pub const BALE: usize = 11;
 pub const WALL: usize = 12;
 
+/// How the renderer treats a kind of scattered object.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Group {
+    /// Full models close by, cards further out, dissolving from one to the
+    /// other; swaying in the wind.
+    Tree,
+    /// Swaying in the wind; drawn only close by.
+    Bush,
+    /// Farm buildings and houses.
+    Building,
+    /// Small things standing still (rocks, bales, walls); drawn only close
+    /// by.
+    Still,
+}
+
+/// How far an object reaches from its foot, for seeing whether it (or its
+/// shadow) is in view.
+#[derive(Clone, Copy)]
+pub enum Reach {
+    /// Its height (instances carry it).
+    Height,
+    /// This far, times its scale (buildings, modelled in metres).
+    Scaled(f32),
+    /// This far, whatever its size.
+    Fixed(f32),
+}
+
+/// One kind of scattered object: how it is drawn.
+pub struct ObjectKind {
+    pub group: Group,
+    pub reach: Reach,
+    /// Its model.
+    pub model: fn() -> super::mesh::Mesh,
+}
+
+/// Every kind of scattered object, in the order of the numbers above. A
+/// new kind is a number, an entry here, and where it is placed (in
+/// `RouteGeo::scatter` or alongside it); the renderer draws it from this.
+pub const OBJECTS: [ObjectKind; KINDS] = {
+    use super::{buildings, fields, mesh};
+    const fn kind(group: Group, reach: Reach, model: fn() -> mesh::Mesh) -> ObjectKind {
+        ObjectKind {
+            group,
+            reach,
+            model,
+        }
+    }
+    // Buildings reach up to about 12 m from their middle.
+    const BUILT: Reach = Reach::Scaled(12.0);
+    [
+        kind(Group::Tree, Reach::Height, mesh::pine),
+        kind(Group::Tree, Reach::Height, mesh::broadleaf),
+        kind(Group::Still, Reach::Height, mesh::rock),
+        kind(Group::Building, BUILT, buildings::farmhouse),
+        kind(Group::Tree, Reach::Height, mesh::birch),
+        kind(Group::Bush, Reach::Height, mesh::bush),
+        kind(Group::Building, BUILT, buildings::barn),
+        kind(Group::Building, BUILT, buildings::shed),
+        kind(Group::Building, BUILT, buildings::townhouse),
+        kind(Group::Tree, Reach::Height, mesh::oak),
+        kind(Group::Tree, Reach::Height, mesh::maple),
+        kind(Group::Still, Reach::Height, fields::hay_bale),
+        kind(
+            Group::Still,
+            Reach::Fixed(fields::WALL_PIECE * 0.6),
+            fields::stone_wall,
+        ),
+    ]
+};
+
+/// Whether kind `k` is in group `g`.
+pub fn is(k: usize, g: Group) -> bool {
+    OBJECTS[k].group == g
+}
+
+/// How many kinds are in any of `groups` (for sizing the lists below).
+pub const fn count_in(groups: &[Group]) -> usize {
+    let mut n = 0;
+    let mut k = 0;
+    while k < KINDS {
+        if in_groups(k, groups) {
+            n += 1;
+        }
+        k += 1;
+    }
+    n
+}
+
+/// The kinds in any of `groups`, in order; `N` from [`count_in`].
+pub const fn kinds_in<const N: usize>(groups: &[Group]) -> [usize; N] {
+    let mut out = [0; N];
+    let (mut n, mut k) = (0, 0);
+    while k < KINDS {
+        if in_groups(k, groups) {
+            out[n] = k;
+            n += 1;
+        }
+        k += 1;
+    }
+    assert!(n == N, "N does not match the number of kinds");
+    out
+}
+
+const fn in_groups(k: usize, groups: &[Group]) -> bool {
+    let mut i = 0;
+    while i < groups.len() {
+        if OBJECTS[k].group as u8 == groups[i] as u8 {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
 /// How wide, for its size, each kind is where it meets the ground (radius):
 /// a tree's trunk for its width, a bush's base, a rock's, a bale's.
 pub(super) const TREE_FOOT: f64 = 0.1;
@@ -305,7 +419,7 @@ impl RouteGeo {
             // height of their ground, so pads that overlap agree.
             let buildings: Vec<&Building> = first
                 .iter()
-                .filter(|b| [HOUSE, TOWNHOUSE, BARN, SHED].contains(&b.kind))
+                .filter(|b| is(b.kind, Group::Building))
                 .collect();
             let mut yard: std::collections::HashMap<i64, (f64, f64)> = Default::default();
             for b in &buildings {
@@ -1655,7 +1769,7 @@ impl RouteGeo {
             let (rx, rz) = rel(b.x, b.z);
             let gh = ground(b.x, b.z) as f32;
             // Garden trees stand on the ground as drawn, like the rest.
-            let h = if [BROADLEAF, OAK, MAPLE, PINE, BIRCH].contains(&b.kind) {
+            let h = if is(b.kind, Group::Tree) {
                 lowest(ground, b.x, b.z, TREE_FOOT * b.scale.0 as f64) as f32 - 0.2
             } else {
                 b.h as f32
@@ -1928,6 +2042,36 @@ mod tests {
     use crate::route;
     use crate::route::Scenery;
 
+    /// Each kind's number names its own entry in `OBJECTS`: the model there
+    /// is the kind's.
+    #[test]
+    fn object_numbers_match_their_entries() {
+        use super::super::{buildings, fields, mesh};
+        type Model = fn() -> mesh::Mesh;
+        let kinds: [(usize, Model, Group); KINDS] = [
+            (PINE, mesh::pine, Group::Tree),
+            (BROADLEAF, mesh::broadleaf, Group::Tree),
+            (ROCK, mesh::rock, Group::Still),
+            (HOUSE, buildings::farmhouse, Group::Building),
+            (BIRCH, mesh::birch, Group::Tree),
+            (BUSH, mesh::bush, Group::Bush),
+            (BARN, buildings::barn, Group::Building),
+            (SHED, buildings::shed, Group::Building),
+            (TOWNHOUSE, buildings::townhouse, Group::Building),
+            (OAK, mesh::oak, Group::Tree),
+            (MAPLE, mesh::maple, Group::Tree),
+            (BALE, fields::hay_bale, Group::Still),
+            (WALL, fields::stone_wall, Group::Still),
+        ];
+        for (k, model, group) in kinds {
+            assert!(
+                (OBJECTS[k].model)().v == model().v,
+                "kind {k}: another model"
+            );
+            assert!(OBJECTS[k].group == group, "kind {k}: another group");
+        }
+    }
+
     /// The distant land rises into the mountains with no cliffs: once a
     /// step of 300 m stood 1.5 km from the start of a climb, where the land
     /// stopped following the nearest road all at once.
@@ -2043,10 +2187,7 @@ mod tests {
             assert!(farms.len() >= 3, "{}: {} buildings", r.id, farms.len());
             assert!(farms.iter().any(|b| b.kind == BARN), "{}", r.id);
             // The buildings (not the trees in their gardens).
-            for b in farms
-                .iter()
-                .filter(|b| [HOUSE, TOWNHOUSE, BARN, SHED].contains(&b.kind))
-            {
+            for b in farms.iter().filter(|b| is(b.kind, Group::Building)) {
                 let smp = g.sample(b.x, b.z);
                 assert!(
                     smp.dist >= 15.0 && !smp.water,
@@ -2110,17 +2251,18 @@ mod tests {
         let mut on_slopes = 0;
         // How far below the ground each kind is set, and its base's radius.
         type Foot = fn(&[f32]) -> f64;
-        let kinds: [(usize, f64, Foot); 9] = [
-            (PINE, 0.2, |i| TREE_FOOT * i[4] as f64),
-            (BROADLEAF, 0.2, |i| TREE_FOOT * i[4] as f64),
-            (BIRCH, 0.2, |i| TREE_FOOT * i[4] as f64),
-            (OAK, 0.2, |i| TREE_FOOT * i[4] as f64),
-            (MAPLE, 0.2, |i| TREE_FOOT * i[4] as f64),
-            (BUSH, 0.15, |i| BUSH_FOOT * i[4] as f64),
-            (ROCK, 0.0, |i| ROCK_FOOT * i[4] as f64),
-            (BALE, 0.06, |_| BALE_FOOT),
-            (WALL, 0.03, |_| 0.4),
-        ];
+        // (Buildings stand on levelled ground of their own.)
+        let kinds = (0..KINDS).filter(|&k| !is(k, Group::Building)).map(|k| {
+            let (sunk, foot): (f64, Foot) = match k {
+                _ if is(k, Group::Tree) => (0.2, |i| TREE_FOOT * i[4] as f64),
+                BUSH => (0.15, |i| BUSH_FOOT * i[4] as f64),
+                ROCK => (0.0, |i| ROCK_FOOT * i[4] as f64),
+                BALE => (0.06, |_| BALE_FOOT),
+                WALL => (0.03, |_| 0.4),
+                _ => panic!("kind {k}: say here how it stands on the ground"),
+            };
+            (k, sunk, foot)
+        });
         for (kind, sunk, foot) in kinds {
             for inst in w.instances[kind].chunks(INSTANCE_STRIDE) {
                 let (x, z) = (inst[0] as f64 + w.ox, w.oz - inst[2] as f64);
@@ -2198,7 +2340,9 @@ mod tests {
                 let w = g.build_window(p.x, p.z, WINDOW_SIZE, WINDOW_VERTS);
                 let ground = drawn(&w);
                 let world = |inst: &[f32]| (inst[0] as f64 + w.ox, w.oz - inst[2] as f64);
-                for kind in [PINE, BROADLEAF, BIRCH, OAK, MAPLE, BUSH, ROCK, BALE] {
+                // Not buildings (on levelled ground) or walls (following
+                // the road, whatever the slope).
+                for kind in (0..KINDS).filter(|&k| !is(k, Group::Building) && k != WALL) {
                     for inst in w.instances[kind].chunks(INSTANCE_STRIDE) {
                         let (x, z) = world(inst);
                         // Garden trees stand in their gardens.

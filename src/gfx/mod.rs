@@ -27,7 +27,7 @@ use math::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use terrain::{Built, FarData, TerrainData, Worker, INSTANCE_STRIDE, KINDS, TERRAIN_STRIDE};
+use terrain::{Built, FarData, Group, TerrainData, Worker, INSTANCE_STRIDE, KINDS, TERRAIN_STRIDE};
 
 use crate::world::{Scene, Sky, TimeOfDay, Weather};
 
@@ -1663,19 +1663,8 @@ fn bytes_u32(v: &[u32]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, std::mem::size_of_val(v)) }
 }
 
-// The first `KINDS` match the kinds in `terrain`.
-const OBJ_PINE: usize = terrain::PINE;
-const OBJ_BROAD: usize = terrain::BROADLEAF;
-const OBJ_ROCK: usize = terrain::ROCK;
-const OBJ_HOUSE: usize = terrain::HOUSE;
-const OBJ_BIRCH: usize = terrain::BIRCH;
-const OBJ_BUSH: usize = terrain::BUSH;
-const OBJ_BARN: usize = terrain::BARN;
-const OBJ_SHED: usize = terrain::SHED;
-const OBJ_TOWNHOUSE: usize = terrain::TOWNHOUSE;
-const OBJ_OAK: usize = terrain::OAK;
-const OBJ_MAPLE: usize = terrain::MAPLE;
-const OBJ_BALE: usize = terrain::BALE;
+// The first `KINDS` objects are the scattered kinds in `terrain`
+// (`terrain::OBJECTS`), then the renderer's own below.
 /// How far a retaining wall reaches below the road's edge at most.
 const WALL_DEPTH: f32 = 25.0;
 /// The length of a retaining wall's stone blocks along the road.
@@ -1766,8 +1755,6 @@ fn wall_blocks(s0: f64, s1: f64) -> Vec<(f32, f32, i64)> {
     }
     out
 }
-/// Dry-stone walls along the fields, piece by piece.
-const OBJ_WALL: usize = terrain::WALL;
 const OBJ_POST: usize = KINDS;
 const OBJ_PLANK: usize = KINDS + 1;
 const OBJ_RIDER: usize = KINDS + 2;
@@ -1776,8 +1763,8 @@ const OBJ_BROAD_FAR: usize = KINDS + 4;
 const OBJ_REFLECTOR: usize = KINDS + 5;
 /// Each kind of tree, in the order of its cards, its meshes for trees
 /// dissolving between levels and its meshes casting shadows only.
-const TREES: [usize; 5] = [OBJ_PINE, OBJ_BROAD, OBJ_BIRCH, OBJ_OAK, OBJ_MAPLE];
-const TREE_COUNT: usize = TREES.len();
+const TREES: [usize; TREE_COUNT] = terrain::kinds_in(&[Group::Tree]);
+const TREE_COUNT: usize = terrain::count_in(&[Group::Tree]);
 /// The trees' meshes again, for trees dissolving into or out of cards.
 const TREE_FADES: [usize; TREE_COUNT] = run(KINDS + 6);
 /// Trees out of view whose shadow falls into it: drawn only into the shadows.
@@ -1807,16 +1794,18 @@ const fn run<const N: usize>(first: usize) -> [usize; N] {
 }
 /// The full mesh of tree `t` (in the order of `TREES`).
 fn tree_mesh(t: usize) -> mesh::Mesh {
-    [
-        mesh::pine,
-        mesh::broadleaf,
-        mesh::birch,
-        mesh::oak,
-        mesh::maple,
-    ][t]()
+    (terrain::OBJECTS[TREES[t]].model)()
 }
-/// The farm buildings, drawn like the houses.
-const BUILDINGS: [usize; 4] = [OBJ_HOUSE, OBJ_BARN, OBJ_SHED, OBJ_TOWNHOUSE];
+/// Bushes, swaying with the trees.
+const BUSHES: [usize; terrain::count_in(&[Group::Bush])] = terrain::kinds_in(&[Group::Bush]);
+/// The farm buildings and houses.
+const BUILDINGS: [usize; terrain::count_in(&[Group::Building])] =
+    terrain::kinds_in(&[Group::Building]);
+/// Small things standing still: rocks, bales, walls.
+const STILL: [usize; terrain::count_in(&[Group::Still])] = terrain::kinds_in(&[Group::Still]);
+/// Everything standing still, buildings and small things, in kind order.
+const STANDING: [usize; terrain::count_in(&[Group::Building, Group::Still])] =
+    terrain::kinds_in(&[Group::Building, Group::Still]);
 /// Distances where trees change level of detail (`Quality::tree_lod`).
 #[derive(Clone, Copy)]
 struct TreeLod {
@@ -2215,19 +2204,8 @@ impl GlState {
 
             self.road = Some(Self::buffers(gl, &[(3, 0), (2, 3)], 5, &[], None)?);
             self.water = Some(Self::buffers(gl, &[(3, 0)], 3, &[], None)?);
-            let mut meshes: Vec<mesh::Mesh> = (0..KINDS)
-                .map(|kind| match kind {
-                    OBJ_ROCK => mesh::rock(),
-                    OBJ_HOUSE => buildings::farmhouse(),
-                    OBJ_BUSH => mesh::bush(),
-                    OBJ_BARN => buildings::barn(),
-                    OBJ_SHED => buildings::shed(),
-                    OBJ_TOWNHOUSE => buildings::townhouse(),
-                    OBJ_BALE => fields::hay_bale(),
-                    OBJ_WALL => fields::stone_wall(),
-                    tree => tree_mesh(TREES.iter().position(|&k| k == tree).expect("a tree")),
-                })
-                .collect();
+            let mut meshes: Vec<mesh::Mesh> =
+                terrain::OBJECTS.iter().map(|k| (k.model)()).collect();
             meshes.extend([
                 mesh::post(),
                 mesh::plank(),
@@ -2534,7 +2512,9 @@ impl GlState {
         };
         for (kind, list) in self.scattered.iter().enumerate() {
             let tree = TREES.iter().position(|&k| k == kind);
-            let small = matches!(kind, OBJ_BUSH | OBJ_ROCK | OBJ_BALE | OBJ_WALL);
+            let object = &terrain::OBJECTS[kind];
+            let small = matches!(object.group, Group::Bush | Group::Still);
+            let building = object.group == Group::Building;
             for inst in list.as_chunks::<INSTANCE_STRIDE>().0 {
                 let rel = sub([inst[0], inst[1], inst[2]], f.cam);
                 let dist = len(rel);
@@ -2544,22 +2524,16 @@ impl GlState {
                 // How far it reaches: trees carry their height, buildings
                 // only a scale (they are modelled in metres, up to about
                 // 12 m from their middle).
-                let r = if BUILDINGS.contains(&kind) {
-                    12.0 * inst[4]
-                } else if kind == OBJ_WALL {
-                    fields::WALL_PIECE * 0.6
-                } else {
-                    inst[5]
+                let r = match object.reach {
+                    terrain::Reach::Height => inst[5],
+                    terrain::Reach::Scaled(r) => r * inst[4],
+                    terrain::Reach::Fixed(r) => r,
                 };
                 let foot = [inst[0], inst[1], inst[2]];
                 if !in_view([inst[0], inst[1] + 0.5 * r, inst[2]], r) {
                     // Out of view, only its shadow can show: close by, and
                     // only if it falls into view.
-                    let wide = if BUILDINGS.contains(&kind) {
-                        r
-                    } else {
-                        inst[4].max(1.0)
-                    };
+                    let wide = if building { r } else { inst[4].max(1.0) };
                     let tall = r * 1.15;
                     if dist > KEEP_AROUND + shadow_reach_most(tall)
                         || !shadow_in_view(foot, tall, wide)
@@ -2640,7 +2614,9 @@ impl GlState {
                             card[t].extend_from_slice(&grown);
                             card[t].extend_from_slice(&[fin, fout]);
                         }
-                        CARD => far[if kind == OBJ_PINE { 0 } else { 1 }].extend_from_slice(&grown),
+                        CARD => {
+                            far[if kind == terrain::PINE { 0 } else { 1 }].extend_from_slice(&grown)
+                        }
                         // Thinned out: not drawn.
                         _ => {}
                     }
@@ -3691,7 +3667,7 @@ impl GlState {
                 // both: the shapes are alike, so it hardly shows. Only the
                 // trees whose shadow can fall into this cascade.
                 self.draw_shadowed(gl, &TREE_CASTERS, k);
-                self.draw_instanced(gl, &[OBJ_BUSH]);
+                self.draw_instanced(gl, &BUSHES);
                 if k == 1 {
                     self.draw_instanced(gl, &[OBJ_PINE_FAR, OBJ_BROAD_FAR]);
                     // Cards cast their shadow turned towards the sun.
@@ -3712,10 +3688,8 @@ impl GlState {
                 let p = self.programs.get_mut("sh_object").unwrap();
                 gl.use_program(Some(p.id));
                 p.f1(gl, "u_wind", 0.0);
-                self.draw_instanced(
-                    gl,
-                    &[OBJ_ROCK, OBJ_BALE, OBJ_WALL, OBJ_POST, OBJ_PLANK, OBJ_RIDER],
-                );
+                self.draw_instanced(gl, &STILL);
+                self.draw_instanced(gl, &[OBJ_POST, OBJ_PLANK, OBJ_RIDER]);
                 self.draw_instanced(gl, &BUILDINGS);
                 let p = self.programs.get_mut("sh_skinned").unwrap();
                 gl.use_program(Some(p.id));
@@ -4070,7 +4044,8 @@ impl GlState {
             p.f1(gl, "u_obj_time", f.time);
             p.f1(gl, "u_wind", f.look.wind);
             self.draw_instanced(gl, &TREES);
-            self.draw_instanced(gl, &[OBJ_BUSH, OBJ_PINE_FAR, OBJ_BROAD_FAR]);
+            self.draw_instanced(gl, &BUSHES);
+            self.draw_instanced(gl, &[OBJ_PINE_FAR, OBJ_BROAD_FAR]);
             // Trees changing level: each level in its share of the pixels.
             self.common(gl, "object_fade", f);
             let p = self.programs.get_mut("object_fade").unwrap();
@@ -4095,22 +4070,8 @@ impl GlState {
             let p = self.programs.get_mut("object").unwrap();
             gl.use_program(Some(p.id));
             p.f1(gl, "u_wind", 0.0);
-            self.draw_instanced(
-                gl,
-                &[
-                    OBJ_ROCK,
-                    OBJ_HOUSE,
-                    OBJ_BARN,
-                    OBJ_SHED,
-                    OBJ_TOWNHOUSE,
-                    OBJ_BALE,
-                    OBJ_WALL,
-                    OBJ_POST,
-                    OBJ_REFLECTOR,
-                    OBJ_PLANK,
-                    OBJ_RIDER,
-                ],
-            );
+            self.draw_instanced(gl, &STANDING);
+            self.draw_instanced(gl, &[OBJ_POST, OBJ_REFLECTOR, OBJ_PLANK, OBJ_RIDER]);
             self.common(gl, "skinned", f);
             self.draw_skins(gl, f, "skinned");
 
