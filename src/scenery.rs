@@ -34,6 +34,7 @@ pub struct Spec {
     /// along the fields (by a hash of the stretch: 0 to 4).
     pub walled: Range<u64>,
     pub plants: Plants,
+    pub buildings: Buildings,
     pub look: Look,
     pub routes: RouteStyle,
     /// The simple 3D view (no detailed graphics).
@@ -113,17 +114,40 @@ pub enum LandShape {
 
 /// What grows and stands in the land.
 pub struct Plants {
-    /// Shares of the trees left after the kinds before them: pines, then
-    /// birches, oaks and maples; the rest broadleaves.
-    pub pines: f64,
-    pub birches: f64,
-    pub oaks: f64,
-    pub maples: f64,
+    /// The kinds of tree, in turn, each with its share of the trees left
+    /// after the kinds before it; the rest are broadleaves.
+    pub trees: &'static [(Tree, f64)],
     pub bushes: f64,
     pub rocks: f64,
-    pub farmhouses: bool,
     /// Of the mown fields near farms.
     pub bales: f64,
+}
+
+/// The kinds of tree a scenery can grow (besides the broadleaves that
+/// grow where no other does).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Tree {
+    Pine,
+    Birch,
+    Oak,
+    Maple,
+    Cherry,
+    JapaneseMaple,
+    Cedar,
+    BlackPine,
+}
+
+/// The buildings along the road.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Buildings {
+    None,
+    /// Farmsteads: a house facing the road, often a barn behind it and
+    /// sometimes a shed, fruit trees in the garden.
+    Farms,
+    /// The Japanese countryside: thatched farmhouses with a tree and a
+    /// stone lantern in the garden, small shrines with their gates, and
+    /// now and then a temple's pagoda behind its gate.
+    Japanese,
 }
 
 /// The sky, light and grass of the detailed 3D view (before the time of
@@ -191,6 +215,7 @@ impl Scenery {
             Scenery::Lake => &LAKE,
             Scenery::Alpine => &ALPINE,
             Scenery::Coast => &COAST,
+            Scenery::Japan => &JAPAN,
         }
     }
 }
@@ -211,15 +236,17 @@ const HILLS: Spec = Spec {
     fences: true,
     walled: 2..3,
     plants: Plants {
-        pines: 0.35,
-        birches: 0.3,
-        oaks: 0.35,
-        maples: 0.3,
+        trees: &[
+            (Tree::Pine, 0.35),
+            (Tree::Birch, 0.3),
+            (Tree::Oak, 0.35),
+            (Tree::Maple, 0.3),
+        ],
         bushes: 0.05,
         rocks: 0.006,
-        farmhouses: true,
         bales: 0.45,
     },
+    buildings: Buildings::Farms,
     look: Look {
         sky_top: [44, 108, 196],
         sky_horizon: [176, 204, 228],
@@ -282,15 +309,17 @@ const LAKE: Spec = Spec {
     fences: true,
     walled: 2..3,
     plants: Plants {
-        pines: 0.45,
-        birches: 0.4,
-        oaks: 0.25,
-        maples: 0.35,
+        trees: &[
+            (Tree::Pine, 0.45),
+            (Tree::Birch, 0.4),
+            (Tree::Oak, 0.25),
+            (Tree::Maple, 0.35),
+        ],
         bushes: 0.05,
         rocks: 0.006,
-        farmhouses: true,
         bales: 0.35,
     },
+    buildings: Buildings::Farms,
     look: Look {
         sky_top: [48, 118, 208],
         sky_horizon: [186, 212, 234],
@@ -355,15 +384,17 @@ const ALPINE: Spec = Spec {
     fences: false,
     walled: 2..3,
     plants: Plants {
-        pines: 0.95,
-        birches: 0.3,
-        oaks: 0.0,
-        maples: 0.25,
+        trees: &[
+            (Tree::Pine, 0.95),
+            (Tree::Birch, 0.3),
+            (Tree::Oak, 0.0),
+            (Tree::Maple, 0.25),
+        ],
         bushes: 0.02,
         rocks: 0.05,
-        farmhouses: false,
         bales: 0.0,
     },
+    buildings: Buildings::None,
     look: Look {
         sky_top: [28, 86, 190],
         sky_horizon: [160, 194, 228],
@@ -430,15 +461,17 @@ const COAST: Spec = Spec {
     fences: false,
     walled: 0..2,
     plants: Plants {
-        pines: 0.7,
-        birches: 0.15,
-        oaks: 0.3,
-        maples: 0.15,
+        trees: &[
+            (Tree::Pine, 0.7),
+            (Tree::Birch, 0.15),
+            (Tree::Oak, 0.3),
+            (Tree::Maple, 0.15),
+        ],
         bushes: 0.07,
         rocks: 0.006,
-        farmhouses: true,
         bales: 0.0,
     },
+    buildings: Buildings::Farms,
     look: Look {
         sky_top: [40, 116, 212],
         sky_horizon: [182, 216, 238],
@@ -484,5 +517,85 @@ const COAST: Spec = Spec {
         rocky: false,
         trees: 34,
         pines: (4, 1),
+    },
+};
+
+const JAPAN: Spec = Spec {
+    label: "Japan",
+    water: Water::Lake,
+    land: Land {
+        // Rolling, wooded hills, rising into mountains beyond the lake.
+        shape: LandShape::Rounded,
+        height: 46.0,
+        size: 380.0,
+        near: 0.45,
+        growth: 600.0,
+    },
+    mountains: mountains::Kind::Lake,
+    snow: false,
+    fields: true,
+    fences: false,
+    walled: 0..0,
+    plants: Plants {
+        // Cedar on the hills; cherry, Japanese maple and black pine in the
+        // open and at the forest's edge.
+        trees: &[
+            (Tree::Cedar, 0.45),
+            (Tree::Cherry, 0.55),
+            (Tree::JapaneseMaple, 0.5),
+            (Tree::BlackPine, 0.5),
+        ],
+        bushes: 0.06,
+        rocks: 0.01,
+        bales: 0.0,
+    },
+    buildings: Buildings::Japanese,
+    look: Look {
+        // A soft spring sky, a little hazy.
+        sky_top: [50, 112, 200],
+        sky_horizon: [198, 214, 232],
+        sun: [1.12, 1.02, 0.9],
+        fog: 0.00115,
+        grass: [
+            [0.034, 0.095, 0.03],
+            [0.074, 0.16, 0.045],
+            [0.15, 0.17, 0.068],
+        ],
+    },
+    routes: RouteStyle {
+        names: (
+            &[
+                "Sakura", "Matsu", "Momiji", "Hana", "Kaze", "Tsuki", "Mori", "Ishi", "Yuki",
+                "Kawa",
+            ],
+            &["yama", "zaka", "dani", "mura", " Lake", " Pass", " Valley"],
+        ),
+        base_ele: 260.0,
+        bends_per_km: (0.9, 1.6),
+        bend_angles: (0.25, 1.4),
+        bend_radii: (60.0, 300.0),
+        side_hills: 30.0,
+    },
+    simple: Simple {
+        sky_top: [74, 136, 214],
+        sky_horizon: [206, 222, 240],
+        haze: [196, 210, 226],
+        grass_a: [100, 162, 74],
+        grass_b: [92, 152, 68],
+        road: [80, 82, 88],
+        shoulder: [170, 160, 140],
+        mtn_far: [136, 160, 190],
+        mtn_near: [96, 132, 116],
+        mtn_top: [200, 210, 224],
+        // Cedar green and cherry pink.
+        tree_a: [40, 96, 62],
+        tree_b: [214, 160, 180],
+        trunk: [92, 66, 58],
+        water: [56, 120, 176],
+        rock: [132, 130, 124],
+        mountains: 1.3,
+        rocky: false,
+        trees: 50,
+        pines: (5, 3),
     },
 };

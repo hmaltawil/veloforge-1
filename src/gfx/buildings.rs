@@ -617,11 +617,27 @@ impl Mesh {
 
     /// A chimney through the roof at (x, z), up to `top`.
     fn chimney(&mut self, x: f32, z: f32, from: f32, top: f32) {
-        // Five puffs of smoke, a fifth of a cycle apart (the shader moves
-        // them, from where they leave the chimney).
+        self.smoke([x, top + 0.3, z]);
+        self.mat = MAT_MATT;
+        let w = 0.32;
+        self.cuboid(
+            [x - w, from, z - w],
+            [x + w, top, z + w],
+            [0.36, 0.22, 0.17],
+        );
+        self.cuboid(
+            [x - w - 0.08, top, z - w - 0.08],
+            [x + w + 0.08, top + 0.14, z + w + 0.08],
+            STONE,
+        );
+    }
+
+    /// Smoke rising from `base`: puffs a fifth of a cycle apart (the shader
+    /// moves them, from where they leave).
+    pub(super) fn smoke(&mut self, base: V3) {
+        let [x, _, z] = base;
         self.mat = MAT_SMOKE;
         for k in 0..4 {
-            let base = [x, top + 0.3, z];
             let phase = k as f32 / 5.0 + 0.07 * (x + z).sin();
             let (rings, segs) = (4usize, 7usize);
             for i in 0..rings {
@@ -645,17 +661,6 @@ impl Mesh {
             }
         }
         self.mat = MAT_MATT;
-        let w = 0.32;
-        self.cuboid(
-            [x - w, from, z - w],
-            [x + w, top, z + w],
-            [0.36, 0.22, 0.17],
-        );
-        self.cuboid(
-            [x - w - 0.08, top, z - w - 0.08],
-            [x + w + 0.08, top + 0.14, z + w + 0.08],
-            STONE,
-        );
     }
 }
 

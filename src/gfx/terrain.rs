@@ -6,7 +6,7 @@ use super::fields;
 use super::flora::{Cover, Palette, Spot};
 use super::mountains;
 use crate::route::{Route, STEP};
-use crate::scenery::{LandShape, Water};
+use crate::scenery::{Buildings, LandShape, Water};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
@@ -27,7 +27,7 @@ pub struct Tile {
 pub const INSTANCE_STRIDE: usize = 9;
 
 /// Kinds of scattered object, indexing [`TerrainData::instances`].
-pub const KINDS: usize = 13;
+pub const KINDS: usize = 21;
 pub const PINE: usize = 0;
 pub const BROADLEAF: usize = 1;
 pub const ROCK: usize = 2;
@@ -41,6 +41,14 @@ pub const OAK: usize = 9;
 pub const MAPLE: usize = 10;
 pub const BALE: usize = 11;
 pub const WALL: usize = 12;
+pub const SAKURA: usize = 13;
+pub const MOMIJI: usize = 14;
+pub const SUGI: usize = 15;
+pub const KUROMATSU: usize = 16;
+pub const MINKA: usize = 17;
+pub const TORII: usize = 18;
+pub const TORO: usize = 19;
+pub const PAGODA: usize = 20;
 
 /// How the renderer treats a kind of scattered object.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -81,7 +89,7 @@ pub struct ObjectKind {
 /// new kind is a number, an entry here, and where it is placed (in
 /// `RouteGeo::scatter` or alongside it); the renderer draws it from this.
 pub const OBJECTS: [ObjectKind; KINDS] = {
-    use super::{buildings, fields, mesh};
+    use super::{buildings, fields, japanese, mesh};
     const fn kind(group: Group, reach: Reach, model: fn() -> mesh::Mesh) -> ObjectKind {
         ObjectKind {
             group,
@@ -109,6 +117,14 @@ pub const OBJECTS: [ObjectKind; KINDS] = {
             Reach::Fixed(fields::WALL_PIECE * 0.6),
             fields::stone_wall,
         ),
+        kind(Group::Tree, Reach::Height, japanese::sakura),
+        kind(Group::Tree, Reach::Height, japanese::momiji),
+        kind(Group::Tree, Reach::Height, japanese::sugi),
+        kind(Group::Tree, Reach::Height, japanese::kuromatsu),
+        kind(Group::Building, BUILT, japanese::minka),
+        kind(Group::Building, Reach::Scaled(4.5), japanese::torii),
+        kind(Group::Building, Reach::Scaled(1.4), japanese::toro),
+        kind(Group::Building, Reach::Scaled(16.0), japanese::pagoda),
     ]
 };
 
@@ -436,7 +452,7 @@ impl RouteGeo {
                 .map(|b| {
                     let (sum, n) = yard[&b.farm];
                     // Houses' yards reach past their front gardens.
-                    let level = if [HOUSE, TOWNHOUSE].contains(&b.kind) {
+                    let level = if [HOUSE, TOWNHOUSE, MINKA].contains(&b.kind) {
                         b.reach + 6.0
                     } else {
                         b.reach + 1.0
@@ -1227,11 +1243,180 @@ impl RouteGeo {
         }
     }
 
+    /// The Japanese countryside along the road, inside the square from
+    /// (x0, z0), `size` across: every 320 m or so a thatched farmhouse
+    /// facing the road with a tree in its garden, or a small shrine (a gate
+    /// facing the road between two stone lanterns, cedars behind it); and
+    /// now and then a temple, its pagoda set back behind a gate that frames
+    /// it from the road, cherries either side of it.
+    fn villages(&self, x0: f64, z0: f64, size: f64) -> Vec<Building> {
+        let mut out = Vec::new();
+        let s = self.seed;
+        let route = &self.route;
+        let spacing = 320.0;
+        for k in 0..(route.span() / spacing) as i64 {
+            let mut rng = Rng(hash2(k, 0, s + 1993));
+            let what = rng.next();
+            let temple = k % 9 == 4;
+            if !temple && what > 0.62 {
+                continue;
+            }
+            let d = k as f64 * spacing + rng.next() * 100.0;
+            let p = route.at(d);
+            let side = if rng.next() < 0.5 { -1.0 } else { 1.0 };
+            let along = (p.heading.sin(), p.heading.cos());
+            let away = (side * p.heading.cos(), -side * p.heading.sin());
+            let facing = (std::f64::consts::FRAC_PI_2 - p.heading
+                + if side > 0.0 {
+                    std::f64::consts::PI
+                } else {
+                    0.0
+                }) as f32;
+            // A spot `out` from the road and `x` along it in the building's
+            // own terms (its +x, east, lies at -side along the road).
+            let at = |x: f64, out: f64| {
+                (
+                    p.x + away.0 * out - along.0 * side * x,
+                    p.z + away.1 * out - along.1 * side * x,
+                )
+            };
+            let inside =
+                |(x, z): (f64, f64)| x >= x0 && x <= x0 + size && z >= z0 && z <= z0 + size;
+            let mut place = |kind: usize, (x, z): (f64, f64), rot: f32, scale: f32, reach: f64| {
+                if !inside((x, z)) {
+                    return;
+                }
+                let smp = self.sample(x, z);
+                if smp.water || smp.dist < 15.0 {
+                    return;
+                }
+                // It stands at the top of its ground; not on ground too
+                // steep for that.
+                let reach = reach * scale as f64;
+                let (mut lo, mut hi) = (smp.h, smp.h);
+                for j in 0..8 {
+                    let a = j as f64 * std::f64::consts::FRAC_PI_4;
+                    let g = self.sample(x + a.cos() * reach * 0.75, z + a.sin() * reach * 0.75);
+                    if g.water {
+                        return;
+                    }
+                    lo = lo.min(g.h);
+                    hi = hi.max(g.h);
+                }
+                if hi - lo > 3.0 {
+                    return;
+                }
+                out.push(Building {
+                    kind,
+                    farm: k,
+                    x,
+                    z,
+                    h: hi - 0.1,
+                    rot,
+                    scale: (scale, scale),
+                    tint: [1.0, 1.0, 1.0],
+                    reach,
+                });
+            };
+            // Trees: a kind, a spot, and its height (metres).
+            let mut trees: Vec<(usize, (f64, f64), f64)> = Vec::new();
+            if temple {
+                let back = 58.0 + 8.0 * rng.next();
+                place(PAGODA, at(0.0, back), facing, 1.0, 9.0);
+                place(TORII, at(0.0, 24.0), facing, 1.0, 4.5);
+                for x in [-3.4, 3.4] {
+                    place(TORO, at(x, 22.5), facing, 1.0, 1.4);
+                }
+                for x in [-9.0, 9.0] {
+                    trees.push((
+                        SAKURA,
+                        at(x, back - 6.0 - 4.0 * rng.next()),
+                        7.0 + 1.5 * rng.next(),
+                    ));
+                    trees.push((
+                        SAKURA,
+                        at(x * 0.8, 36.0 + 6.0 * rng.next()),
+                        6.5 + 1.5 * rng.next(),
+                    ));
+                }
+            } else if what < 0.5 {
+                let lateral = 26.0 + 24.0 * rng.next();
+                let scale = (0.92 + 0.16 * rng.next()) as f32;
+                place(MINKA, at(0.0, lateral), facing, scale, 11.0);
+                // A tree in the front garden, beyond the azaleas or the
+                // water basin.
+                let x = if rng.next() < 0.5 { -1.0 } else { 1.0 } * (6.0 + 1.2 * rng.next());
+                let front = lateral - 4.0 * scale as f64 - 1.5 - 1.5 * rng.next();
+                let pick = rng.next();
+                let (kind, h) = if pick < 0.5 {
+                    (SAKURA, 6.5 + 2.0 * rng.next())
+                } else if pick < 0.8 {
+                    (MOMIJI, 4.5 + 1.5 * rng.next())
+                } else {
+                    (KUROMATSU, 6.0 + 2.0 * rng.next())
+                };
+                trees.push((kind, at(x, front), h));
+            } else {
+                // A small shrine: the gate facing the road between two
+                // lanterns, and a stand of cedars behind.
+                let lateral = 20.0 + 6.0 * rng.next();
+                place(
+                    TORII,
+                    at(0.0, lateral),
+                    facing,
+                    (0.85 + 0.15 * rng.next()) as f32,
+                    4.5,
+                );
+                for x in [-3.2, 3.2] {
+                    place(TORO, at(x, lateral - 1.5), facing, 0.9, 1.4);
+                }
+                for j in 0..4 {
+                    let x = -6.0 + 4.0 * j as f64 + 1.5 * (rng.next() - 0.5);
+                    trees.push((
+                        SUGI,
+                        at(x, lateral + 7.0 + 4.0 * rng.next()),
+                        20.0 + 6.0 * rng.next(),
+                    ));
+                }
+            }
+            for (kind, (x, z), height) in trees {
+                if !inside((x, z)) {
+                    continue;
+                }
+                let smp = self.sample(x, z);
+                if smp.water || smp.dist < 11.0 {
+                    continue;
+                }
+                let width = match kind {
+                    SAKURA => 1.35,
+                    MOMIJI => 1.3,
+                    SUGI => 0.42,
+                    _ => 1.1,
+                };
+                out.push(Building {
+                    kind,
+                    farm: k,
+                    x,
+                    z,
+                    h: smp.h - 0.2,
+                    rot: (rng.next() * std::f64::consts::TAU) as f32,
+                    scale: ((height * width) as f32, height as f32),
+                    tint: [1.0, 1.0, 1.0],
+                    reach: 3.0,
+                });
+            }
+        }
+        out
+    }
+
     /// Trees, rocks and houses inside the window, plus blob shadows.
     /// Farmsteads along the road, inside the square from (x0, z0), `size`
     /// across: every 320 m or so, a house facing the road, often a barn
     /// behind it and sometimes a shed beside it.
     fn farmsteads(&self, x0: f64, z0: f64, size: f64) -> Vec<Building> {
+        if self.route.scenery.spec().buildings == Buildings::Japanese {
+            return self.villages(x0, z0, size);
+        }
         let mut out = Vec::new();
         let s = self.seed;
         let route = &self.route;
@@ -2046,7 +2231,7 @@ mod tests {
     /// is the kind's.
     #[test]
     fn object_numbers_match_their_entries() {
-        use super::super::{buildings, fields, mesh};
+        use super::super::{buildings, fields, japanese, mesh};
         type Model = fn() -> mesh::Mesh;
         let kinds: [(usize, Model, Group); KINDS] = [
             (PINE, mesh::pine, Group::Tree),
@@ -2062,6 +2247,14 @@ mod tests {
             (MAPLE, mesh::maple, Group::Tree),
             (BALE, fields::hay_bale, Group::Still),
             (WALL, fields::stone_wall, Group::Still),
+            (SAKURA, japanese::sakura, Group::Tree),
+            (MOMIJI, japanese::momiji, Group::Tree),
+            (SUGI, japanese::sugi, Group::Tree),
+            (KUROMATSU, japanese::kuromatsu, Group::Tree),
+            (MINKA, japanese::minka, Group::Building),
+            (TORII, japanese::torii, Group::Building),
+            (TORO, japanese::toro, Group::Building),
+            (PAGODA, japanese::pagoda, Group::Building),
         ];
         for (k, model, group) in kinds {
             assert!(
@@ -2185,7 +2378,18 @@ mod tests {
                 continue;
             }
             assert!(farms.len() >= 3, "{}: {} buildings", r.id, farms.len());
-            assert!(farms.iter().any(|b| b.kind == BARN), "{}", r.id);
+            // Each kind of countryside has its own buildings.
+            let theirs: &[usize] = match r.scenery.spec().buildings {
+                Buildings::Japanese => &[MINKA, TORII, PAGODA],
+                _ => &[BARN],
+            };
+            for &kind in theirs {
+                assert!(
+                    farms.iter().any(|b| b.kind == kind),
+                    "{}: no kind {kind}",
+                    r.id
+                );
+            }
             // The buildings (not the trees in their gardens).
             for b in farms.iter().filter(|b| is(b.kind, Group::Building)) {
                 let smp = g.sample(b.x, b.z);

@@ -7,8 +7,11 @@
 //! them); buildings are in metres, x along the building (its long side
 //! faces the road, +z), y up. No GL here: the Model Lab builds them too.
 
+use super::body::MAT_FABRIC;
 use super::math::*;
-use super::mesh::{hued, rnd, rough, tinted, Crown, Mesh, MAT_GLOSS, MAT_LAMP, MAT_LEAF, MAT_MATT};
+use super::mesh::{
+    hued, rnd, rough, tinted, Crown, Mesh, MAT_GLOSS, MAT_LAMP, MAT_LEAF, MAT_MATT, VERTEX_STRIDE,
+};
 
 // ---- trees ------------------------------------------------------------------
 
@@ -204,58 +207,155 @@ pub fn sakura() -> Mesh {
     m
 }
 
+/// One dome of a pine's cloud of needles: round `c` (the middle of its
+/// flat underside), `r` across and `h` high, its outline lumpy with tufts,
+/// darker towards its rim and underneath, paler where the new growth is
+/// on top. Closed all round.
+#[allow(clippy::too_many_arguments)]
+fn needle_dome(m: &mut Mesh, c: V3, r: f32, h: f32, col: V3, seed: u32) {
+    let (rings, segs) = (3usize, 12usize);
+    let pt = |i: usize, j: usize| -> (V3, V3, V3) {
+        let j = j % segs;
+        let th = i as f32 / rings as f32 * std::f32::consts::FRAC_PI_2;
+        let a = (j as f32 + 0.5 * (i % 2) as f32) / segs as f32 * std::f32::consts::TAU;
+        // Tufts: the rim and the rings above it bulge in and out.
+        let tuft = if i == rings {
+            1.0
+        } else {
+            1.0 + 0.22 * (rnd(seed, i as u32, j as u32) - 0.5)
+        };
+        let (rr, y) = (
+            r * th.cos() * tuft,
+            h * th.sin() * (0.9 + 0.2 * rnd(seed + 1, i as u32, j as u32)),
+        );
+        let p = [c[0] + a.cos() * rr, c[1] + y, c[2] + a.sin() * rr];
+        let n = norm([a.cos() * th.cos() / r, th.sin() / h, a.sin() * th.cos() / r]);
+        let up = i as f32 / rings as f32;
+        let shade = (0.62 + 0.55 * up) * (0.9 + 0.2 * rnd(seed + 2, i as u32, j as u32));
+        let col = if i + 1 >= rings && rnd(seed + 3, i as u32, j as u32) > 0.6 {
+            hued(col, 0.35, 1.2)
+        } else {
+            col
+        };
+        (p, n, scale(col, shade))
+    };
+    for i in 0..rings {
+        for j in 0..segs {
+            let q = [pt(i, j), pt(i + 1, j), pt(i + 1, j + 1), pt(i, j + 1)];
+            for idx in [0, 2, 1, 0, 3, 2] {
+                let (p, n, cc) = q[idx];
+                m.push(p, n, cc);
+            }
+        }
+        if i == 0 {
+            // The flat, shaded underside.
+            for j in 0..segs {
+                let (a, b) = (pt(0, j), pt(0, j + 1));
+                let down = [0.0, -1.0, 0.0];
+                m.push([c[0], c[1] - h * 0.08, c[2]], down, scale(col, 0.3));
+                m.push(a.0, down, scale(col, 0.4));
+                m.push(b.0, down, scale(col, 0.4));
+            }
+        }
+    }
+}
+
+/// A cloud of needles, as pruned pines carry them: a broad dome with two
+/// smaller ones swelling from its sides, all overlapping into one closed,
+/// rounded cushion, flat beneath.
+fn needle_cloud(m: &mut Mesh, c: V3, r: f32, col: V3, seed: u32) {
+    needle_dome(m, c, r, r * 0.42, col, seed);
+    let a = rnd(seed, 0, 9) * std::f32::consts::TAU;
+    for k in 0..2 {
+        let b = a + k as f32 * 2.6;
+        let at = [
+            c[0] + b.cos() * r * 0.5,
+            c[1] + r * 0.06,
+            c[2] + b.sin() * r * 0.5,
+        ];
+        needle_dome(
+            m,
+            at,
+            r * 0.58,
+            r * 0.4,
+            hued(col, 0.1, 1.04),
+            seed + 11 + k,
+        );
+    }
+}
+
 /// Unit-height Japanese maple, of the red-leaved kind that is crimson from
-/// spring to autumn: a low trunk that splits into four stems leaning out
-/// and curving up round a leader, and fine foliage in layered tiers that overlap into one
+/// spring to autumn: a slender, gently winding trunk that rises through the
+/// middle of the crown, four stems growing out of it low down and curving
+/// up and out, and fine foliage in layered tiers that overlap into one
 /// crown, each pad on a twig of its own; deep red inside, brighter where
 /// the light comes through.
 pub fn momiji() -> Mesh {
     let mut m = Mesh::default();
     let bark = [0.1, 0.085, 0.075];
-    m.sweep(
-        &[
-            ([0.0, 0.0, 0.0], 0.06),
-            ([0.004, 0.04, 0.0], 0.04),
-            ([0.008, 0.12, 0.004], 0.034),
-        ],
-        7,
-        rough(bark, 13),
-    );
+    // The trunk, in one piece from the ground to the top of the crown: a
+    // little flare at its foot, then slim, winding gently.
+    let trunk = [
+        ([0.0, 0.0, 0.0], 0.042),
+        ([0.002, 0.025, 0.0], 0.03),
+        ([0.008, 0.12, 0.004], 0.025),
+        ([0.002, 0.24, -0.004], 0.02),
+        ([-0.006, 0.42, 0.002], 0.014),
+        ([0.0, 0.64, 0.004], 0.009),
+        ([0.004, 0.86, 0.0], 0.004),
+    ];
+    m.sweep(&trunk, 7, rough(bark, 13));
     let whole = Crown {
         c: [0.0, 0.6, 0.0],
         r: 0.5,
     };
-    let from = [0.008, 0.11, 0.004];
+    let on_trunk = |y: f32| {
+        let k = trunk
+            .iter()
+            .position(|p| p.0[1] >= y)
+            .unwrap_or(trunk.len() - 1)
+            .max(1);
+        let (a, b) = (trunk[k - 1].0, trunk[k].0);
+        lerp(a, b, ((y - a[1]) / (b[1] - a[1])).clamp(0.0, 1.0))
+    };
     let tiers = [(0.36f32, 0.2f32), (0.52, 0.19), (0.67, 0.16), (0.8, 0.12)];
     let mut pads = Vec::new();
     for k in 0..4 {
         let q = |n: u32| rnd(83, k as u32, n);
         let a = k as f32 * 1.57 + 0.5 * q(1);
         let dir = [a.cos(), 0.0, a.sin()];
-        let lean = 0.17 + 0.06 * q(2);
-        let mid = add(from, add(scale(dir, lean * 0.55), [0.0, 0.26, 0.0]));
-        let top = add(from, add(scale(dir, lean), [0.0, 0.69 + 0.05 * q(3), 0.0]));
+        // Out of the trunk at a narrow angle, then curving out and up.
+        let from = on_trunk(0.12 + 0.05 * k as f32);
+        let lean = 0.16 + 0.05 * q(2);
+        let p1 = add(from, add(scale(dir, 0.025), [0.0, 0.07, 0.0]));
+        let p2 = add(from, add(scale(dir, lean * 0.6), [0.0, 0.25, 0.0]));
+        let top = add(from, add(scale(dir, lean), [0.0, 0.58 + 0.05 * q(3), 0.0]));
         m.sweep(
-            &[(from, 0.024), (mid, 0.016), (top, 0.006)],
+            &[(from, 0.018), (p1, 0.015), (p2, 0.011), (top, 0.005)],
             5,
             rough(bark, 31 + k as u32),
         );
+        let path = [from, p1, p2, top];
+        let on_stem = |y: f32| {
+            let i = path.iter().position(|p| p[1] >= y).unwrap_or(3).max(1);
+            let (a, b) = (path[i - 1], path[i]);
+            lerp(a, b, ((y - a[1]) / (b[1] - a[1])).clamp(0.0, 1.0))
+        };
         for (t, &(h, w)) in tiers.iter().enumerate() {
             let q = |n: u32| rnd(89, (k * 4 + t) as u32, n);
-            let along = ((h - from[1]) / (top[1] - from[1])).clamp(0.0, 1.0);
-            let on = lerp(from, top, along);
+            let on = on_stem(h.min(top[1]));
             let swing = a + 0.5 * (q(1) - 0.5);
             let out = [swing.cos(), 0.0, swing.sin()];
             // The top tier sits on the stem's end; the others reach out
             // from it on a twig.
-            let c = if t == 3 {
+            let c = if h >= top[1] {
                 add(top, [0.0, 0.02, 0.0])
             } else {
                 add(on, add(scale(out, w * 0.3), [0.0, 0.02, 0.0]))
             };
-            if t < 3 {
+            if h < top[1] {
                 m.sweep(
-                    &[(on, 0.011), (c, 0.006)],
+                    &[(on, 0.008), (c, 0.004)],
                     4,
                     rough(bark, 41 + (k * 4 + t) as u32),
                 );
@@ -263,25 +363,9 @@ pub fn momiji() -> Mesh {
             pads.push((c, w, t, k * 4 + t));
         }
     }
-    // A leader up the middle, carrying a pad at each tier, so the stems'
-    // tiers close into one crown with no gap between them.
-    let leader = [0.004, 0.86, 0.0];
-    m.sweep(
-        &[
-            (from, 0.022),
-            (lerp(from, leader, 0.5), 0.014),
-            (leader, 0.005),
-        ],
-        5,
-        rough(bark, 59),
-    );
+    // The trunk carries a pad at each tier too, closing the crown.
     for (t, &(h, w)) in tiers.iter().enumerate() {
-        let on = lerp(
-            from,
-            leader,
-            ((h - from[1]) / (leader[1] - from[1])).clamp(0.0, 1.0),
-        );
-        pads.push((add(on, [0.0, 0.02, 0.0]), w * 0.8, t, 16 + t));
+        pads.push((add(on_trunk(h), [0.0, 0.02, 0.0]), w * 0.8, t, 16 + t));
     }
     m.mat = MAT_LEAF;
     for &(c, w, t, n) in &pads {
@@ -350,8 +434,8 @@ pub fn sugi() -> Mesh {
 
 /// Unit-height black pine, pruned by generations of gardeners: a dark,
 /// plated trunk that leans out and turns back, a few long limbs held level,
-/// and on each limb and twig a cushion of needles, like a cloud resting on
-/// a branch: two closed tiers made the way the pine's are.
+/// and on each limb and twig a rounded cloud of needles resting on it,
+/// flat beneath, lumpy with tufts and paler with new growth on top.
 pub fn kuromatsu() -> Mesh {
     let mut m = Mesh::default();
     // The trunk leans one way, then turns back towards the top.
@@ -405,43 +489,13 @@ pub fn kuromatsu() -> Mesh {
     for (k, &(c, r)) in pads.iter().enumerate() {
         let q = |n: u32| rnd(59, k as u32, n);
         let col = tinted(hued(PINE_NEEDLES, 0.3 * (q(1) - 0.5), 0.9 + 0.2 * q(2)));
-        let turn = q(3) * std::f32::consts::TAU;
-        let at = [c[0], c[2]];
-        let seed = 400 + 3 * k as u32;
-        // Wide tiers close together, each nearly as wide as the one below:
-        // a rounded dome, not a point.
-        cushion(
+        // The cloud sits on the branch, its flat underside just below it.
+        needle_cloud(
             &mut m,
-            at,
-            c[1] - r * 0.12,
-            c[1] + r * 0.26,
-            r,
-            14,
+            add(c, [0.0, -r * 0.08, 0.0]),
+            r * 1.05,
             col,
-            seed,
-            turn,
-        );
-        cushion(
-            &mut m,
-            at,
-            c[1] + r * 0.06,
-            c[1] + r * 0.42,
-            r * 0.84,
-            14,
-            scale(col, 1.05),
-            seed + 1,
-            turn + 1.3,
-        );
-        cushion(
-            &mut m,
-            at,
-            c[1] + r * 0.22,
-            c[1] + r * 0.56,
-            r * 0.58,
-            12,
-            scale(col, 1.1),
-            seed + 2,
-            turn + 2.6,
+            400 + 7 * k as u32,
         );
     }
     m
@@ -460,12 +514,65 @@ const TILE: V3 = [0.085, 0.215, 0.205];
 const RIDGE: V3 = [0.045, 0.11, 0.105];
 const UNDER_EAVES: V3 = [0.16, 0.045, 0.03];
 const BRONZE: V3 = [0.1, 0.08, 0.055];
+/// Temple bells: bronze with a golden sheen.
+const BELL: V3 = [0.3, 0.2, 0.07];
 const GOLD: V3 = [0.5, 0.36, 0.12];
 /// How deep the stone footings go (as for the farm buildings): on a slope
 /// a building stands at the top of its ground.
 const FOUNDATION: f32 = 3.5;
 
 impl Mesh {
+    /// Another model added to this one, scaled by `s` and moved to `at`
+    /// (models without smoke: smoke's vertices are not positions).
+    fn place(&mut self, other: &Mesh, at: V3, s: f32) {
+        for v in other.v.chunks(VERTEX_STRIDE) {
+            self.v.extend_from_slice(&[
+                v[0] * s + at[0],
+                v[1] * s + at[1],
+                v[2] * s + at[2],
+                v[3],
+                v[4],
+                v[5],
+                v[6],
+                v[7],
+                v[8],
+                v[9],
+            ]);
+        }
+    }
+
+    /// A paper lantern (chochin) hanging at `c`, `r` across and `h` tall,
+    /// glowing with the colour of its paper, black caps top and bottom and
+    /// its cord up to `hang`.
+    fn chochin(&mut self, c: V3, r: f32, h: f32, paper: V3, hang: f32) {
+        let axes = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        self.mat = MAT_LAMP;
+        self.ellipsoid_in(c, axes, [r, h / 2.0, r], 6, 10, paper);
+        self.mat = MAT_MATT;
+        let black = [0.02, 0.018, 0.016];
+        for s in [-1.0f32, 1.0] {
+            let y = c[1] + s * h * 0.46;
+            self.prism(
+                [c[0], c[2]],
+                y - 0.03,
+                y + 0.03,
+                r * 0.55,
+                r * 0.55,
+                10,
+                0.0,
+                black,
+            );
+        }
+        self.tube(
+            add(c, [0.0, h * 0.49, 0.0]),
+            [c[0], hang, c[2]],
+            0.012,
+            0.012,
+            4,
+            black,
+        );
+    }
+
     /// A flat polygon (convex, its points anticlockwise seen from the side
     /// it faces), each point's colour from `col`.
     fn poly(&mut self, pts: &[V3], col: impl Fn(V3) -> V3) {
@@ -680,8 +787,12 @@ impl Mesh {
                 0.05,
                 0.13,
                 10,
-                BRONZE,
+                BELL,
             );
+            // A gilded cap on the corner's tip.
+            let tip = add(surface(d, t, 1.0, 0.0), [0.0, 0.05, 0.0]);
+            let out = [d[0] * 0.12 + t[0] * 0.12, 0.28, d[1] * 0.12 + t[1] * 0.12];
+            self.tube(tip, add(tip, out), 0.08, 0.025, 8, GOLD);
             self.mat = MAT_MATT;
         }
         let tw = top_w;
@@ -763,6 +874,44 @@ impl Mesh {
                 at(-0.03, dy1, 0.035),
                 [0.04, 0.02, 0.015],
             );
+            // Rows of gilded studs across each leaf.
+            self.mat = MAT_GLOSS;
+            for yy in [dy0 + 0.3, (dy0 + dy1) / 2.0, dy1 - 0.3] {
+                for u in [-half * 0.55, half * 0.55] {
+                    let (a, b) = (at(u - 0.05, yy - 0.03, 0.04), at(u + 0.05, yy - 0.03, 0.04));
+                    let (c, e) = (at(u + 0.05, yy + 0.03, 0.04), at(u - 0.05, yy + 0.03, 0.04));
+                    self.quad(a, b, c, e, GOLD);
+                }
+            }
+            // Lattice windows in the bays either side: dark behind slim
+            // vermilion bars.
+            let (wy0, wy1) = (dy0 + 0.35, dy1 - 0.15);
+            for side in [-1.0f32, 1.0] {
+                let (u0, u1) = if side < 0.0 {
+                    (-b + post + 0.15, -b / 3.0 - post - 0.15)
+                } else {
+                    (b / 3.0 + post + 0.15, b - post - 0.15)
+                };
+                if u1 - u0 < 0.3 || wy1 - wy0 < 0.3 {
+                    continue;
+                }
+                let dark = [0.035, 0.02, 0.015];
+                self.quad(
+                    at(u0, wy0, 0.02),
+                    at(u1, wy0, 0.02),
+                    at(u1, wy1, 0.02),
+                    at(u0, wy1, 0.02),
+                    dark,
+                );
+                let bars = ((u1 - u0) / 0.14) as usize;
+                for k in 1..bars {
+                    let u = u0 + (u1 - u0) * k as f32 / bars as f32;
+                    let (a, b) = (at(u - 0.022, wy0, 0.03), at(u + 0.022, wy0, 0.03));
+                    let (c, e) = (at(u + 0.022, wy1, 0.03), at(u - 0.022, wy1, 0.03));
+                    self.quad(a, b, c, e, VERMILION);
+                }
+            }
+            self.mat = MAT_MATT;
         }
         if balcony {
             let o = b + 0.6;
@@ -1054,8 +1203,17 @@ pub fn minka() -> Mesh {
         let t = ((p[1] - ey) / (ridge - ey)).clamp(0.0, 1.0);
         let band = ((p[1] - ey) / 0.45).floor() as i32;
         let k = if band % 2 == 0 { 1.0 } else { 0.8 };
-        let grain = 0.9 + 0.2 * rnd(23, band as u32, (p[0] * 3.0 + p[2] * 3.0) as i32 as u32);
-        scale(lerp(aged, straw, 0.25 + 0.75 * t), k * grain)
+        let patch = (p[0] * 0.7 + p[2] * 0.7) as i32 as u32;
+        let grain = 0.9 + 0.2 * rnd(23, band as u32, patch);
+        let thatch = scale(lerp(aged, straw, 0.25 + 0.75 * t), k * grain);
+        // Moss gathering on the old thatch low down, where it stays damp.
+        let moss = (1.0 - t).powi(2)
+            * if rnd(29, band as u32, patch) > 0.55 {
+                0.55
+            } else {
+                0.0
+            };
+        lerp(thatch, tinted([0.08, 0.1, 0.035]), moss)
     };
     let front_face = [
         [-ex, ey, ez],
@@ -1211,6 +1369,167 @@ pub fn minka() -> Mesh {
         );
         m.mat = MAT_MATT;
     }
+    // Smoke from the hearth, rising out of the gable's vent.
+    m.smoke([gx + 0.35, (gy + ridge) / 2.0, 0.0]);
+    // An indigo curtain (noren) over the open room, split in four, the
+    // family's crest in white across the middle.
+    m.mat = MAT_FABRIC;
+    let indigo = [0.025, 0.045, 0.11];
+    for k in 0..4 {
+        let x0 = -1.38 + k as f32 * 0.695;
+        let zc = front + 0.03;
+        m.quad(
+            [x0, 1.85, zc],
+            [x0 + 0.66, 1.85, zc],
+            [x0 + 0.66, sy1, zc],
+            [x0, sy1, zc],
+            indigo,
+        );
+    }
+    m.disc(
+        [0.0, 2.25, front + 0.035],
+        0.2,
+        [0.0, 0.0, 1.0],
+        14,
+        [0.62, 0.6, 0.56],
+    );
+    m.disc([0.0, 2.25, front + 0.04], 0.13, [0.0, 0.0, 1.0], 14, indigo);
+    m.mat = MAT_MATT;
+    // Red paper lanterns either side of it, at the veranda's edge.
+    for x in [-1.75f32, 1.75] {
+        m.chochin([x, 2.3, front + 0.92], 0.17, 0.3, [0.42, 0.07, 0.035], 3.1);
+    }
+    // Persimmons drying on strings under the eaves.
+    let axes = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    for (k, x) in [-5.1f32, -4.75, -4.4, -4.05].into_iter().enumerate() {
+        let z = front + 0.55;
+        let top = 3.15;
+        m.tube(
+            [x, top, z],
+            [x, top - 0.98, z],
+            0.006,
+            0.006,
+            3,
+            [0.3, 0.25, 0.18],
+        );
+        m.mat = MAT_GLOSS;
+        for j in 0..7 {
+            let y = top - 0.12 - j as f32 * 0.13;
+            let tone = 0.85 + 0.3 * rnd(131, k as u32, j);
+            m.ellipsoid_in(
+                [x, y, z],
+                axes,
+                [0.05, 0.06, 0.05],
+                3,
+                6,
+                scale([0.55, 0.17, 0.025], tone),
+            );
+        }
+        m.mat = MAT_MATT;
+    }
+    // Two cushions and a tray of tea set out on the veranda.
+    m.mat = MAT_FABRIC;
+    for (x, col) in [(2.5f32, [0.32, 0.07, 0.05]), (3.4, [0.05, 0.08, 0.16])] {
+        m.cuboid(
+            [x - 0.28, floor, front + 0.28],
+            [x + 0.28, floor + 0.07, front + 0.84],
+            col,
+        );
+    }
+    m.mat = MAT_MATT;
+    m.cuboid(
+        [2.8, floor, front + 0.4],
+        [3.1, floor + 0.025, front + 0.7],
+        [0.14, 0.08, 0.04],
+    );
+    m.mat = MAT_GLOSS;
+    m.ellipsoid_in(
+        [2.95, floor + 0.09, front + 0.55],
+        axes,
+        [0.08, 0.065, 0.08],
+        4,
+        8,
+        [0.03, 0.03, 0.03],
+    );
+    for z in [front + 0.45, front + 0.65] {
+        m.prism(
+            [3.05, z],
+            floor + 0.025,
+            floor + 0.07,
+            0.025,
+            0.03,
+            8,
+            0.0,
+            [0.55, 0.52, 0.45],
+        );
+    }
+    m.mat = MAT_MATT;
+    // In the garden: a stone water basin with a bamboo spout, a small
+    // lantern beside it and azaleas in flower.
+    let (bx, bz) = (-3.3f32, front + 2.7);
+    m.prism([bx, bz], -0.2, 0.38, 0.36, 0.33, 9, 0.0, STONE);
+    m.mat = MAT_GLOSS;
+    m.disc(
+        [bx, 0.36, bz],
+        0.26,
+        [0.0, 1.0, 0.0],
+        12,
+        [0.02, 0.04, 0.05],
+    );
+    m.mat = MAT_MATT;
+    let bamboo = [0.3, 0.3, 0.11];
+    m.tube(
+        [bx - 0.75, -0.1, bz],
+        [bx - 0.75, 0.75, bz],
+        0.05,
+        0.05,
+        6,
+        bamboo,
+    );
+    m.tube(
+        [bx - 0.75, 0.7, bz],
+        [bx - 0.15, 0.6, bz],
+        0.035,
+        0.035,
+        6,
+        bamboo,
+    );
+    for k in 0..4u32 {
+        let a = k as f32 * 1.7;
+        m.boulder(
+            [bx + a.cos() * 0.55, -0.05, bz + a.sin() * 0.55],
+            [0.18, 0.07, 0.15],
+            2,
+            6,
+            STONE,
+            340 + k,
+        );
+    }
+    m.place(&toro(), [bx - 1.1, 0.0, bz + 0.6], 0.5);
+    m.mat = MAT_LEAF;
+    for (k, &(x, z, r)) in [(2.6f32, 2.2f32, 0.55f32), (3.6, 2.5, 0.45), (4.7, 2.1, 0.6)]
+        .iter()
+        .enumerate()
+    {
+        m.ellipsoid_in(
+            [x, r * 0.55, front + z],
+            axes,
+            [r, r * 0.6, r * 0.9],
+            4,
+            8,
+            tinted([0.05, 0.1, 0.035]),
+        );
+        let pink = hued([0.55, 0.12, 0.3], 0.1 * k as f32, 1.0);
+        m.ellipsoid_in(
+            [x, r * 0.68, front + z],
+            axes,
+            [r * 0.97, r * 0.52, r * 0.87],
+            4,
+            8,
+            tinted(pink),
+        );
+    }
+    m.mat = MAT_MATT;
     m
 }
 
@@ -1381,8 +1700,12 @@ pub fn torii() -> Mesh {
 pub fn pagoda() -> Mesh {
     let mut m = Mesh::default();
     // The stone platform, and steps up to it at the front.
-    m.cuboid([-4.7, -FOUNDATION, -4.7], [4.7, 0.9, 4.7], STONE);
-    m.cuboid([-4.85, 0.82, -4.85], [4.85, 0.95, 4.85], scale(STONE, 1.12));
+    m.cuboid(
+        [-4.7, -FOUNDATION, -4.7],
+        [4.7, 0.9, 4.7],
+        scale(STONE, 0.85),
+    );
+    m.cuboid([-4.85, 0.82, -4.85], [4.85, 0.95, 4.85], STONE);
     for k in 0..3 {
         let y = 0.3 * (k + 1) as f32;
         m.cuboid(
@@ -1443,6 +1766,72 @@ pub fn pagoda() -> Mesh {
         10,
         GOLD,
     );
+    m.mat = MAT_MATT;
+    // Moss at the platform's foot.
+    m.cuboid(
+        [-4.75, -0.05, -4.75],
+        [4.75, 0.14, 4.75],
+        [0.06, 0.085, 0.03],
+    );
+    // A vermilion fence round the platform's edge, open at the steps.
+    let o = 4.45;
+    m.mat = MAT_GLOSS;
+    let n = 10;
+    for k in 0..=n {
+        let u = -o + 2.0 * o * k as f32 / n as f32;
+        for (x, z) in [(u, -o), (u, o), (-o, u), (o, u)] {
+            if z > o - 0.01 && x.abs() < 1.6 {
+                continue;
+            }
+            m.cuboid(
+                [x - 0.06, 0.95, z - 0.06],
+                [x + 0.06, 1.85, z + 0.06],
+                VERMILION,
+            );
+        }
+    }
+    for (y0, y1) in [(1.35, 1.43), (1.72, 1.82)] {
+        m.cuboid([-o, y0, -o - 0.05], [o, y1, -o + 0.05], VERMILION);
+        m.cuboid([-o - 0.05, y0, -o], [-o + 0.05, y1, o], VERMILION);
+        m.cuboid([o - 0.05, y0, -o], [o + 0.05, y1, o], VERMILION);
+        for (x0, x1) in [(-o, -1.6), (1.6, o)] {
+            m.cuboid([x0, y0, o - 0.05], [x1, y1, o + 0.05], VERMILION);
+        }
+    }
+    m.mat = MAT_MATT;
+    // Stone lanterns either side of the steps.
+    let lantern = toro();
+    for x in [-2.3f32, 2.3] {
+        m.place(&lantern, [x, 0.95, 3.8], 0.85);
+    }
+    // A great red lantern hanging before the door, and a gilded name
+    // board above it.
+    m.chochin([0.0, 3.0, 3.25], 0.42, 0.75, [0.45, 0.06, 0.03], 3.55);
+    m.mat = MAT_GLOSS;
+    m.cuboid([-0.6, 3.05, 2.62], [0.6, 3.4, 2.7], GOLD);
+    m.mat = MAT_MATT;
+    m.cuboid([-0.52, 3.09, 2.7], [0.52, 3.36, 2.72], [0.03, 0.03, 0.035]);
+    // Flame-shaped ornaments of gilt on the spire, under the jewel.
+    m.mat = MAT_GLOSS;
+    for k in 0..4 {
+        let a = k as f32 * std::f32::consts::FRAC_PI_2 + std::f32::consts::FRAC_PI_4;
+        let (c, sn) = (a.cos(), a.sin());
+        let p = |r: f32, y: f32| [c * r, top + y, sn * r];
+        m.quad(
+            p(0.06, 4.3),
+            p(0.34, 4.45),
+            p(0.3, 4.85),
+            p(0.06, 4.95),
+            GOLD,
+        );
+        m.quad(
+            p(0.06, 4.95),
+            p(0.3, 4.85),
+            p(0.34, 4.45),
+            p(0.06, 4.3),
+            GOLD,
+        );
+    }
     m.mat = MAT_MATT;
     m
 }

@@ -7,8 +7,9 @@
 //! New kinds (a maple, a palm) are added here: a model, its size and colour,
 //! its share in each palette and what land it likes; nothing else changes.
 
-use super::terrain::{BIRCH, BROADLEAF, MAPLE, OAK, PINE};
+use super::terrain::{BIRCH, BROADLEAF, KUROMATSU, MAPLE, MOMIJI, OAK, PINE, SAKURA, SUGI};
 use crate::route::Scenery;
+use crate::scenery::{Buildings, Tree};
 
 /// What a spot of land is like. Kinds that care about more (height above
 /// the sea, slope, dryness) add it here.
@@ -119,6 +120,68 @@ const fn birch(share: f64) -> TreeKind {
     }
 }
 
+/// Cherries stand in the open: by the road, in gardens, at the forest's
+/// edge, rarely deep in it.
+const fn cherry(share: f64) -> TreeKind {
+    TreeKind {
+        kind: SAKURA,
+        share,
+        likes: open_land,
+        height: 8.0,
+        width: 1.35,
+        warm: 0.1,
+    }
+}
+
+/// Japanese maples grow at the forest's edge and under taller trees.
+const fn japanese_maple(share: f64) -> TreeKind {
+    TreeKind {
+        kind: MOMIJI,
+        share,
+        likes: forest_edge,
+        height: 6.0,
+        width: 1.3,
+        warm: 0.2,
+    }
+}
+
+/// Cedars make the forest on the hills, in stands.
+const fn cedar(share: f64) -> TreeKind {
+    TreeKind {
+        kind: SUGI,
+        share,
+        likes: anywhere,
+        height: 24.0,
+        width: 0.42,
+        warm: 0.1,
+    }
+}
+
+/// Black pines stand in the open, alone or a few together.
+const fn black_pine(share: f64) -> TreeKind {
+    TreeKind {
+        kind: KUROMATSU,
+        share,
+        likes: open_land,
+        height: 9.0,
+        width: 1.1,
+        warm: 0.1,
+    }
+}
+
+const fn tree(t: Tree, share: f64) -> TreeKind {
+    match t {
+        Tree::Pine => pine(share),
+        Tree::Birch => birch(share),
+        Tree::Oak => oak(share),
+        Tree::Maple => maple(share),
+        Tree::Cherry => cherry(share),
+        Tree::JapaneseMaple => japanese_maple(share),
+        Tree::Cedar => cedar(share),
+        Tree::BlackPine => black_pine(share),
+    }
+}
+
 const BROADLEAF_TREE: TreeKind = TreeKind {
     kind: BROADLEAF,
     share: 1.0,
@@ -131,17 +194,13 @@ const BROADLEAF_TREE: TreeKind = TreeKind {
 impl Palette {
     pub fn of(scenery: Scenery) -> Palette {
         let p = &scenery.spec().plants;
+        let mut trees: Vec<TreeKind> = p.trees.iter().map(|&(t, share)| tree(t, share)).collect();
+        trees.push(BROADLEAF_TREE);
         Palette {
-            trees: vec![
-                pine(p.pines),
-                birch(p.birches),
-                oak(p.oaks),
-                maple(p.maples),
-                BROADLEAF_TREE,
-            ],
+            trees,
             bushes: p.bushes,
             rocks: p.rocks,
-            farmhouses: p.farmhouses,
+            farmhouses: scenery.spec().buildings != Buildings::None,
             bales: p.bales,
         }
     }

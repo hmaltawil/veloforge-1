@@ -134,6 +134,7 @@ the Release workflow run and look again a few minutes later.
   the roads, and their mesh beyond the distant land (no GL: the Model Lab
   builds it too)
 - `src/gfx/shaders.rs`, `mesh.rs`, `flora.rs`, `fields.rs`, `buildings.rs`,
-  `lettering.rs`: shaders and models
+  `lettering.rs`, `japanese.rs`: shaders and models (`japanese.rs`: the
+  Japan scenery's trees, farmhouse, shrine gate, lantern and pagoda)
 - `src/store.rs`: saved settings and data
 - `packaging/`: installers and the release notes' Download section

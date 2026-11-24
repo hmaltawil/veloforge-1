@@ -12,9 +12,6 @@ mod buildings;
 mod fields;
 mod flora;
 mod impostor;
-// The Japanese scenery's models: shown in the Model Lab before they go into
-// the app.
-#[allow(dead_code)]
 mod japanese;
 mod lettering;
 mod math;
@@ -2619,7 +2616,10 @@ impl GlState {
                             card[t].extend_from_slice(&[fin, fout]);
                         }
                         CARD => {
-                            far[if kind == terrain::PINE { 0 } else { 1 }].extend_from_slice(&grown)
+                            // Conifers far off as the far pine, the rest as the far
+                            // broadleaf.
+                            let conifer = kind == terrain::PINE || kind == terrain::SUGI;
+                            far[if conifer { 0 } else { 1 }].extend_from_slice(&grown)
                         }
                         // Thinned out: not drawn.
                         _ => {}

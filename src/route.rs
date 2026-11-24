@@ -15,14 +15,18 @@ pub enum Scenery {
     Alpine,
     /// Sea on the left (on the outside of a loop).
     Coast,
+    /// The Japanese countryside: a lake among wooded hills, cherries in
+    /// blossom, thatched farmhouses, shrines and temples.
+    Japan,
 }
 
 impl Scenery {
-    pub const ALL: [Scenery; 4] = [
+    pub const ALL: [Scenery; 5] = [
         Scenery::Hills,
         Scenery::Lake,
         Scenery::Alpine,
         Scenery::Coast,
+        Scenery::Japan,
     ];
 
     pub fn label(self) -> &'static str {
@@ -597,6 +601,23 @@ pub fn builtin() -> Vec<Route> {
             },
         ),
         hairpin_pass(),
+        mk(
+            "sakura-lake",
+            "Sakura Lake · 15 km gentle",
+            Scenery::Japan,
+            29,
+            15.0,
+            &|u| 1.0 + 3.2 * (u * TAU * 4.0 + 0.6).sin() + 2.4 * (u * TAU * 9.0 + 1.9).sin(),
+            // Gently up and down along the shore: the lake lies just below
+            // the lowest of the road, so a road high above it would stand on
+            // a cliff over the water.
+            &|u| {
+                300.0
+                    + 4.0 * (u * TAU * 2.0 + 0.4).sin()
+                    + 2.5 * (u * TAU * 5.0 + 1.1).sin()
+                    + 1.0 * (u * TAU * 13.0).sin()
+            },
+        ),
         mk(
             "criterium",
             "Park Criterium · 4 km",
