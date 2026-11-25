@@ -6,15 +6,22 @@
 //! kept awake ([`wanted`]). Only a change is passed on, to a thread of its
 //! own that talks to the system, so the frame never waits on it:
 //!
-//! - Linux: `org.freedesktop.ScreenSaver.Inhibit` on the session bus (KDE,
-//!   Xfce, LXQt, Cinnamon and others; works the same on Wayland and X11),
-//!   or GNOME's `org.gnome.SessionManager.Inhibit` with the idle flag. Both
-//!   tie the request to our bus connection, which the thread keeps open, so
-//!   it also ends if VeloForge crashes.
-//! - Windows: `SetThreadExecutionState`, which holds only for the thread
-//!   that called it and only while that thread lives. The thread lives as
-//!   long as the app, which is why the calls are made there.
-//! - macOS: an IOKit power assertion against idle display sleep.
+//! The computer is kept from sleeping for want of input too, since a
+//! laptop set to sleep after some minutes idle would otherwise do so.
+//!
+//! - Linux (works the same on Wayland and X11): on the session bus,
+//!   `org.freedesktop.ScreenSaver.Inhibit` for the display (no dimming,
+//!   blanking or locking) and `org.freedesktop.PowerManagement.Inhibit`
+//!   against sleep, which KDE Plasma's PowerDevil keeps apart (Xfce, LXQt
+//!   and others have one or both). Where there is no screen saver service,
+//!   GNOME's `org.gnome.SessionManager.Inhibit` with the idle flag does
+//!   both. Each request is tied to our bus connection, which the thread
+//!   keeps open, so it also ends if VeloForge crashes.
+//! - Windows: `SetThreadExecutionState` (display and system), which holds
+//!   only for the thread that called it and only while that thread lives.
+//!   The thread lives as long as the app, which is why the calls are made
+//!   there.
+//! - macOS: IOKit power assertions against idle display and system sleep.
 //!
 //! If the system refuses, that is logged once and the ride carries on.
 
@@ -36,7 +43,7 @@ pub fn wanted(enabled: bool, state: State, idle_secs: f64) -> bool {
 /// Asks the system to keep the screen awake, or lets it go.
 trait Backend {
     /// Returns how it is held (for the log), or why it could not be.
-    fn hold(&mut self) -> Result<&'static str, String>;
+    fn hold(&mut self) -> Result<String, String>;
     fn release(&mut self);
 }
 
@@ -183,21 +190,55 @@ mod platform {
     /// GNOME wants the desktop file's name.
     const APP_ID: &str = "veloforge";
     const REASON: &str = "Riding";
-    /// `org.gnome.SessionManager.Inhibit` flag: the session is not idle.
+    /// `org.gnome.SessionManager.Inhibit` flag: the session is not idle
+    /// (no dimming, blanking, locking or sleeping for want of input).
     const GNOME_IDLE: u32 = 8;
 
-    #[derive(Clone, Copy)]
+    /// The services asked, each on its own well-known name.
+    #[derive(Clone, Copy, PartialEq, Eq)]
     enum Via {
+        /// The display: no dimming, blanking or locking (KDE, Xfce, LXQt,
+        /// Cinnamon and others).
         ScreenSaver,
+        /// No automatic sleep. On KDE Plasma (PowerDevil) this is apart
+        /// from the screen saver request; Xfce's power manager has it too.
+        PowerManagement,
+        /// GNOME: both at once, through the idle flag.
         Gnome,
     }
 
-    /// Holds the session bus connection: both services drop a request when
-    /// the connection that made it closes.
+    impl Via {
+        /// (bus name, object path, interface, release method)
+        fn at(self) -> (&'static str, &'static str, &'static str, &'static str) {
+            match self {
+                Via::ScreenSaver => (
+                    "org.freedesktop.ScreenSaver",
+                    "/org/freedesktop/ScreenSaver",
+                    "org.freedesktop.ScreenSaver",
+                    "UnInhibit",
+                ),
+                Via::PowerManagement => (
+                    "org.freedesktop.PowerManagement",
+                    "/org/freedesktop/PowerManagement/Inhibit",
+                    "org.freedesktop.PowerManagement.Inhibit",
+                    "UnInhibit",
+                ),
+                Via::Gnome => (
+                    "org.gnome.SessionManager",
+                    "/org/gnome/SessionManager",
+                    "org.gnome.SessionManager",
+                    "Uninhibit",
+                ),
+            }
+        }
+    }
+
+    /// Holds the session bus connection: these services drop a request
+    /// when the connection that made it closes.
     #[derive(Default)]
     pub struct System {
         conn: Option<Connection>,
-        cookie: Option<(Via, u32)>,
+        cookies: Vec<(Via, u32)>,
     }
 
     impl System {
@@ -218,77 +259,58 @@ mod platform {
             Ok(self.conn.as_ref().expect("just set"))
         }
 
-        fn inhibit(&mut self) -> Result<(Via, u32), String> {
-            let conn = self.conn()?;
-            let fd = conn.with_proxy(
-                "org.freedesktop.ScreenSaver",
-                "/org/freedesktop/ScreenSaver",
-                TIMEOUT,
-            );
-            let first = match fd.method_call::<(u32,), _, _, _>(
-                "org.freedesktop.ScreenSaver",
-                "Inhibit",
-                (APP, REASON),
-            ) {
-                Ok((cookie,)) => return Ok((Via::ScreenSaver, cookie)),
-                Err(e) => plain(&e),
+        fn inhibit(&mut self, via: Via) -> Result<(), String> {
+            let (name, path, iface, _) = via.at();
+            let proxy = self.conn()?.with_proxy(name, path, TIMEOUT);
+            let got = if via == Via::Gnome {
+                proxy.method_call::<(u32,), _, _, _>(
+                    iface,
+                    "Inhibit",
+                    (APP_ID, 0u32, REASON, GNOME_IDLE),
+                )
+            } else {
+                proxy.method_call::<(u32,), _, _, _>(iface, "Inhibit", (APP, REASON))
             };
-            let gnome = conn.with_proxy(
-                "org.gnome.SessionManager",
-                "/org/gnome/SessionManager",
-                TIMEOUT,
-            );
-            match gnome.method_call::<(u32,), _, _, _>(
-                "org.gnome.SessionManager",
-                "Inhibit",
-                (APP_ID, 0u32, REASON, GNOME_IDLE),
-            ) {
-                Ok((cookie,)) => Ok((Via::Gnome, cookie)),
-                Err(e) => Err(format!(
-                    "the desktop answered neither org.freedesktop.ScreenSaver ({first}) \
-                     nor org.gnome.SessionManager ({})",
-                    plain(&e)
-                )),
-            }
+            let (cookie,) = got.map_err(|e| plain(&e))?;
+            self.cookies.push((via, cookie));
+            Ok(())
         }
     }
 
     impl super::Backend for System {
-        fn hold(&mut self) -> Result<&'static str, String> {
-            let got = self.inhibit()?;
-            self.cookie = Some(got);
-            Ok(match got.0 {
-                Via::ScreenSaver => "org.freedesktop.ScreenSaver",
-                Via::Gnome => "org.gnome.SessionManager",
-            })
+        fn hold(&mut self) -> Result<String, String> {
+            match self.inhibit(Via::ScreenSaver) {
+                Ok(()) => {
+                    // Sleep is a separate request where the desktop has
+                    // one; without it the display request is still kept.
+                    Ok(match self.inhibit(Via::PowerManagement) {
+                        Ok(()) => "org.freedesktop.ScreenSaver and org.freedesktop.PowerManagement",
+                        Err(_) => "org.freedesktop.ScreenSaver",
+                    }
+                    .into())
+                }
+                Err(first) => match self.inhibit(Via::Gnome) {
+                    Ok(()) => Ok("org.gnome.SessionManager".into()),
+                    Err(e) => Err(format!(
+                        "the desktop answered neither org.freedesktop.ScreenSaver ({first}) \
+                         nor org.gnome.SessionManager ({e})"
+                    )),
+                },
+            }
         }
 
         fn release(&mut self) {
-            let (Some((via, cookie)), Some(conn)) = (self.cookie.take(), &self.conn) else {
-                return;
-            };
-            let done = match via {
-                Via::ScreenSaver => conn
-                    .with_proxy(
-                        "org.freedesktop.ScreenSaver",
-                        "/org/freedesktop/ScreenSaver",
-                        TIMEOUT,
-                    )
-                    .method_call::<(), _, _, _>(
-                        "org.freedesktop.ScreenSaver",
-                        "UnInhibit",
-                        (cookie,),
-                    ),
-                Via::Gnome => conn
-                    .with_proxy(
-                        "org.gnome.SessionManager",
-                        "/org/gnome/SessionManager",
-                        TIMEOUT,
-                    )
-                    .method_call::<(), _, _, _>("org.gnome.SessionManager", "Uninhibit", (cookie,)),
-            };
+            let mut failed = false;
+            for (via, cookie) in std::mem::take(&mut self.cookies) {
+                let Some(conn) = &self.conn else { break };
+                let (name, path, iface, method) = via.at();
+                failed |= conn
+                    .with_proxy(name, path, TIMEOUT)
+                    .method_call::<(), _, _, _>(iface, method, (cookie,))
+                    .is_err();
+            }
             // If that failed, closing the connection releases it anyway.
-            if done.is_err() {
+            if failed {
                 self.conn = None;
             }
         }
@@ -311,10 +333,12 @@ mod platform {
     /// The state set here belongs to the calling thread: the keep-awake
     /// thread, which lives as long as the app.
     #[derive(Default)]
-    pub struct System;
+    pub struct System {
+        held: bool,
+    }
 
     impl super::Backend for System {
-        fn hold(&mut self) -> Result<&'static str, String> {
+        fn hold(&mut self) -> Result<String, String> {
             // SAFETY: plain flags; no pointers.
             let prev = unsafe {
                 SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED)
@@ -322,13 +346,16 @@ mod platform {
             if prev == 0 {
                 Err("Windows refused SetThreadExecutionState".into())
             } else {
-                Ok("SetThreadExecutionState")
+                self.held = true;
+                Ok("SetThreadExecutionState".into())
             }
         }
 
         fn release(&mut self) {
-            // SAFETY: as above.
-            unsafe { SetThreadExecutionState(ES_CONTINUOUS) };
+            if std::mem::take(&mut self.held) {
+                // SAFETY: as above.
+                unsafe { SetThreadExecutionState(ES_CONTINUOUS) };
+            }
         }
     }
 }
@@ -366,7 +393,7 @@ mod platform {
 
     #[derive(Default)]
     pub struct System {
-        assertion: Option<u32>,
+        assertions: Vec<u32>,
     }
 
     fn cf(s: &std::ffi::CStr) -> CFStringRef {
@@ -374,40 +401,47 @@ mod platform {
         unsafe { CFStringCreateWithCString(std::ptr::null(), s.as_ptr(), UTF8) }
     }
 
-    impl super::Backend for System {
-        fn hold(&mut self) -> Result<&'static str, String> {
-            // `kIOPMAssertionTypePreventUserIdleDisplaySleep`
-            let kind = cf(c"PreventUserIdleDisplaySleep");
-            let name = cf(c"VeloForge: riding");
-            if kind.is_null() || name.is_null() {
-                for s in [kind, name] {
-                    if !s.is_null() {
-                        // SAFETY: created above and not used again.
-                        unsafe { CFRelease(s) };
-                    }
-                }
-                return Err("couldn't make the request".into());
-            }
-            let mut id = 0u32;
+    /// One IOKit power assertion of the given type, or its error code.
+    fn assert(kind: &std::ffi::CStr) -> Result<u32, i32> {
+        let kind = cf(kind);
+        let name = cf(c"VeloForge: riding");
+        let mut id = 0u32;
+        let ret = if kind.is_null() || name.is_null() {
+            -1
+        } else {
             // SAFETY: valid strings and a valid pointer to write the id to.
-            let ret = unsafe { IOPMAssertionCreateWithName(kind, LEVEL_ON, name, &mut id) };
-            // SAFETY: created above; IOKit keeps its own copies.
-            unsafe {
-                CFRelease(kind);
-                CFRelease(name);
+            unsafe { IOPMAssertionCreateWithName(kind, LEVEL_ON, name, &mut id) }
+        };
+        for s in [kind, name] {
+            if !s.is_null() {
+                // SAFETY: created above and not used again; IOKit keeps
+                // its own copies.
+                unsafe { CFRelease(s) };
             }
-            if ret == 0 {
-                self.assertion = Some(id);
-                Ok("IOKit power assertion")
-            } else {
-                Err(format!(
-                    "IOKit refused the power assertion (error {ret:#x})"
-                ))
+        }
+        if ret == 0 {
+            Ok(id)
+        } else {
+            Err(ret)
+        }
+    }
+
+    impl super::Backend for System {
+        fn hold(&mut self) -> Result<String, String> {
+            // `kIOPMAssertionTypePreventUserIdleDisplaySleep`
+            let id = assert(c"PreventUserIdleDisplaySleep")
+                .map_err(|e| format!("IOKit refused the power assertion (error {e:#x})"))?;
+            self.assertions.push(id);
+            // `kIOPMAssertionTypePreventUserIdleSystemSleep`: the display
+            // one should imply it, but ask plainly.
+            if let Ok(id) = assert(c"PreventUserIdleSystemSleep") {
+                self.assertions.push(id);
             }
+            Ok("IOKit power assertions".into())
         }
 
         fn release(&mut self) {
-            if let Some(id) = self.assertion.take() {
+            for id in self.assertions.drain(..) {
                 // SAFETY: an assertion we created and have not released.
                 unsafe { IOPMAssertionRelease(id) };
             }
@@ -418,10 +452,10 @@ mod platform {
 #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
 mod platform {
     #[derive(Default)]
-    pub struct System;
+    pub struct System {}
 
     impl super::Backend for System {
-        fn hold(&mut self) -> Result<&'static str, String> {
+        fn hold(&mut self) -> Result<String, String> {
             Err("not supported on this system".into())
         }
         fn release(&mut self) {}
@@ -454,12 +488,12 @@ mod tests {
     }
 
     impl Backend for Fake {
-        fn hold(&mut self) -> Result<&'static str, String> {
+        fn hold(&mut self) -> Result<String, String> {
             self.calls.borrow_mut().push("hold");
             if self.refuse {
                 Err("no".into())
             } else {
-                Ok("fake")
+                Ok("fake".into())
             }
         }
         fn release(&mut self) {
