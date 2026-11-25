@@ -3271,6 +3271,7 @@ dependencies = [
  "anyhow",
  "btleplug",
  "chrono",
+ "dbus",
  "directories",
  "eframe",
  "epaint_default_fonts",

@@ -506,6 +506,11 @@ impl Ride {
         g.time_at(self.distance).map(|t| self.elapsed - t)
     }
 
+    /// How long the rider has not been moving, in seconds of riding.
+    pub fn idle_secs(&self) -> f64 {
+        self.idle_for
+    }
+
     pub fn start(&mut self) {
         if self.started.is_none() {
             self.started = Some(Local::now());

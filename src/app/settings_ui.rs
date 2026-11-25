@@ -573,6 +573,17 @@ impl App {
                 })
                 .inner
             });
+            changed |= row(
+                ui,
+                "Screen",
+                "Pedalling isn't keyboard or mouse input, so without this the screen can \
+                 dim and blank mid-ride. Only while a ride is running: pausing, finishing \
+                 or ten minutes without pedalling lets it sleep as usual.",
+                |ui| {
+                    ui.checkbox(&mut s.keep_awake, "Keep the screen awake while riding")
+                        .changed()
+                },
+            );
         });
         card(ui, "Sky", |ui| {
             changed |= row(
