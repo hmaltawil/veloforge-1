@@ -10,6 +10,10 @@ use crate::scenery::{Buildings, LandShape, Planting, Water};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
+/// How far round a pagoda its grounds reach (metres), before fading into
+/// the land around over 10 m more.
+const GROVE: f64 = 24.0;
+
 /// Floats per terrain vertex: position (3), normal (3), road distance, forest.
 pub const TERRAIN_STRIDE: usize = 8;
 /// Cells per side of a terrain tile.
@@ -456,6 +460,9 @@ pub struct RouteGeo {
     /// Where the view from the road to a building is kept clear of trees
     /// (Japan's planting), one for each building.
     views: Vec<View>,
+    /// Where pagodas stand, each in a grove of its own: no paddies and no
+    /// wild woods on its grounds, only the trees planted round it.
+    groves: Vec<[f64; 2]>,
 }
 
 impl RouteGeo {
@@ -506,6 +513,7 @@ impl RouteGeo {
             pads: Vec::new(),
             farms: Vec::new(),
             views: Vec::new(),
+            groves: Vec::new(),
         };
         // The farms: first where the buildings go on the land as it is, and
         // a level pad for each at the average height of its ground; then
@@ -513,15 +521,24 @@ impl RouteGeo {
         if Palette::of(route.scenery).farmhouses {
             let everywhere = (-1.0e7, -1.0e7, 2.0e7);
             let first = geo.farmsteads(everywhere.0, everywhere.1, everywhere.2);
+            geo.groves = first
+                .iter()
+                .filter(|b| b.kind == PAGODA)
+                .map(|b| [b.x, b.z])
+                .collect();
             // One level yard per farmstead: all its buildings at the average
-            // height of their ground, so pads that overlap agree.
+            // height of their ground, so pads that overlap agree. A pagoda,
+            // far back from its gate and often up a slope from it, has a
+            // terrace of its own at its own ground's height, not sunk to the
+            // gate's.
             let buildings: Vec<&Building> = first
                 .iter()
                 .filter(|b| is(b.kind, Group::Building))
                 .collect();
-            let mut yard: std::collections::HashMap<i64, (f64, f64)> = Default::default();
+            let yard_of = |b: &Building| (b.farm, b.kind == PAGODA);
+            let mut yard: std::collections::HashMap<(i64, bool), (f64, f64)> = Default::default();
             for b in &buildings {
-                let e = yard.entry(b.farm).or_default();
+                let e = yard.entry(yard_of(b)).or_default();
                 for k in 0..9 {
                     let a = k as f64 * std::f64::consts::FRAC_PI_4;
                     let r = if k == 8 { 0.0 } else { b.reach * 0.75 };
@@ -532,10 +549,12 @@ impl RouteGeo {
             geo.pads = buildings
                 .iter()
                 .map(|b| {
-                    let (sum, n) = yard[&b.farm];
+                    let (sum, n) = yard[&yard_of(b)];
                     // Houses' yards reach past their front gardens.
                     let level = if [HOUSE, TOWNHOUSE, MINKA].contains(&b.kind) {
                         b.reach + 6.0
+                    } else if b.kind == PAGODA {
+                        b.reach + 3.0
                     } else {
                         b.reach + 1.0
                     };
@@ -933,7 +952,23 @@ impl RouteGeo {
             let w = wmax * smoothstep(4.5, 7.0, smp.dist);
             smp.h += (sum / total - smp.h) * w;
         }
+        // A pagoda's grounds: a mossy grove floor, never paddies.
+        for g in &self.groves {
+            let d = (x - g[0]).hypot(z - g[1]);
+            if d < GROVE + 10.0 {
+                smp.forest = smp
+                    .forest
+                    .max(0.45 * (1.0 - smoothstep(GROVE, GROVE + 10.0, d)));
+            }
+        }
         smp
+    }
+
+    /// Whether `x`, `z` is on a pagoda's grounds, where no wild woods grow.
+    fn in_grove(&self, x: f64, z: f64) -> bool {
+        self.groves
+            .iter()
+            .any(|g| (x - g[0]).hypot(z - g[1]) < GROVE + 10.0)
     }
 
     /// The land as it lies, before any levelling: shaped by the roads near
@@ -1398,17 +1433,19 @@ impl RouteGeo {
             let mut side = if rng.next() < 0.5 { -1.0 } else { 1.0 };
             // A temple's pagoda stands back from the road: on the first of
             // a few sites, either side and nearer or further back, that is
-            // dry land off the lake's bank and off the paddies.
+            // dry land off the lake's bank and off the paddies. Judged on the
+            // land before its levelling, so the yards levelled for the
+            // buildings never move them.
             let mut back = 0.0;
             if temple {
                 back = 58.0 + 8.0 * rng.next();
-                let land = |x: f64, z: f64| self.sample(x, z).h;
+                let land = |x: f64, z: f64| self.land(x, z).h;
                 let free = |sd: f64, b: f64| {
                     let (x, z) = (
                         p.x + sd * b * p.heading.cos(),
                         p.z - sd * b * p.heading.sin(),
                     );
-                    let smp = self.sample(x, z);
+                    let smp = self.land(x, z);
                     !smp.water
                         && smp.dist >= 15.0
                         && !self.by_the_lake(x, z)
@@ -1497,18 +1534,24 @@ impl RouteGeo {
                 for x in [-10.5, 10.5] {
                     trees.push((MOMIJI, at(x, 25.0 + 2.0 * rng.next()), 5.0 + rng.next()));
                 }
-                // Cherries beside the pagoda and along the approach, either
-                // side of the view up to it.
+                // The pagoda framed, never hidden: a dark stand of cedars
+                // behind it, and cherries and maples either side, level
+                // with it or behind.
+                for i in 0..5 {
+                    let x = -12.0 + 6.0 * i as f64 + 2.0 * (rng.next() - 0.5);
+                    let h = 15.0 + 5.0 * rng.next() - 0.25 * x.abs();
+                    trees.push((SUGI, at(x, back + 15.0 + 4.0 * rng.next()), h));
+                }
                 for x in [-13.5, 13.5] {
                     trees.push((
                         SAKURA,
-                        at(x, back - 2.0 - 4.0 * rng.next()),
+                        at(x, back + 1.0 + 3.0 * rng.next()),
                         7.0 + 1.5 * rng.next(),
                     ));
                     trees.push((
-                        SAKURA,
-                        at(x, 36.0 + 6.0 * rng.next()),
-                        6.5 + 1.5 * rng.next(),
+                        MOMIJI,
+                        at(x * 1.45, back + 6.0 + 3.0 * rng.next()),
+                        5.0 + rng.next(),
                     ));
                 }
             } else if what < 0.5 {
@@ -2085,7 +2128,7 @@ impl RouteGeo {
     ) -> bool {
         // A ragged edge to the woods: the forest's own edge, roughened.
         let edge = 0.18 + 0.12 * fbm(x / 60.0 + 4.0, z / 60.0 - 2.0, 2, self.seed + 31);
-        if smp.forest < edge {
+        if smp.forest < edge || self.in_grove(x, z) {
             return false;
         }
         let s = self.seed;
