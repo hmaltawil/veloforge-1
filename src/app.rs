@@ -171,6 +171,8 @@ pub struct App {
     found: Vec<DeviceInfo>,
     links: BTreeMap<String, LinkInfo>,
     log: VecDeque<String>,
+    /// Keeps the screen awake while riding.
+    awake: crate::awake::Awake,
     metrics: Metrics,
     per_device: std::collections::HashMap<String, Metrics>,
     sim_effort: f32,
@@ -396,6 +398,7 @@ impl App {
             auto_finish: None,
             picking: None,
             keep_riding: false,
+            awake: Default::default(),
             last_route_pos: 0.0,
             frame_marks: (None, None),
             still: std::env::var("VELOFORGE_STILL")
@@ -1135,6 +1138,14 @@ impl eframe::App for App {
             self.save_now();
         }
         self.pump_remote(ctx);
+        self.awake.set(crate::awake::wanted(
+            self.store.settings.keep_awake,
+            self.ride.state,
+            self.ride.idle_secs(),
+        ));
+        while let Some(line) = self.awake.take_log() {
+            self.log_line(line);
+        }
         if self.ride.state == ride::State::Running {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
@@ -1165,6 +1176,7 @@ impl eframe::App for App {
         if self.dirty {
             let _ = self.store.save(&self.paths.state_file());
         }
+        self.awake.stop();
     }
 }
 

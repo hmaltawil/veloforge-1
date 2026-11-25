@@ -133,6 +133,8 @@ Shortcuts: **Space** start/pause, **↑/↓** intensity / slope / difficulty / t
 
 **Workouts on a route**: the trainer holds each step's power whatever the road does, while your speed still follows the hills. Tick **Settings → Riding → Ride workouts on the flat** to have speed, distance and climbing ignore the hills too, so rides of the same workout compare. A finished workout's chart shows its target steps behind your power.
 
+**The screen stays awake while you ride**: pedalling isn't keyboard or mouse input, so VeloForge asks the system not to dim, blank or lock the screen, or put the computer to sleep, while a ride or workout is running. Pausing, finishing, closing VeloForge or ten minutes without pedalling lets it sleep as usual. Switch it off in **Settings → Display → Ride screen**.
+
 **Speed** comes from your trainer's wheel speed when it reports one, or is calculated from your power, weight and the gradient. Choose which in **Settings → Riding**.
 
 ### Workouts and plans
@@ -169,6 +171,7 @@ Wheel-on trainers such as the KICKR SNAP read power more accurately after a **sp
 - **Laptop with two graphics chips**: started from the app menu, VeloForge asks GNOME or KDE for the dedicated one. **Devices → Log** shows which one it got ("Graphics: …"). From a terminal, start it with `__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia veloforge` (NVIDIA driver) or `DRI_PRIME=1 veloforge` (AMD and other cards).
 - **How fast does the 3D view draw?** Run `veloforge --bench` (with the same graphics settings as usual). It rides the Valley Loop for a minute, then prints the frame rate and how long the graphics card spends on shadows, the scene (split into trees and objects, ground and road, grass, and the rest) and the finishing pass, and how busy it would be at 30 and 60 fps. The result is also saved as `bench.txt` next to your rides. Compare runs before and after changing **Detail** or **Resolution**.
 - **3D view looks wrong**: choose **Settings → Display → Simple**, or try `VELOFORGE_POST=0 veloforge`, which draws the world without the finishing pass (no glow, light shafts, frosted panels or smoothed edges). If the window doesn't open at all, run `VELOFORGE_GL=1 veloforge` (simple view).
+- **The screen dims during a ride anyway**: **Devices → Log** says how VeloForge kept it awake, or why the desktop refused. While you ride, KDE Plasma lists VeloForge in the battery and brightness applet as blocking sleep and screen locking; on GNOME, `gnome-session-inhibit --list` shows it.
 - **Something else**: **Devices → Open full log** shows everything VeloForge did. Tick **Log raw sensor data** to record exactly what your devices send.
 
 ## Your data

@@ -70,6 +70,8 @@ pub struct Settings {
     pub remote_token: String,
     /// Ask GitHub at start-up whether a newer version has been released.
     pub check_updates: bool,
+    /// Ask the system not to dim or blank the screen during a ride.
+    pub keep_awake: bool,
     /// What the next random route is made of (its seed is new each time).
     pub random_route: crate::routegen::RandomRoute,
     /// Virtual shifting, for a bike with one fixed cog on the trainer (a
@@ -139,6 +141,7 @@ impl Default for Settings {
             remote_port: crate::remote::DEFAULT_PORT,
             remote_token: String::new(),
             check_updates: true,
+            keep_awake: true,
             random_route: Default::default(),
             virtual_shifting: false,
             gear: crate::gears::START_GEAR,

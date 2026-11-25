@@ -3,6 +3,7 @@
 
 mod activity;
 mod app;
+mod awake;
 mod builder;
 mod charts;
 #[cfg(test)]
