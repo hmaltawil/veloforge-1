@@ -1,6 +1,6 @@
 [package]
 name = "veloforge"
-version = "1.11.0"
+version = "1.12.0"
 edition = "2021"
 description = "Indoor cycling with smart trainer control, workouts, plans and a 3D world"
 license = "MIT"
