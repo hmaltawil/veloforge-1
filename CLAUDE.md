@@ -129,6 +129,8 @@ the Release workflow run and look again a few minutes later.
 - `src/route.rs`: routes, GPX import and cleaning (`clean_track`)
 - `src/gears.rs`: virtual shifting (the gears, and the power a cadence in
   a gear needs); `Ride::free_ride` in `src/ride.rs` turns it into ERG
+- `src/zwift.rs`: Zwift Click messages (pure, tested); the Bluetooth side
+  (`zwift_setup`, `ZwiftClick::greet`, `ClickLog`) is in `src/devices.rs`
 - `src/routegen.rs`: random routes
 - `src/gfx/terrain.rs`: land, road bed, placement of trees and objects,
   each kind of object (`OBJECTS`), terrain windows built off the UI thread

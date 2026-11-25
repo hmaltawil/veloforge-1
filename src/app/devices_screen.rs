@@ -220,6 +220,22 @@ impl App {
                  or pair a cadence sensor. Until there is one, the trainer follows the road as without gears.",
             );
         }
+        let clicks = self
+            .links
+            .values()
+            .filter(|l| l.link == Link::Connected && l.caps.contains(&Capability::Shifter))
+            .count();
+        ui.label(
+            RichText::new(if clicks > 0 {
+                "Zwift Click connected: + shifts up, − shifts down.".to_string()
+            } else {
+                "Shifting with a Zwift Click: press one of its buttons to wake it, Scan, then Connect it above. \
+                 A Click v2 shows as two devices, one per half: connect both. Zwift locks the left half (−) to \
+                 its own app until Zwift has unlocked it; while it is locked, B on the right half shifts down."
+                    .to_string()
+            })
+            .weak(),
+        );
         if self.trainer_link().is_none() {
             ui.label(
                 RichText::new(
@@ -331,7 +347,23 @@ impl App {
             if !caps.is_empty() {
                 ui.label(RichText::new(caps.join(" · ")).small().color(Color32::from_rgb(120, 190, 240)));
             }
-            if l.link == Link::Connected {
+            let shifter = l.caps.contains(&Capability::Shifter);
+            if l.link == Link::Connected && shifter {
+                // Shift buttons send no readings: show the presses instead.
+                let msg = match self.presses.get(id) {
+                    Some(&(n, at, up)) => format!(
+                        "{n} press{} · last: {} {} s ago",
+                        if n == 1 { "" } else { "es" },
+                        if up { "+ (shift up)" } else { "− (shift down)" },
+                        at.elapsed().as_secs()
+                    ),
+                    None => "Press + or − to try it".to_string(),
+                };
+                ui.label(RichText::new(msg).color(Color32::from_rgb(140, 220, 160)));
+                if !self.gears_on() {
+                    ui.label(RichText::new("Turn on virtual shifting below for its presses to change gear.").color(theme::WARN));
+                }
+            } else if l.link == Link::Connected {
                 if data.is_empty() {
                     let msg = match silent_for {
                         Some(s) => format!("No data for {s} s — pedal to wake it. See the log on the right."),

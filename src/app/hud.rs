@@ -54,7 +54,11 @@ impl App {
         let connected: Vec<&str> = self
             .links
             .iter()
-            .filter(|(id, l)| l.link == Link::Connected && id.as_str() != SIM_ID)
+            .filter(|(id, l)| {
+                l.link == Link::Connected
+                    && id.as_str() != SIM_ID
+                    && !l.caps.contains(&Capability::Shifter)
+            })
             .map(|(_, l)| l.name.as_str())
             .collect();
         Some(if connected.is_empty() {

@@ -2,8 +2,10 @@
 //! to BlueZ through btleplug and exchanges messages with the UI via channels.
 
 use crate::protocol::{self, ftms, wahoo, CadenceCalc};
+use crate::zwift;
 use btleplug::api::{
-    Central, CentralEvent, Characteristic, Manager as _, Peripheral as _, ScanFilter, WriteType,
+    Central, CentralEvent, CharPropFlags, Characteristic, Manager as _, Peripheral as _,
+    ScanFilter, WriteType,
 };
 use btleplug::platform::{Adapter, Manager, Peripheral};
 use futures::{Stream, StreamExt};
@@ -41,6 +43,8 @@ pub enum Capability {
     Power,
     HeartRate,
     Cadence,
+    /// Buttons that shift the virtual gears (a Zwift Click).
+    Shifter,
 }
 
 impl Capability {
@@ -51,6 +55,7 @@ impl Capability {
             Capability::Power => "Power",
             Capability::HeartRate => "Heart rate",
             Capability::Cadence => "Cadence",
+            Capability::Shifter => "Shift buttons (Zwift)",
         }
     }
 }
@@ -128,6 +133,11 @@ pub enum Event {
         reading: Reading,
     },
     Calibration(Calibration),
+    /// A shift button was pressed (a Zwift Click): up (harder) or down.
+    Shift {
+        id: String,
+        up: bool,
+    },
     Log(String),
 }
 
@@ -486,6 +496,26 @@ async fn run(mut cmd_rx: UnboundedReceiver<Cmd>, ui: Ui) {
     }
 }
 
+/// Which Zwift device an advertisement is from, if Zwift's.
+fn zwift_kind(manufacturer: &HashMap<u16, Vec<u8>>) -> Option<zwift::Kind> {
+    zwift::Kind::from_manufacturer_data(manufacturer.get(&zwift::MANUFACTURER_ID)?)
+}
+
+/// A Zwift controller (shift buttons), going by its advertisement: Zwift's
+/// device type, else its name or Zwift's service on something that is not
+/// a trainer (a Zwift Hub trainer has Zwift's service too).
+fn is_zwift_controller(name: &str, kind: Option<zwift::Kind>, services: &[uuid::Uuid]) -> bool {
+    if let Some(k) = kind {
+        return k.is_controller();
+    }
+    let n = name.to_lowercase();
+    ["zwift click", "zwift play", "zwift ride", "zwift sf2"]
+        .iter()
+        .any(|z| n.starts_with(z))
+        || ((services.contains(&zwift::SERVICE) || services.contains(&zwift::SERVICE_FC82))
+            && !services.contains(&protocol::FTMS_SERVICE))
+}
+
 fn caps_from_services(services: &[uuid::Uuid]) -> Vec<Capability> {
     let mut caps = Vec::new();
     if services.contains(&protocol::FTMS_SERVICE) {
@@ -673,7 +703,15 @@ impl State {
                 continue;
             };
             let id = p.id().to_string();
-            let caps = caps_from_services(&props.services);
+            let mut caps = caps_from_services(&props.services);
+            let kind = zwift_kind(&props.manufacturer_data);
+            let name = match kind {
+                Some(k) if k.is_controller() => format!("{name} · {}", k.label()),
+                _ => name,
+            };
+            if is_zwift_controller(&name, kind, &props.services) {
+                caps.push(Capability::Shifter);
+            }
             self.names.insert(id.clone(), name.clone());
             self.peripherals.insert(id.clone(), p);
             out.push(DeviceInfo {
@@ -1030,13 +1068,14 @@ async fn setup(
             }
         }
     }
-    const KNOWN: [uuid::Uuid; 6] = [
+    const KNOWN: [uuid::Uuid; 7] = [
         protocol::INDOOR_BIKE_DATA,
         protocol::FTMS_CONTROL_POINT,
         protocol::CPS_MEASUREMENT,
         protocol::HR_MEASUREMENT,
         protocol::CSC_MEASUREMENT,
         protocol::WAHOO_TRAINER,
+        zwift::ASYNC,
     ];
     let mut chars = Default::default();
     for _ in 0..15 {
@@ -1069,6 +1108,14 @@ async fn setup(
     let hr = find(protocol::HR_MEASUREMENT);
     let csc = find(protocol::CSC_MEASUREMENT);
     let wahoo_ch = find(protocol::WAHOO_TRAINER);
+    let click = zwift_setup(
+        &p,
+        &name,
+        &chars,
+        ibd.is_some() || cp.is_some() || wahoo_ch.is_some(),
+        &ui,
+    )
+    .await;
 
     let mut stream = p.notifications().await?;
     for c in [&ibd, &cpm, &hr, &csc].into_iter().flatten() {
@@ -1082,7 +1129,12 @@ async fn setup(
     let subscribed = [&ibd, &cpm, &hr, &csc]
         .iter()
         .filter(|c| c.is_some())
-        .count();
+        .count()
+        + usize::from(click.is_some());
+    let mut click_log = click
+        .as_ref()
+        .map(|c| ClickLog::new(id.clone(), c.heard.clone()));
+    let click_gen = (gen_cell.clone(), generation);
     let has_ibd = ibd.is_some();
     let got_data = Arc::new(AtomicBool::new(false));
     let data_ui = ui.clone();
@@ -1169,6 +1221,11 @@ async fn setup(
                 let plausible = (25..=240).contains(&h.bpm);
                 let trusted = plausible && h.contact != Some(false) && noisy != Some(true);
                 r.hr = trusted.then_some(f32::from(h.bpm));
+            } else if n.uuid == zwift::ASYNC || n.uuid == zwift::SYNC_TX {
+                if let Some(c) = &mut click_log {
+                    c.handle(&n.value, &data_name, &data_ui);
+                }
+                continue;
             } else if n.uuid == protocol::CSC_MEASUREMENT {
                 r.cadence = protocol::parse_csc(&n.value).map(|c| cad.update(c, now));
             } else if n.uuid == protocol::FTMS_STATUS {
@@ -1217,7 +1274,8 @@ async fn setup(
             });
         }
     });
-    if subscribed > 0 {
+    // A Click has its own watch on the handshake (in `greet`).
+    if subscribed > 0 && click.is_none() {
         let watch_ui = ui.clone();
         let watch_name = name.clone();
         tokio::spawn(async move {
@@ -1234,6 +1292,9 @@ async fn setup(
             "{name}: no power, trainer, heart rate or cadence services found"
         ));
     }
+    if let Some(c) = &click {
+        c.greet(&p, &name, &ui, click_gen).await;
+    }
 
     let mut caps = Vec::new();
     if ibd.is_some() || cp.is_some() {
@@ -1249,6 +1310,9 @@ async fn setup(
     }
     if csc.is_some() {
         caps.push(Capability::Cadence);
+    }
+    if click.is_some() {
+        caps.push(Capability::Shifter);
     }
 
     let write = |ch: Characteristic, d: Vec<u8>| {
@@ -1302,6 +1366,7 @@ async fn setup(
         match controller.as_ref().map(|c| &c.kind) {
             Some(ControlKind::Ftms(_)) => "resistance control via FTMS",
             Some(ControlKind::Wahoo { .. }) => "resistance control via Wahoo legacy protocol",
+            None if click.is_some() => "shift buttons for the virtual gears",
             None => "no resistance control (sensor only)",
         }
     ));
@@ -1315,6 +1380,304 @@ async fn setup(
     Ok(controller)
 }
 
+/// A Zwift controller (a Click) being connected: where it listens, how to
+/// greet it, and what has been heard from it.
+struct ZwiftClick {
+    notify: Characteristic,
+    indicate: Characteristic,
+    write: Characteristic,
+    handshake: Vec<u8>,
+    heard: Arc<Heard>,
+}
+
+#[derive(Default)]
+struct Heard {
+    /// It answered the handshake ("RideOn…").
+    replied: AtomicBool,
+    /// Any other message.
+    any: AtomicBool,
+}
+
+/// Zwift's characteristics, on a Zwift controller (never on a trainer: a
+/// Zwift Hub has Zwift's service too, and is left alone). Logs what it
+/// finds, or why a Zwift controller cannot be used.
+async fn zwift_setup(
+    p: &Peripheral,
+    name: &str,
+    chars: &std::collections::BTreeSet<Characteristic>,
+    is_trainer: bool,
+    ui: &Ui,
+) -> Option<ZwiftClick> {
+    let props = p.properties().await.ok().flatten();
+    let kind = props
+        .as_ref()
+        .and_then(|pr| zwift_kind(&pr.manufacturer_data));
+    let advertised = props
+        .as_ref()
+        .and_then(|pr| pr.manufacturer_data.get(&zwift::MANUFACTURER_ID))
+        .map(|d| zwift::hex(d));
+    let find = |u| chars.iter().find(|c| c.uuid == u).cloned();
+    let (notify, indicate, write) = (
+        find(zwift::ASYNC),
+        find(zwift::SYNC_TX),
+        find(zwift::SYNC_RX),
+    );
+    let controller = is_zwift_controller(name, kind, &[]);
+    if is_trainer || !(controller || notify.is_some()) || kind.is_some_and(|k| !k.is_controller()) {
+        return None;
+    }
+    let what = match (kind, &advertised) {
+        (Some(k), Some(d)) => format!("{} (advertised as Zwift type {d})", k.label()),
+        _ => "type not advertised".to_string(),
+    };
+    let (Some(notify), Some(indicate), Some(write)) = (notify, indicate, write) else {
+        let found: Vec<String> = p
+            .services()
+            .iter()
+            .map(|s| protocol::describe_uuid(s.uuid))
+            .collect();
+        ui.log(format!(
+            "{name}: a Zwift controller ({what}), but its Zwift service is not there (services: {}). \
+             A Zwift Click v2 hides it while Zwift has it locked. VeloForge cannot use it as it is.",
+            found.join(", ")
+        ));
+        return None;
+    };
+    let service = if notify.service_uuid == zwift::SERVICE_FC82 {
+        "FC82 (Ride / Click v2)"
+    } else if notify.service_uuid == zwift::SERVICE {
+        "00000001-19ca (Click / Play)"
+    } else {
+        "an unexpected one"
+    };
+    ui.log(format!(
+        "{name}: Zwift controller: {what}; Zwift service {service}"
+    ));
+    if matches!(kind, Some(zwift::Kind::PlayLeft | zwift::Kind::PlayRight)) {
+        ui.log(format!(
+            "{name}: a Zwift Play encrypts its buttons, so VeloForge probably cannot read them; trying anyway"
+        ));
+    }
+    Some(ZwiftClick {
+        notify,
+        indicate,
+        write,
+        handshake: zwift::handshake(kind),
+        heard: Default::default(),
+    })
+}
+
+impl ZwiftClick {
+    /// Listen, say "RideOn", and if nothing comes back try the other
+    /// greeting once. Never fails the connection: whatever goes wrong is
+    /// logged, and the trainer and the app carry on.
+    async fn greet(
+        &self,
+        p: &Peripheral,
+        name: &str,
+        ui: &Ui,
+        (gen_cell, generation): (Arc<AtomicU32>, u32),
+    ) {
+        for c in [&self.notify, &self.indicate] {
+            if let Err(e) = p.subscribe(c).await {
+                ui.log(format!(
+                    "{name}: could not subscribe to Zwift's {}: {e}",
+                    if c.uuid == zwift::ASYNC {
+                        "button messages"
+                    } else {
+                        "replies"
+                    }
+                ));
+            }
+        }
+        zwift_write(p, &self.write, &self.handshake, name, ui).await;
+        let (p, name, ui, heard) = (p.clone(), name.to_string(), ui.clone(), self.heard.clone());
+        let (write, first) = (self.write.clone(), self.handshake.clone());
+        tokio::spawn(async move {
+            let quiet =
+                || !heard.replied.load(Ordering::Relaxed) && !heard.any.load(Ordering::Relaxed);
+            let live = || gen_cell.load(Ordering::SeqCst) == generation;
+            tokio::time::sleep(Duration::from_secs(4)).await;
+            if !live() || !quiet() {
+                if live() && !heard.replied.load(Ordering::Relaxed) {
+                    ui.log(format!(
+                        "{name}: sending messages without answering the handshake; carrying on"
+                    ));
+                }
+                return;
+            }
+            let other = zwift::other_handshake(&first);
+            ui.log(format!(
+                "{name}: no answer to the handshake after 4 s; trying the other greeting"
+            ));
+            zwift_write(&p, &write, &other, &name, &ui).await;
+            tokio::time::sleep(Duration::from_secs(6)).await;
+            if live() && quiet() {
+                ui.log(format!(
+                    "{name}: still silent. Press one of its buttons to wake it. If it stays silent: close Zwift \
+                     and the Zwift Companion app on every device (a Click talks to one app at a time), remove it from \
+                     your system's Bluetooth settings, then connect it again here."
+                ));
+            }
+        });
+    }
+}
+
+/// Write to the controller (as it allows: without a response if it can).
+async fn zwift_write(p: &Peripheral, ch: &Characteristic, data: &[u8], name: &str, ui: &Ui) {
+    let kind = if ch
+        .properties
+        .contains(CharPropFlags::WRITE_WITHOUT_RESPONSE)
+    {
+        WriteType::WithoutResponse
+    } else {
+        WriteType::WithResponse
+    };
+    let shown = String::from_utf8_lossy(&data[..data.len().min(zwift::RIDE_ON.len())]).into_owned();
+    match tokio::time::timeout(Duration::from_secs(5), p.write(ch, data, kind)).await {
+        Ok(Ok(())) => ui.log(format!(
+            "{name}: handshake sent: \"{shown}\" ({})",
+            zwift::hex(data)
+        )),
+        Ok(Err(e)) => ui.log(format!(
+            "{name}: could not send the handshake: {}",
+            friendly_error(&e.to_string())
+        )),
+        Err(_) => ui.log(format!("{name}: sending the handshake timed out")),
+    }
+}
+
+/// What a Zwift controller says, turned into shifts and told in the log:
+/// in full at first (what a tester sends us), then sparingly, so a ride's
+/// worth of shifting does not push everything else out of the log.
+struct ClickLog {
+    id: String,
+    heard: Arc<Heard>,
+    presses: zwift::Presses,
+    pressed: u32,
+    reported: bool,
+    idle: u32,
+    battery: Option<u8>,
+    others: HashSet<u8>,
+    unreadable: u32,
+    stopped: u32,
+}
+
+impl ClickLog {
+    /// Presses logged one by one before only every 50th is.
+    const DETAILED: u32 = 20;
+
+    fn new(id: String, heard: Arc<Heard>) -> ClickLog {
+        ClickLog {
+            id,
+            heard,
+            presses: Default::default(),
+            pressed: 0,
+            reported: false,
+            idle: 0,
+            battery: None,
+            others: HashSet::new(),
+            unreadable: 0,
+            stopped: 0,
+        }
+    }
+
+    fn handle(&mut self, bytes: &[u8], name: &str, ui: &Ui) {
+        use zwift::Message;
+        let hex = if bytes.len() > 24 {
+            format!("{} …", zwift::hex(&bytes[..24]))
+        } else {
+            zwift::hex(bytes)
+        };
+        let message = zwift::decode(bytes);
+        if !matches!(message, Message::RideOn(_)) {
+            self.heard.any.store(true, Ordering::Relaxed);
+        }
+        match message {
+            Message::RideOn(rest) => {
+                self.heard.replied.store(true, Ordering::Relaxed);
+                let like = match rest.get(..2) {
+                    Some([1, 3]) => "as a Click does",
+                    Some([2, 3]) => "as a Click v2 does",
+                    Some([1, 4]) => "as a Play does",
+                    _ => "in a way VeloForge has not seen before",
+                };
+                ui.log(format!("{name}: answered the handshake {like} ({hex})"));
+            }
+            Message::Buttons(b) => {
+                if !self.reported {
+                    self.reported = true;
+                    ui.log(format!(
+                        "{name}: buttons reporting ({hex}: {}). Press + or − to shift",
+                        match (b.up, b.down) {
+                            (false, false) => "nothing pressed",
+                            (true, false) => "+ pressed",
+                            (false, true) => "− pressed",
+                            (true, true) => "both pressed",
+                        }
+                    ));
+                }
+                let (up, down) = self.presses.update(b);
+                for (pressed, up) in [(up, true), (down, false)] {
+                    if !pressed {
+                        continue;
+                    }
+                    self.pressed += 1;
+                    ui.send(Event::Shift {
+                        id: self.id.clone(),
+                        up,
+                    });
+                    if self.pressed <= Self::DETAILED {
+                        let (button, way) = if up { ("+", "up") } else { ("−", "down") };
+                        ui.log(format!("{name}: {button} pressed: shift {way} ({hex})"));
+                    } else if self.pressed.is_multiple_of(50) {
+                        ui.log(format!("{name}: {} presses so far", self.pressed));
+                    }
+                }
+            }
+            Message::Idle => {
+                self.idle += 1;
+                if self.idle == 1 {
+                    ui.log(format!(
+                        "{name}: talking (its idle message, about once a second)"
+                    ));
+                }
+            }
+            Message::Battery(level) => {
+                if self.battery.is_none_or(|b| b.abs_diff(level) >= 5) {
+                    self.battery = Some(level);
+                    ui.log(format!("{name}: battery {level}%"));
+                }
+            }
+            Message::Stopped => {
+                self.stopped += 1;
+                if self.stopped <= 3 {
+                    ui.log(format!(
+                        "{name}: says it has stopped ({hex}). A Click v2 half does this while Zwift has it locked; \
+                         its other half, and the keyboard, still shift"
+                    ));
+                }
+            }
+            Message::Goodbye => ui.log(format!(
+                "{name}: is disconnecting (switched off, or another app such as Zwift took it)"
+            )),
+            Message::Other(kind) => {
+                if self.others.insert(kind) {
+                    ui.log(format!(
+                        "{name}: message type 0x{kind:02x}, not used ({hex})"
+                    ));
+                }
+            }
+            Message::Malformed(why) => {
+                self.unreadable += 1;
+                if self.unreadable <= 10 {
+                    ui.log(format!("{name}: could not read a message ({why}): {hex}"));
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod sim_tests {
     #[test]
@@ -1324,5 +1687,138 @@ mod sim_tests {
         assert!((140.0..160.0).contains(&hr(300.0)), "{}", hr(300.0));
         assert!(hr(1500.0) <= 190.0 && hr(1500.0) > 185.0, "{}", hr(1500.0));
         assert!(hr(200.0) < hr(250.0), "harder means a higher heart rate");
+    }
+
+    fn bytes(hex: &str) -> Vec<u8> {
+        hex.split_whitespace()
+            .map(|h| u8::from_str_radix(h, 16).unwrap())
+            .collect()
+    }
+
+    /// Feed a Click's messages through, as they arrive from Bluetooth; return
+    /// the shifts (true: up) and the log.
+    fn click_session(messages: &[&str]) -> (Vec<bool>, Vec<String>) {
+        use super::*;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ui = Ui {
+            tx,
+            ctx: eframe::egui::Context::default(),
+        };
+        let heard = Arc::new(Heard::default());
+        let mut log = ClickLog::new("click-1".into(), heard.clone());
+        for m in messages {
+            log.handle(&bytes(m), "Zwift Click", &ui);
+        }
+        let (mut shifts, mut lines) = (Vec::new(), Vec::new());
+        for e in rx.try_iter() {
+            match e {
+                Event::Shift { id, up } => {
+                    assert_eq!(id, "click-1");
+                    shifts.push(up);
+                }
+                Event::Log(l) => lines.push(l),
+                e => panic!("{e:?}"),
+            }
+        }
+        (shifts, lines)
+    }
+
+    #[test]
+    fn a_click_session_shifts_and_tells_the_log() {
+        let (shifts, log) = click_session(&[
+            "52 69 64 65 4f 6e 01 03 04 aa bb",
+            "15",
+            "15",
+            "19 08 5a",
+            "37 08 01 10 01",
+            "37 08 00 10 01", // + down
+            "37 08 00 10 01", // still down: no second shift
+            "37 08 01 10 01",
+            "37 08 01 10 00", // −
+            "37 08 01 10 01",
+            "3c 08 01",
+            "3c 08 02",
+            "37 08",
+        ]);
+        assert_eq!(shifts, [true, false]);
+        let has = |s: &str| log.iter().any(|l| l.contains(s));
+        assert!(
+            has("answered the handshake as a Click does (52 69 64 65 4f 6e 01 03"),
+            "{log:#?}"
+        );
+        assert!(has("talking"));
+        assert!(has("battery 90%"));
+        assert!(has("buttons reporting (37 08 01 10 01: nothing pressed)"));
+        assert!(has("+ pressed: shift up (37 08 00 10 01)"));
+        assert!(has("− pressed: shift down (37 08 01 10 00)"));
+        assert!(has("message type 0x3c, not used"));
+        assert!(has("could not read a message (message cut short): 37 08"));
+        // Idle and repeated messages are not logged one by one.
+        assert_eq!(log.iter().filter(|l| l.contains("talking")).count(), 1);
+        assert_eq!(log.iter().filter(|l| l.contains("0x3c")).count(), 1);
+        assert_eq!(log.len(), 8, "{log:#?}");
+    }
+
+    #[test]
+    fn a_click_v2_session() {
+        let (shifts, log) = click_session(&[
+            "52 69 64 65 4f 6e 02 03",
+            "23 08 ff ff ff ff 0f",
+            "23 08 ff df ff ff 0f", // +
+            "23 08 ff ff ff ff 0f",
+            "23 08 df ff ff ff 0f", // B: down
+            "ff 05 00 ea 05",
+        ]);
+        assert_eq!(shifts, [true, false]);
+        let has = |s: &str| log.iter().any(|l| l.contains(s));
+        assert!(has("as a Click v2 does"), "{log:#?}");
+        assert!(has("says it has stopped"));
+    }
+
+    #[test]
+    fn a_long_ride_of_shifting_does_not_flood_the_log() {
+        let mut msgs = vec!["37 08 01 10 01"];
+        for _ in 0..120 {
+            msgs.push("37 08 00 10 01");
+            msgs.push("37 08 01 10 01");
+        }
+        let (shifts, log) = click_session(&msgs);
+        assert_eq!(shifts.len(), 120);
+        // The first 20 presses, then a count at 50 and 100.
+        let presses = log.iter().filter(|l| l.contains("pressed: shift")).count();
+        assert_eq!(presses, 20);
+        assert!(log.iter().any(|l| l.contains("100 presses so far")));
+        assert!(log.len() < 30, "{}", log.len());
+    }
+
+    #[test]
+    fn zwift_controllers_are_recognised_and_trainers_are_not() {
+        use super::*;
+        use std::collections::HashMap;
+        let zwift = |b: u8| HashMap::from([(zwift::MANUFACTURER_ID, vec![b, 0x12, 0x34])]);
+        let click = zwift_kind(&zwift(0x09));
+        assert_eq!(click, Some(zwift::Kind::ClickV1));
+        assert!(is_zwift_controller("Zwift Click", click, &[zwift::SERVICE]));
+        // A Zwift Hub trainer has Zwift's service too, but is a trainer.
+        let hub = zwift_kind(&zwift(0x01));
+        assert!(!is_zwift_controller(
+            "Zwift Hub",
+            hub,
+            &[zwift::SERVICE, protocol::FTMS_SERVICE]
+        ));
+        assert!(!is_zwift_controller(
+            "Some trainer",
+            None,
+            &[zwift::SERVICE_FC82, protocol::FTMS_SERVICE]
+        ));
+        // Without manufacturer data (some systems drop it): by name or service.
+        assert!(is_zwift_controller("Zwift Click", None, &[]));
+        assert!(is_zwift_controller("Gadget", None, &[zwift::SERVICE_FC82]));
+        assert!(!is_zwift_controller(
+            "KICKR CORE 1234",
+            None,
+            &[protocol::FTMS_SERVICE]
+        ));
+        assert_eq!(zwift_kind(&HashMap::new()), None);
     }
 }

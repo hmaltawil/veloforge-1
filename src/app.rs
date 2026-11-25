@@ -272,6 +272,9 @@ pub struct App {
     gear_flash: Option<Instant>,
     /// `--gears`: virtual shifting on for this run, whatever the setting.
     gears_arg: bool,
+    /// Shift buttons (a Zwift Click) by device: presses, and when and which
+    /// way the last one was.
+    presses: std::collections::HashMap<String, (u32, Instant, bool)>,
     /// What the last check for a newer version found.
     update: Option<crate::update::Status>,
     update_rx: Option<std::sync::mpsc::Receiver<crate::update::Status>>,
@@ -385,6 +388,7 @@ impl App {
             update_rx: None,
             gear_flash: None,
             gears_arg: false,
+            presses: Default::default(),
             last_checkpoint: Instant::now(),
             curve_failed: Default::default(),
             demo: false,
@@ -835,6 +839,11 @@ impl App {
                     }
                 }
                 Event::Calibration(c) => self.on_calibration(c),
+                Event::Shift { id, up } => {
+                    let p = self.presses.entry(id).or_insert((0, Instant::now(), up));
+                    *p = (p.0 + 1, Instant::now(), up);
+                    self.shift(up);
+                }
                 Event::Data { id, reading } => {
                     let now = Instant::now();
                     let sim_on = self.sim_on();

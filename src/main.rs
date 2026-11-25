@@ -30,6 +30,7 @@ mod units;
 mod update;
 mod workout;
 mod world;
+mod zwift;
 
 /// Window configurations to try: (MSAA samples, depth bits). Some GL drivers
 /// lack depth buffers; winit cannot create a second event loop in-process,
