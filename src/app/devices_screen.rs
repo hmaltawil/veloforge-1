@@ -84,6 +84,9 @@ impl App {
                 }
 
                 ui.add_space(12.0);
+                self.shifting_section(ui);
+
+                ui.add_space(12.0);
                 ui.heading("Simulated trainer");
                 ui.label(RichText::new("Try everything without hardware. The simulator follows ERG targets and grade like a real trainer. Real sensors always take priority over it.").weak());
                 let sim_on = self.links.get(SIM_ID).is_some_and(|l| l.link == Link::Connected);
@@ -153,6 +156,78 @@ impl App {
                 }
             });
         });
+    }
+
+    /// Virtual shifting: the option, the gear, and whether it can work.
+    fn shifting_section(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Virtual shifting");
+        let s = &mut self.store.settings;
+        if ui
+            .checkbox(&mut s.virtual_shifting, "Virtual shifting (for a single-cog setup like Zwift Cog)")
+            .on_hover_text("Leave this off if your bike has a real cassette: then you shift your own gears and the trainer follows the road.")
+            .changed()
+        {
+            self.mark_dirty();
+        }
+        ui.label(
+            RichText::new(
+                "For a bike with one fixed sprocket on the trainer. VeloForge gives it gears (a 34/50 chainset with an 11-34 cassette): \
+                 your cadence in the gear you are in sets how fast you would go, and the trainer is asked for the power that speed needs \
+                 on the road, so the same pedalling is harder in a bigger gear and up a steeper hill. Shift with + and - on the keyboard, \
+                 the phone remote, or a Zwift Click. In a workout's power targets (ERG) the trainer holds the power and the gears rest.",
+            )
+            .weak(),
+        );
+        if self.gears_arg && !self.store.settings.virtual_shifting {
+            ui.label(
+                RichText::new("On for this run (started with --gears).").color(theme::TEXT_DIM),
+            );
+        }
+        if !self.gears_on() {
+            return;
+        }
+        ui.horizontal(|ui| {
+            if ui
+                .button(" - ")
+                .on_hover_text("Easier gear (- or [)")
+                .clicked()
+            {
+                self.shift(false);
+            }
+            let colour = if self.gear_flashing() {
+                theme::ACCENT
+            } else {
+                theme::TEXT
+            };
+            ui.label(
+                RichText::new(crate::gears::label(self.store.settings.gear))
+                    .size(18.0)
+                    .strong()
+                    .color(colour),
+            );
+            if ui
+                .button(" + ")
+                .on_hover_text("Harder gear (+ or ])")
+                .clicked()
+            {
+                self.shift(true);
+            }
+        });
+        if !self.has_cadence() {
+            ui.colored_label(
+                theme::WARN,
+                "No cadence coming in. Virtual shifting needs your cadence, from the trainer or a cadence sensor: pedal to wake them, \
+                 or pair a cadence sensor. Until there is one, the trainer follows the road as without gears.",
+            );
+        }
+        if self.trainer_link().is_none() {
+            ui.label(
+                RichText::new(
+                    "Connect a smart trainer (or the simulator below) to feel the gears.",
+                )
+                .weak(),
+            );
+        }
     }
 
     fn device_card(&mut self, ui: &mut egui::Ui, d: &DeviceInfo) {

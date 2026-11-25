@@ -72,6 +72,12 @@ pub struct Settings {
     pub check_updates: bool,
     /// What the next random route is made of (its seed is new each time).
     pub random_route: crate::routegen::RandomRoute,
+    /// Virtual shifting, for a bike with one fixed cog on the trainer (a
+    /// Zwift Cog): the gears are the app's, and set the trainer's power.
+    pub virtual_shifting: bool,
+    /// The virtual gear you are in (an index into `gears::GEARS`), kept
+    /// from ride to ride.
+    pub gear: usize,
 }
 
 /// What heart rate zones are worked out from.
@@ -134,6 +140,8 @@ impl Default for Settings {
             remote_token: String::new(),
             check_updates: true,
             random_route: Default::default(),
+            virtual_shifting: false,
+            gear: crate::gears::START_GEAR,
         }
     }
 }

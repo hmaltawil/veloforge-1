@@ -9,6 +9,7 @@ mod charts;
 mod demo_data;
 mod devices;
 mod fit;
+mod gears;
 mod gfx;
 mod icu;
 mod plan;

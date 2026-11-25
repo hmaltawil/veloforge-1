@@ -2,6 +2,7 @@
 //! 1 Hz recording and TCX export.
 
 use crate::devices::Control;
+use crate::gears;
 use crate::route::Route;
 use crate::workout::{self, Segment, Workout};
 use chrono::{DateTime, Local, Utc};
@@ -67,6 +68,21 @@ impl HrControl {
         self.power = Some(p);
         p
     }
+}
+
+/// What virtual shifting is doing right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gearing {
+    /// Switched off (or a real cassette): the trainer follows the road.
+    Off,
+    /// The gear and your cadence set the trainer's power.
+    Driving,
+    /// The trainer is holding a workout's (or heart rate mode's) power:
+    /// the gears wait for free riding.
+    Erg,
+    /// No cadence from the trainer or a sensor, so the gears cannot work:
+    /// the trainer follows the road meanwhile.
+    NoCadence,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -381,6 +397,13 @@ pub struct Ride {
     last_ele: Option<f64>,
     last_sent: Option<(Control, f64)>,
     clock: f64,
+    /// Virtual shifting: the gear (an index into `gears::GEARS`), or None
+    /// when it is off. Set by the app before each update.
+    pub gear: Option<usize>,
+    /// What the gears are doing.
+    pub gearing: Gearing,
+    /// The power the gears ask of the trainer, eased towards its target.
+    gear_watts: Option<f32>,
 }
 
 /// Coasting riders hold their pedals level: ease the crank angle (0 with
@@ -425,6 +448,9 @@ impl Ride {
             last_ele: None,
             last_sent: None,
             clock: 0.0,
+            gear: None,
+            gearing: Gearing::Off,
+            gear_watts: None,
         }
     }
 
@@ -535,7 +561,11 @@ impl Ride {
         };
         let running = self.state == State::Running;
         if running {
-            let trainer = live.speed_kmh.filter(|_| phys.trainer_speed);
+            // With virtual shifting the bike has one fixed cog, so the
+            // trainer's flywheel speed says nothing about the road speed.
+            let trainer = live
+                .speed_kmh
+                .filter(|_| phys.trainer_speed && self.gear.is_none());
             self.speed_from_trainer = trainer.is_some();
             if let Some(kmh) = trainer {
                 // Lightly smoothed so the world does not jerk between packets.
@@ -641,23 +671,36 @@ impl Ride {
             0.0
         };
         let road = ((road_grade * difficulty as f64 - draft) as f32).clamp(-10.0, 20.0);
-        let desired = match self.mode {
+        let erg = |w: f32| Control::Erg(w.round().clamp(0.0, 2000.0) as u16);
+        let (desired, geared) = match self.mode {
             Mode::Workout if running => match self.target() {
-                Some((p, false)) => Control::Erg((p * ftp).round().clamp(0.0, 2000.0) as u16),
-                _ => Control::Grade(road),
+                Some((p, false)) => (erg(p * ftp), false),
+                _ => self.free_ride(road, live, &phys, dt),
             },
             // Before starting / while paused in a workout keep resistance light.
-            Mode::Workout => Control::Grade(0.0),
-            Mode::Route => Control::Grade(road),
-            Mode::Slope => Control::Grade(self.manual_grade),
+            Mode::Workout => (Control::Grade(0.0), false),
+            Mode::Route => self.free_ride(road, live, &phys, dt),
+            Mode::Slope => self.free_ride(self.manual_grade, live, &phys, dt),
             Mode::HeartRate if running => {
                 let p = self.hr_control.update(self.clock, dt, live.hr, ftp);
-                Control::Erg(p.round() as u16)
+                (erg(p), false)
             }
-            Mode::HeartRate => Control::Grade(0.0),
+            Mode::HeartRate => (Control::Grade(0.0), false),
         };
+        if !geared {
+            // Picked up again from your own power when free riding resumes.
+            self.gear_watts = None;
+            if self.gear.is_some() && matches!(desired, Control::Erg(_)) {
+                self.gearing = Gearing::Erg;
+            }
+        }
         let send = match (self.last_sent, desired) {
             (None, _) => true,
+            // The gears' power changes as you pedal: sent twice a second
+            // so the trainer keeps up, but not for every watt.
+            (Some((Control::Erg(a), t)), Control::Erg(b)) if geared => {
+                a.abs_diff(b) >= 2 && self.clock - t >= 0.5
+            }
             (Some((Control::Erg(a), t)), Control::Erg(b)) => a != b && self.clock - t >= 1.0,
             (Some((Control::Grade(a), t)), Control::Grade(b)) => {
                 (a - b).abs() >= 0.1 && self.clock - t >= 1.0
@@ -675,6 +718,30 @@ impl Ride {
         } else {
             None
         }
+    }
+
+    /// The trainer command for free riding on a `grade` percent road (as
+    /// the trainer should feel it): the road's grade, or with virtual
+    /// shifting the power your cadence in this gear needs on it. Also says
+    /// whether the gears set it.
+    fn free_ride(&mut self, grade: f32, live: Live, phys: &Physics, dt: f64) -> (Control, bool) {
+        let Some(gear) = self.gear else {
+            self.gearing = Gearing::Off;
+            return (Control::Grade(grade), false);
+        };
+        let Some(rpm) = live.cadence else {
+            self.gearing = Gearing::NoCadence;
+            return (Control::Grade(grade), false);
+        };
+        self.gearing = Gearing::Driving;
+        let target = gears::target_power(rpm, gear, grade as f64, phys);
+        // Start from what you are riding, so switching to the gears (or
+        // back to them after a workout's interval) is not a jolt.
+        let w = self
+            .gear_watts
+            .get_or_insert(live.power.clamp(gears::MIN_WATTS, gears::MAX_WATTS));
+        *w = gears::ease(*w, target, dt);
+        (Control::Erg(w.round() as u16), true)
     }
 
     /// The last command sent to the trainer.
@@ -1537,5 +1604,168 @@ mod tests {
             ride.update(0.1, Live::default(), r, phys(), 250.0, 0.5, true);
         }
         assert!(ride.elapsed < 2.5);
+    }
+
+    /// Ride `secs` in Route mode with virtual shifting in `gear` at `rpm`,
+    /// on a trainer that delivers what it is asked (`live_power` starts it);
+    /// returns every power sent.
+    fn ride_geared(
+        ride: &mut Ride,
+        r: &Route,
+        gear: usize,
+        rpm: Option<f32>,
+        power: &mut f32,
+        secs: f64,
+    ) -> Vec<u16> {
+        ride.gear = Some(gear);
+        let mut sent = Vec::new();
+        let mut t = 0.0;
+        while t < secs {
+            let live = Live {
+                power: *power,
+                cadence: rpm,
+                hr: None,
+                // A direct-drive trainer's flywheel speed: ignored with gears.
+                speed_kmh: Some(5.0),
+            };
+            match ride.update(0.05, live, r, phys(), 250.0, 1.0, true) {
+                Some(Control::Erg(w)) => {
+                    *power = w as f32;
+                    sent.push(w);
+                }
+                Some(Control::Grade(_)) => sent.clear(),
+                None => {}
+            }
+            t += 0.05;
+        }
+        sent
+    }
+
+    #[test]
+    fn virtual_gears_set_the_power_and_the_physics_the_speed() {
+        let r = &route::builtin()[1]; // Lakeside Flats
+        let mut ride = Ride::new(Mode::Route, None, None);
+        ride.start();
+        let mut power = 150.0;
+        let sent = ride_geared(&mut ride, r, 11, Some(90.0), &mut power, 90.0);
+        assert_eq!(ride.gearing, Gearing::Driving);
+        assert!(!sent.is_empty());
+        // The trainer's own speed is not used: the speed comes from the
+        // power through the physics, and settles at the gear's speed.
+        assert!(!ride.speed_from_trainer);
+        let want = gears::speed(90.0, 11);
+        assert!(
+            (ride.speed - want).abs() < want * 0.04,
+            "{} vs {want} m/s",
+            ride.speed * 3.6
+        );
+        let steady = power;
+        let expect = gears::target_power(90.0, 11, r.grade(ride.route_pos()), &phys());
+        assert!((steady - expect).abs() < 15.0, "{steady} vs {expect}");
+        // Distance follows the speed.
+        assert!(ride.distance > 90.0 * want * 0.8, "{}", ride.distance);
+
+        // Shift up two: harder, and it comes on smoothly.
+        let sent = ride_geared(&mut ride, r, 13, Some(90.0), &mut power, 10.0);
+        assert!(power > steady * 1.3, "{power} vs {steady}");
+        let mut last = steady as u16;
+        for &w in &sent {
+            // At most a 200 W rise in the half second between commands.
+            assert!(w >= last && w - last <= 200, "{last} -> {w}");
+            last = w;
+        }
+        // Shift down to the bottom: easier than where we started.
+        ride_geared(&mut ride, r, 0, Some(90.0), &mut power, 10.0);
+        assert!(power < steady * 0.6, "{power} vs {steady}");
+    }
+
+    #[test]
+    fn virtual_gears_ease_off_when_coasting() {
+        let r = &route::builtin()[1];
+        let mut ride = Ride::new(Mode::Route, None, None);
+        ride.start();
+        let mut power = 200.0;
+        ride_geared(&mut ride, r, 10, Some(90.0), &mut power, 20.0);
+        assert!(power > 150.0, "{power}");
+        // Stop pedalling: the trainer goes light, not with a bang.
+        let sent = ride_geared(&mut ride, r, 10, Some(0.0), &mut power, 10.0);
+        assert_eq!(power, gears::MIN_WATTS);
+        assert!(sent.len() > 3, "eased down over several commands: {sent:?}");
+        // The ride rolls on and slows down; it does not stop dead.
+        assert!(ride.speed > 0.5, "{}", ride.speed);
+        // Too slow to count (a sensor winding down) is coasting too.
+        ride_geared(&mut ride, r, 10, Some(12.0), &mut power, 5.0);
+        assert_eq!(power, gears::MIN_WATTS);
+    }
+
+    #[test]
+    fn without_cadence_the_gears_give_way_to_the_road() {
+        let r = &route::builtin()[1];
+        let mut ride = Ride::new(Mode::Route, None, None);
+        ride.start();
+        ride.gear = Some(7);
+        let live = Live {
+            power: 180.0,
+            cadence: None,
+            hr: None,
+            speed_kmh: None,
+        };
+        let c = ride.update(0.1, live, r, phys(), 250.0, 0.5, true);
+        assert!(matches!(c, Some(Control::Grade(_))), "{c:?}");
+        assert_eq!(ride.gearing, Gearing::NoCadence);
+        // Off, nothing changes: the trainer follows the road.
+        ride.gear = None;
+        ride.update(0.1, live, r, phys(), 250.0, 0.5, true);
+        assert_eq!(ride.gearing, Gearing::Off);
+        assert!(matches!(ride.trainer_setting(), Some(Control::Grade(_))));
+    }
+
+    #[test]
+    fn workout_power_targets_ignore_the_gears() {
+        let r = &route::builtin()[0];
+        let wk = workout::builtin()
+            .into_iter()
+            .find(|w| w.id == "thr-2x20")
+            .unwrap();
+        let mut ride = Ride::new(Mode::Workout, Some(wk), None);
+        ride.start();
+        let target = ride.target_watts(250.0).unwrap() as u16;
+        for gear in [0, 14] {
+            ride.gear = Some(gear);
+            let live = Live {
+                power: 150.0,
+                cadence: Some(90.0),
+                hr: None,
+                speed_kmh: None,
+            };
+            let mut last = None;
+            for _ in 0..30 {
+                if let Some(c) = ride.update(0.1, live, r, phys(), 250.0, 0.5, true) {
+                    last = Some(c);
+                }
+            }
+            assert_eq!(
+                ride.trainer_setting(),
+                Some(Control::Erg(target)),
+                "{last:?}"
+            );
+            assert_eq!(ride.gearing, Gearing::Erg);
+        }
+    }
+
+    #[test]
+    fn manual_slope_rides_the_gears_on_its_slope() {
+        let r = &route::builtin()[1];
+        let mut ride = Ride::new(Mode::Slope, None, None);
+        ride.start();
+        let mut at = |slope: f32| {
+            ride.manual_grade = slope;
+            let mut power = 150.0;
+            ride_geared(&mut ride, r, 7, Some(85.0), &mut power, 15.0);
+            power
+        };
+        let flat = at(0.0);
+        let steep = at(8.0);
+        assert!(steep > flat * 2.0, "{steep} vs {flat}");
     }
 }

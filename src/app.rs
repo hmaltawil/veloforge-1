@@ -267,6 +267,11 @@ pub struct App {
     remote_error: Option<String>,
     remote_pushed: Instant,
     settings_page: settings_ui::SettingsPage,
+    /// When you last changed gear (virtual shifting), for the flash on the
+    /// gear shown.
+    gear_flash: Option<Instant>,
+    /// `--gears`: virtual shifting on for this run, whatever the setting.
+    gears_arg: bool,
     /// What the last check for a newer version found.
     update: Option<crate::update::Status>,
     update_rx: Option<std::sync::mpsc::Receiver<crate::update::Status>>,
@@ -378,6 +383,8 @@ impl App {
             settings_page: Default::default(),
             update: None,
             update_rx: None,
+            gear_flash: None,
+            gears_arg: false,
             last_checkpoint: Instant::now(),
             curve_failed: Default::default(),
             demo: false,
@@ -480,6 +487,8 @@ impl App {
             }
             app.demo = true;
             app.dev.send(Cmd::SimEnable(true));
+            // `--gears`: ride with virtual shifting (not saved as a setting).
+            app.gears_arg = args.iter().any(|a| a == "--gears");
             if args.iter().any(|a| a == "--heart-rate") {
                 app.ride = Ride::new(Mode::HeartRate, None, None);
                 app.ride.hr_control =
@@ -750,6 +759,7 @@ impl App {
                     self.finish_ride();
                 }
             }
+            Action::ShiftUp | Action::ShiftDown => self.shift(a == Action::ShiftUp),
             Action::Up | Action::Down => {
                 let delta = if a == Action::Up { 1.0 } else { -1.0 };
                 match self.ride.mode {
@@ -933,6 +943,7 @@ impl App {
             drafting: s.drafting,
             flat_workouts: s.flat_workouts,
         };
+        self.ride.gear = self.gears_on().then(|| crate::gears::clamp(s.gear));
         let route = &self.routes[self.route_idx];
         let before = self.ride.workout_time() as f32;
         let mut control = None;
@@ -1176,6 +1187,26 @@ impl App {
                     i.consume_key(none, egui::Key::C),
                 )
             });
+            // Shifting: + (or =, the same key without Shift) or ], and - or [;
+            // the number pad's + and - too.
+            let (shift_up, shift_down) = ctx.input_mut(|i| {
+                let none = egui::Modifiers::NONE;
+                let mut up = 0;
+                let mut down = 0;
+                for k in [egui::Key::Plus, egui::Key::Equals, egui::Key::CloseBracket] {
+                    up += i.count_and_consume_key(none, k);
+                }
+                for k in [egui::Key::Minus, egui::Key::OpenBracket] {
+                    down += i.count_and_consume_key(none, k);
+                }
+                (up, down)
+            });
+            for _ in 0..shift_up {
+                self.ride_action(crate::remote::Action::ShiftUp);
+            }
+            for _ in 0..shift_down {
+                self.ride_action(crate::remote::Action::ShiftDown);
+            }
             use crate::remote::Action;
             for (pressed, a) in [
                 (c, Action::Camera),

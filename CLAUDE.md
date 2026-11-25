@@ -37,7 +37,8 @@ __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia cargo run --release
 ```
 
 Useful arguments: `--demo` (simulated trainer), `--demo --km 5.5` (start
-partway along the route), `--demo --workout [id]`, `--bench 60` (60 s
+partway along the route), `--demo --workout [id]`, `--demo --gears`
+(virtual shifting for this run, not saved), `--bench 60` (60 s
 benchmark on Valley Loop, printing per-part graphics card times),
 `--bench 60 --counts` (the same ride counting triangles and pixels per
 part instead: the same on any card, so it works under Xvfb too, but the
@@ -126,6 +127,8 @@ the Release workflow run and look again a few minutes later.
 - `src/scenery.rs`: each scenery's settings (sky, water, land, fields,
   plants, random routes, simple view), one entry each
 - `src/route.rs`: routes, GPX import and cleaning (`clean_track`)
+- `src/gears.rs`: virtual shifting (the gears, and the power a cadence in
+  a gear needs); `Ride::free_ride` in `src/ride.rs` turns it into ERG
 - `src/routegen.rs`: random routes
 - `src/gfx/terrain.rs`: land, road bed, placement of trees and objects,
   each kind of object (`OBJECTS`), terrain windows built off the UI thread

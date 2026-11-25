@@ -406,10 +406,50 @@ impl App {
                     }
                 }
             }
+            if let Some((label, note, warn)) = self.gear_status() {
+                ui.separator();
+                if ui
+                    .small_button(" - ")
+                    .on_hover_text("Shift to an easier gear (- or [)")
+                    .clicked()
+                {
+                    self.shift(false);
+                }
+                let colour = if warn {
+                    theme::WARN
+                } else if self.gear_flashing() {
+                    theme::ACCENT
+                } else {
+                    theme::TEXT
+                };
+                let shown = ui.label(RichText::new(&label).color(colour).strong());
+                if let Some(n) = note {
+                    shown.on_hover_text(match self.ride.gearing {
+                        ride::Gearing::NoCadence => {
+                            "Virtual shifting needs your cadence, from the trainer or a cadence \
+                             sensor, and none is coming in. Until it does, the trainer follows \
+                             the road as without gears."
+                        }
+                        _ => {
+                            "The trainer is holding a workout's power target (ERG), so the gears \
+                             rest until the next free riding."
+                        }
+                    });
+                    ui.label(RichText::new(n).color(if warn { theme::WARN } else { theme::TEXT_DIM }));
+                }
+                if ui
+                    .small_button(" + ")
+                    .on_hover_text("Shift to a harder gear (+ or ])")
+                    .clicked()
+                {
+                    self.shift(true);
+                }
+            }
             ui.label(RichText::new("Keys").color(theme::TEXT_FAINT).underline())
                 .on_hover_text(
                     "Space: start / pause / resume\n\
                      Up / Down: workout intensity, slope, or trainer difficulty\n\
+                     + / -  (or ] / [): shift gear, with virtual shifting on\n\
                      N: skip to the next workout step\n\
                      V: switch between 3D view and dashboard\n\
                      C: change the camera in the 3D view",
@@ -722,6 +762,48 @@ impl App {
     }
 
     /// A cadence source has reported recently.
+    /// Virtual shifting is on (the setting, or `--gears` for this run).
+    pub(super) fn gears_on(&self) -> bool {
+        self.store.settings.virtual_shifting || self.gears_arg
+    }
+
+    /// Shift one gear up (harder) or down (easier), from the keyboard, the
+    /// phone or a Zwift Click.
+    pub(super) fn shift(&mut self, up: bool) {
+        if !self.gears_on() {
+            self.notify("Virtual shifting is off: turn it on in Devices to use gears");
+            return;
+        }
+        let s = &mut self.store.settings;
+        let gear = crate::gears::shift(s.gear, up);
+        if gear != s.gear {
+            s.gear = gear;
+            self.mark_dirty();
+        }
+        // Flash even at the end of the gears, so a shift is never silent.
+        self.gear_flash = Some(Instant::now());
+    }
+
+    /// A shift just happened: the gear shown flashes for a moment.
+    pub(super) fn gear_flashing(&self) -> bool {
+        self.gear_flash
+            .is_some_and(|t| t.elapsed().as_secs_f32() < 1.2)
+    }
+
+    /// The gear as shown on the ride screen and the phone, with a short
+    /// note when the gears are not setting the trainer: (text, note, warn).
+    pub(super) fn gear_status(&self) -> Option<(String, Option<&'static str>, bool)> {
+        if !self.gears_on() {
+            return None;
+        }
+        let label = crate::gears::label(self.store.settings.gear);
+        Some(match self.ride.gearing {
+            ride::Gearing::Erg => (label, Some("resting in ERG"), false),
+            ride::Gearing::NoCadence => (label, Some("no cadence"), true),
+            ride::Gearing::Off | ride::Gearing::Driving => (label, None, false),
+        })
+    }
+
     pub(super) fn has_cadence(&self) -> bool {
         self.metrics
             .cadence_seen
@@ -1070,24 +1152,44 @@ impl App {
                 } else {
                     "Past the finish".to_string()
                 };
+                // With virtual shifting, the gear (and why it rests, if so).
+                let gear = self.gear_status();
+                let geared = gear
+                    .as_ref()
+                    .map(|(l, n, _)| match n {
+                        Some(n) => format!(" · {l} ({n})"),
+                        None => format!(" · {l}"),
+                    })
+                    .unwrap_or_default();
                 let (mode, g) = if self.ride.mode == Mode::Slope {
-                    ("Manual slope".to_string(), self.ride.manual_grade as f64)
+                    (
+                        format!("Manual slope{geared}"),
+                        self.ride.manual_grade as f64,
+                    )
                 } else {
                     let felt = match self.ride.trainer_setting() {
                         Some(devices::Control::Grade(g)) => format!(" · trainer set to {g:+.1}%"),
                         _ => String::new(),
                     };
                     (
-                        format!("Free ride · difficulty {:.0}%{felt}", s.difficulty * 100.0),
+                        format!(
+                            "Free ride · difficulty {:.0}%{felt}{geared}",
+                            s.difficulty * 100.0
+                        ),
                         grade,
                     )
+                };
+                let colour = match gear {
+                    Some((_, _, true)) => theme::WARN,
+                    Some(_) if self.gear_flashing() => theme::ACCENT,
+                    _ => Color32::from_gray(190),
                 };
                 painter.text(
                     left - Vec2::new(0.0, h2 * 0.22),
                     Align2::LEFT_CENTER,
                     mode,
                     small.clone(),
-                    Color32::from_gray(190),
+                    colour,
                 );
                 painter.text(
                     left + Vec2::new(0.0, h2 * 0.08),

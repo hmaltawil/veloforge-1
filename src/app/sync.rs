@@ -177,6 +177,16 @@ impl App {
             "adjust_label": adjust_label,
             "adjust_value": adjust_value,
             "view_3d": s.view_3d,
+            // The phone has room for the teeth; the gear number and any
+            // note go in the caption above.
+            "gear": self.gear_status().map(|_| crate::gears::teeth(s.gear)),
+            "gear_note": self.gear_status().map(|(_, note, _)| {
+                let n = format!("Gear {}/{}", crate::gears::clamp(s.gear) + 1, crate::gears::GEARS.len());
+                match note {
+                    Some(note) => format!("{n} · {note}"),
+                    None => n,
+                }
+            }),
         })
         .to_string()
     }

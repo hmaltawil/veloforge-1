@@ -9,13 +9,14 @@ A free, local indoor-cycling app for Linux, Windows and macOS: smart trainer con
 ## What it does
 
 - **Controls your smart trainer** over Bluetooth. ERG mode holds a target power, and simulation mode makes the resistance follow the road. It works with trainers that use the standard FTMS protocol, and with older Wahoo KICKR / SNAP firmware through Wahoo's legacy protocol.
+- **Virtual shifting** for a bike with a single fixed sprocket on the trainer, such as a **Zwift Cog**: the app gives it the gears of a 34/50 chainset with an 11-34 cassette. Your cadence in the gear you're in sets your speed, and the trainer is asked for the power that speed needs on the road, so a bigger gear or a steeper hill is harder, as on a real bike. Shift with the keyboard or the phone remote.
 - **Structured workouts**: about 30 built in (recovery, endurance, tempo, sweet spot, threshold, VO2 max, sprints, ramp test, 20-minute test), a visual builder for your own (drag blocks to set their power and length, or to move them, with undo), import of `.zwo` files from intervals.icu, TrainerRoad, WhatsOnZwift and others, and export of any workout as a `.zwo` file for other apps. Steps can have a cadence target, shown next to your live cadence (green when you're within 5 rpm).
 - **Training plans and a calendar**. VeloForge generates a periodized plan (FTP builder, aerobic base or maintenance) on the days you ride: three build weeks, then a recovery week. Missed a key workout? It offers to move it to your next free day. Tired? It suggests an easier ride instead.
 - **Heart-rate rides**: pick a target heart rate and VeloForge sets the trainer's power to hold it.
 - **Ride with someone**: a pacer at a power you choose, or a ghost of your own best ride on the same route. Tuck in close behind and you **draft**: up to a third less air to push, so you go faster and the trainer gets easier.
 - **3D world** rendered on your graphics card: farmland, lakes, snowy mountains, an island coast road, a hairpin climb and the Japanese countryside (cherries in blossom, thatched farmhouses, shrines and a pagoda by a lake), by day, at sunset or at night, in sun, cloud, fog or rain. Trees cast shadows across the road, grass and wild flowers bend in the wind, clouds drift and shade the hills, and the low sun glitters on the water. Your rider is sculpted as one body with a real bike fit: they pedal with natural ankle movement, breathe harder as the effort rises, stand up on steep climbs and tuck on fast descents. Watch from behind, close up, alongside or from above (press **C**). Every climb is a timed **segment**: VeloForge finds them on each route (imported ones too), shows your time and your best as you ride, cheers a new personal record, and keeps a table of your records. Make a **random route** whenever you like (choose the scenery, length, how hilly and whether it is a loop; each has its own bends, climbs and name), or import any `.gpx` file to ride a real route (**Settings → Routes → Import a GPX route…**). A route that ends away from its start, like a climb to a summit, is ridden **point to point**: it finishes at the top, and if your workout is still going the road carries on beyond the finish. The land reaches to the mountains on the horizon. A ride **finishes by itself** when its workout is done (press **Keep riding** to cool down first). A **dashboard** view shows the numbers instead (press **V**).
 - **Metric or imperial**: km/h, km, metres and kg, or mph, miles, feet and pounds, everywhere in the app.
-- **Phone remote**: your phone shows the live numbers, the interval, the climb and drafting, and starts, pauses, skips steps, changes the intensity, the view or the camera, over your home Wi-Fi.
+- **Phone remote**: your phone shows the live numbers, the interval, the climb and drafting, and starts, pauses, skips steps, changes the intensity, the gear, the view or the camera, over your home Wi-Fi.
 - **intervals.icu**: the rides you plan there appear in your calendar, and finished rides upload by themselves.
 - **Strava**: finished rides upload by themselves, as indoor rides (connect once in **Settings → Strava**, through your own free Strava API application; VeloForge shows you how).
 - **Progress**: fitness, fatigue and form, weekly hours, your power curve, FTP history and monthly totals.
@@ -78,6 +79,7 @@ veloforge --demo             # free ride with the simulated trainer
 veloforge --demo --workout   # a sweet spot workout, starting just before the first interval
 veloforge --demo --workout cadence-builder   # any workout by its id
 veloforge --demo --pacer     # free ride alongside a pacer
+veloforge --demo --gears     # free ride with virtual shifting (+ and - shift)
 ```
 
 Rides with the simulated trainer (also under **Devices**) are practice: they are not saved to History or Progress, uploaded, or counted for segment records.
@@ -115,7 +117,9 @@ VeloForge runs on macOS 11 Big Sur or newer, on Apple Silicon and Intel Macs (on
 | **Slope** | A fixed gradient of your choice (↑/↓ changes it). |
 | **Heart rate** | Choose a target heart rate (↑/↓ changes it by 2 bpm). The trainer's power is adjusted gently every few seconds to hold it. If the strap drops out, the power stays where it was. |
 
-Shortcuts: **Space** start/pause, **↑/↓** intensity / slope / difficulty / target heart rate, **N** skip step, **V** 3D view ↔ dashboard, **C** camera. By default the clock pauses automatically when you stop pedalling.
+Shortcuts: **Space** start/pause, **↑/↓** intensity / slope / difficulty / target heart rate, **+/−** (or **]/[**) shift gear with virtual shifting, **N** skip step, **V** 3D view ↔ dashboard, **C** camera. By default the clock pauses automatically when you stop pedalling.
+
+**Virtual shifting** (a single cog, like a Zwift Cog): tick **Devices → Virtual shifting**. VeloForge then has gears from 34x34 up to 50x11 (15 of them, without the crossed ones), starting in the middle and remembered from ride to ride. From your cadence, the gear and a 700x25c wheel it works out how fast you'd go, and asks the trainer for the power that speed needs on the road (in ERG), eased in over about a second so a shift or a change of gradient never jolts. Stop pedalling and the trainer goes light. Your speed and distance still come from the power you actually ride, as without gears. The gear shows over the 3D view, on the dashboard and on the phone, and lights up as you shift. It needs your cadence, from the trainer or a cadence sensor: without one the trainer follows the road as usual, and the app says so. In a workout's power targets (and in heart-rate rides) the trainer holds the power and the gears rest; free-ride steps use them. Leave it off if your bike has a real cassette. To try it without a trainer: `veloforge --demo --gears`.
 
 **Ride with**: the menu next to the route lets you ride alone, with a **pacer** holding a steady power (with the same weight and bike as you), or against a **ghost**: a replay of one of your earlier rides on the same route, fastest first. The gap shows in metres (pacer) or seconds (ghost). Riding a few metres behind either one saves effort, as on the road: the dashboard shows **DRAFT** and how much you save (switch it off in **Settings → Riding**).
 
@@ -139,7 +143,7 @@ Shortcuts: **Space** start/pause, **↑/↓** intensity / slope / difficulty / t
 
 ### Phone remote
 
-Turn it on in **Settings → Phone remote** and scan the QR code with your phone's camera (the phone must be on the same Wi-Fi). The page shows power, heart rate, target or speed, cadence, gradient and distance, the current interval, the climb you're on (with your best time) and how much you save drafting, and has big buttons to start, pause, skip a step, change the intensity, switch between the 3D view and the dashboard, change the camera and finish the ride. Messages from the app, such as "Ride saved", appear on the phone too. The link contains an access code, so other devices on your network can't control your ride; **New code** makes a new link.
+Turn it on in **Settings → Phone remote** and scan the QR code with your phone's camera (the phone must be on the same Wi-Fi). The page shows power, heart rate, target or speed, cadence, gradient and distance, the current interval, the climb you're on (with your best time) and how much you save drafting, and has big buttons to start, pause, skip a step, change the intensity, shift gear (with virtual shifting on), switch between the 3D view and the dashboard, change the camera and finish the ride. Messages from the app, such as "Ride saved", appear on the phone too. The link contains an access code, so other devices on your network can't control your ride; **New code** makes a new link.
 
 If the phone can't connect, allow the port in the firewall:
 
@@ -190,6 +194,7 @@ VeloForge is written in Rust with [egui](https://github.com/emilk/egui) for the 
 | `src/protocol.rs` | Bluetooth GATT parsers and encoders: FTMS, cycling power, heart rate, CSC, Wahoo legacy |
 | `src/devices.rs` | Bluetooth manager thread: scanning, connecting, reconnecting, trainer commands, simulator |
 | `src/ride.rs` | Ride engine: virtual speed, drafting, ERG/gradient decisions, heart-rate control, pacer and ghost, recording, TCX export, summaries |
+| `src/gears.rs` | Virtual shifting: the gears, and the power a cadence in a gear needs on the road |
 | `src/fit.rs` | FIT files for saved rides |
 | `src/workout.rs` | Workout model, built-in library, `.zwo` import and export, training load, interval cues |
 | `src/builder.rs` | The visual workout builder |

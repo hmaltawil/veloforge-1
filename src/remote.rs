@@ -31,6 +31,9 @@ pub enum Action {
     Camera,
     /// Finish and save the ride.
     Finish,
+    /// Virtual shifting: one gear harder / easier.
+    ShiftUp,
+    ShiftDown,
 }
 
 impl Action {
@@ -43,6 +46,8 @@ impl Action {
             "view" => Action::View,
             "camera" => Action::Camera,
             "finish" => Action::Finish,
+            "shift_up" => Action::ShiftUp,
+            "shift_down" => Action::ShiftDown,
             _ => return None,
         })
     }
@@ -342,6 +347,11 @@ button:disabled { opacity:.35; }
     <div class="mid"><div class="k" id="adj-k">Intensity</div><div class="v" id="adj-v">100%</div></div>
     <button onclick="act('up')" aria-label="Harder">+</button>
   </div>
+  <div class="adjust" id="gears" style="display:none">
+    <button onclick="act('shift_down')" aria-label="Shift to an easier gear">−</button>
+    <div class="mid"><div class="k" id="gear-k">Gear</div><div class="v" id="gear-v"></div></div>
+    <button onclick="act('shift_up')" aria-label="Shift to a harder gear">+</button>
+  </div>
   <div class="row3">
     <button id="skip" onclick="act('skip')">Skip<small>step</small></button>
     <button id="view" onclick="act('view')">Dashboard<small>view</small></button>
@@ -404,6 +414,9 @@ function render(s) {
   t.textContent = s.state === 'running' ? 'Pause' : s.state === 'paused' ? 'Resume' : 'Start';
   t.className = s.state === 'running' ? 'pause' : '';
   t.disabled = s.state === 'ready' && !s.can_start;
+  $('gears').style.display = s.gear ? 'grid' : 'none';
+  $('gear-k').textContent = s.gear_note || 'Gear';
+  $('gear-v').textContent = s.gear || '';
   $('adj-k').textContent = s.adjust_label || '';
   $('adj-v').textContent = s.adjust_value || '';
   $('skip').disabled = !s.can_skip;
@@ -471,6 +484,18 @@ mod tests {
         assert!(ok.starts_with("HTTP/1.1 200"));
         assert_eq!(r.rx.recv_timeout(Duration::from_secs(1)), Ok(Action::Skip));
         assert!(woken.load(Ordering::Relaxed));
+        for (a, want) in [
+            ("shift_up", Action::ShiftUp),
+            ("shift_down", Action::ShiftDown),
+        ] {
+            let ok = request(
+                port,
+                &format!("POST /api/do?k=abc23456&a={a} HTTP/1.1\r\n\r\n"),
+            );
+            assert!(ok.starts_with("HTTP/1.1 200"), "{ok}");
+            assert_eq!(r.rx.recv_timeout(Duration::from_secs(1)), Ok(want));
+        }
+        assert!(page.contains("act('shift_up')") && page.contains("act('shift_down')"));
         let bad = request(port, "POST /api/do?k=abc23456&a=explode HTTP/1.1\r\n\r\n");
         assert!(bad.starts_with("HTTP/1.1 400"));
     }

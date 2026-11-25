@@ -512,8 +512,35 @@ impl App {
             label,
             theme::TEXT_DIM,
         );
-        // In free ride, what the trainer was actually set to.
-        if let (Some(devices::Control::Grade(g)), Mode::Route) =
+        // With virtual shifting, the gear (lit up for a moment after a
+        // shift, amber while it cannot work); in free ride without, what
+        // the trainer was actually set to.
+        if let Some((label, note, warn)) = self.gear_status() {
+            let colour = if warn {
+                theme::WARN
+            } else if self.gear_flashing() {
+                theme::ACCENT
+            } else if note.is_some() {
+                theme::TEXT_FAINT
+            } else {
+                theme::TEXT
+            };
+            let shown = match (warn, note) {
+                (true, _) => "No cadence: no gears".to_string(),
+                (false, Some(_)) => format!(
+                    "{} · rests in ERG",
+                    crate::gears::teeth(self.store.settings.gear)
+                ),
+                (false, None) => label,
+            };
+            theme::pill(
+                painter,
+                Pos2::new(x1, y - 3.0),
+                Align2::RIGHT_TOP,
+                &shown,
+                colour,
+            );
+        } else if let (Some(devices::Control::Grade(g)), Mode::Route) =
             (self.ride.trainer_setting(), self.ride.mode)
         {
             theme::pill(
