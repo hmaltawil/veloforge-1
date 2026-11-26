@@ -145,318 +145,6 @@ impl App {
     }
 
     pub(super) fn ride_tab(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            let mut v = self.store.settings.view_3d;
-            if segmented(
-                ui,
-                &mut v,
-                &[
-                    (true, "3D", "The 3D world (V switches)"),
-                    (false, "Dashboard", "Numbers and charts (V switches)"),
-                ],
-            ) {
-                self.store.settings.view_3d = v;
-                self.mark_dirty();
-            }
-            if self.store.settings.view_3d {
-                self.sky_menu(ui);
-            }
-            // Once you are riding, what and where is settled: the choices
-            // make way for the controls you need on the bike.
-            let active = self.ride_active();
-            if !active {
-                let mut mode = self.ride.mode;
-                if segmented(
-                    ui,
-                    &mut mode,
-                    &[
-                        (
-                            Mode::Workout,
-                            "Workout",
-                            "Structured workout: the trainer holds the target power (ERG)",
-                        ),
-                        (
-                            Mode::Route,
-                            "Free ride",
-                            "Resistance follows the road's gradient",
-                        ),
-                        (Mode::Slope, "Slope", "Choose a fixed gradient yourself"),
-                        (
-                            Mode::HeartRate,
-                            "Heart rate",
-                            "Hold a target heart rate: VeloForge adjusts the trainer's power for you",
-                        ),
-                    ],
-                ) {
-                    let w = if mode == Mode::Workout {
-                        self.ride_workout
-                            .clone()
-                            .or(Some("endurance-60".into()))
-                            .and_then(|id| self.find_workout(&id))
-                    } else {
-                        None
-                    };
-                    self.ride_workout = w
-                        .as_ref()
-                        .map(|w| w.id.clone())
-                        .or(self.ride_workout.clone());
-                    self.replace_ride(Ride::new(mode, w, None));
-                    if mode == Mode::HeartRate {
-                        // Default to the middle of zone 2.
-                        self.ride.hr_control =
-                            ride::HrControl::new((self.store.settings.max_hr * 0.65).round());
-                    }
-                }
-                if self.ride.mode == Mode::Workout {
-                    let current = self
-                        .ride
-                        .workout
-                        .as_ref()
-                        .map(|w| w.name.clone())
-                        .unwrap_or("Choose workout".into());
-                    let mut pick = None;
-                    egui::ComboBox::from_id_salt("ride-workout")
-                        .width(150.0)
-                        .selected_text(current)
-                        .show_ui(ui, |ui| {
-                            for w in self.library() {
-                                let label = format!("{}  ·  {}", w.name, fmt_dur(w.duration()));
-                                if ui
-                                    .selectable_label(
-                                        self.ride_workout.as_deref() == Some(&w.id),
-                                        label,
-                                    )
-                                    .clicked()
-                                {
-                                    pick = Some(w.id.clone());
-                                }
-                            }
-                        });
-                    if let Some(id) = pick {
-                        self.load_ride(Some(id), None);
-                    }
-                }
-                let mut ri = self.route_idx;
-                let units = self.store.settings.units;
-                let mut random = false;
-                egui::ComboBox::from_id_salt("ride-route")
-                    .width(160.0)
-                    .selected_text(units.route_name(&self.routes[ri].name))
-                    .show_ui(ui, |ui| {
-                        for (i, r) in self.routes.iter().enumerate() {
-                            ui.selectable_value(&mut ri, i, units.route_name(&r.name));
-                        }
-                        ui.separator();
-                        let r = &self.store.settings.random_route;
-                        random = ui
-                            .selectable_label(false, "+ New random route")
-                            .on_hover_text(format!(
-                                "{}, {} km, {} (change these in Settings → Routes)",
-                                r.scenery.label(),
-                                r.km,
-                                r.hills.label().to_lowercase()
-                            ))
-                            .clicked();
-                    });
-                if random {
-                    self.new_random_route();
-                    ri = self.route_idx;
-                }
-                if ri != self.route_idx {
-                    // Another route is ridden the way it is made.
-                    self.choose_route(self.routes[ri].base_id().to_string());
-                }
-                let current = &self.routes[self.route_idx];
-                let mut reversed = current.is_reversed();
-                let turn = ui
-                    .toggle_value(&mut reversed, "Reverse")
-                    .on_hover_text(if current.shape() == route::Shape::Loop {
-                        "Ride the loop the other way round"
-                    } else {
-                        "Ride from the finish back to the start"
-                    });
-                if turn.changed() {
-                    let base = current.base_id().to_string();
-                    self.choose_route(if reversed {
-                        format!("{base}{}", route::REVERSED)
-                    } else {
-                        base
-                    });
-                }
-            }
-            self.companion_menu(ui);
-            match self.ride.state {
-                ride::State::Ready => {
-                    let can = self.can_start();
-                    let resp = ui
-                        .add_enabled_ui(can, |ui| {
-                            icon_button(
-                                ui,
-                                Icon::Play,
-                                "Start ride",
-                                Some(Color32::from_rgb(36, 150, 84)),
-                            )
-                        })
-                        .inner;
-                    if resp.on_hover_text("Space").clicked() {
-                        self.ride.start();
-                    }
-                }
-                ride::State::Running | ride::State::Paused => {
-                    let running = self.ride.state == ride::State::Running;
-                    let (icon, label) = if running {
-                        (Icon::Pause, "Pause")
-                    } else {
-                        (Icon::Play, "Resume")
-                    };
-                    if icon_button(ui, icon, label, None)
-                        .on_hover_text("Space")
-                        .clicked()
-                    {
-                        if running {
-                            self.ride.state = ride::State::Paused;
-                        } else {
-                            self.ride.start();
-                        }
-                    }
-                    let finish = ui
-                        .add(
-                            egui::Button::new(
-                                RichText::new("Finish").color(Color32::WHITE),
-                            )
-                            .fill(Color32::from_rgb(44, 112, 196)),
-                        )
-                        .on_hover_text(if self.ride_simulated || self.demo {
-                            "End the ride. Rides with the simulated trainer are practice: they \
-                             are not saved."
-                        } else {
-                            "End and save the ride"
-                        });
-                    if finish.clicked() {
-                        self.finish_ride();
-                    }
-                    if ui.button("Discard").clicked() {
-                        self.modal = Some(Modal::ConfirmDiscard);
-                    }
-                }
-            }
-            match self.ride.mode {
-                Mode::Workout => {
-                    if self.ride_active()
-                        && !self.ride.workout_done()
-                        && icon_button(ui, Icon::Right, "Skip step", None)
-                            .on_hover_text("Jump to the next step (N)")
-                            .clicked()
-                    {
-                        self.ride.skip_step();
-                    }
-                    if ui
-                        .small_button(" - ")
-                        .on_hover_text("Easier (Down arrow key)")
-                        .clicked()
-                    {
-                        self.ride.intensity = (self.ride.intensity - 0.05).max(0.5);
-                    }
-                    ui.label(format!("{:.0}%", self.ride.intensity * 100.0))
-                        .on_hover_text("Workout intensity: scales every target");
-                    if ui
-                        .small_button(" + ")
-                        .on_hover_text("Harder (Up arrow key)")
-                        .clicked()
-                    {
-                        self.ride.intensity = (self.ride.intensity + 0.05).min(1.5);
-                    }
-                }
-                Mode::Slope => {
-                    ui.label(RichText::new("Slope").color(theme::TEXT_DIM));
-                    ui.add(
-                        egui::Slider::new(&mut self.ride.manual_grade, -5.0..=15.0)
-                            .step_by(0.5)
-                            .suffix("%"),
-                    );
-                }
-                Mode::HeartRate => {
-                    ui.label(RichText::new("Target").color(theme::TEXT_DIM));
-                    let zones = self.store.settings.hr_zones();
-                    ui.add(
-                        egui::DragValue::new(&mut self.ride.hr_control.target_bpm)
-                            .range(80.0..=200.0)
-                            .suffix(" bpm"),
-                    )
-                    .on_hover_text("Up/Down arrow keys change it by 2 bpm");
-                    let z = zones.zone(self.ride.hr_control.target_bpm);
-                    ui.label(RichText::new(charts::HR_ZONE_NAMES[z]).color(charts::hr_zone_color(z)));
-                }
-                Mode::Route => {
-                    ui.label(RichText::new("Difficulty").color(theme::TEXT_DIM));
-                    if ui
-                        .add(
-                            egui::Slider::new(&mut self.store.settings.difficulty, 0.0..=1.0)
-                                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
-                        )
-                        .on_hover_text(
-                            "How much of the road's gradient the trainer gives you: 100% feels \
-                             like the real hill, 50% like half of it, 0% like flat road. It only \
-                             changes anything on climbs and descents. Up/Down arrow keys change it.",
-                        )
-                        .changed()
-                    {
-                        self.mark_dirty();
-                    }
-                }
-            }
-            if let Some((label, note, warn)) = self.gear_status() {
-                ui.separator();
-                if ui
-                    .small_button(" - ")
-                    .on_hover_text("Shift to an easier gear (- or [)")
-                    .clicked()
-                {
-                    self.shift(false);
-                }
-                let colour = if warn {
-                    theme::WARN
-                } else if self.gear_flashing() {
-                    theme::ACCENT
-                } else {
-                    theme::TEXT
-                };
-                let shown = ui.label(RichText::new(&label).color(colour).strong());
-                if let Some(n) = note {
-                    shown.on_hover_text(match self.ride.gearing {
-                        ride::Gearing::NoCadence => {
-                            "Virtual shifting needs your cadence, from the trainer or a cadence \
-                             sensor, and none is coming in. Until it does, the trainer follows \
-                             the road as without gears."
-                        }
-                        _ => {
-                            "The trainer is holding a workout's power target (ERG), so the gears \
-                             rest until the next free riding."
-                        }
-                    });
-                    ui.label(RichText::new(n).color(if warn { theme::WARN } else { theme::TEXT_DIM }));
-                }
-                if ui
-                    .small_button(" + ")
-                    .on_hover_text("Shift to a harder gear (+ or ])")
-                    .clicked()
-                {
-                    self.shift(true);
-                }
-            }
-            ui.label(RichText::new("Keys").color(theme::TEXT_FAINT).underline())
-                .on_hover_text(
-                    "Space: start / pause / resume\n\
-                     Up / Down: workout intensity, slope, or trainer difficulty\n\
-                     + / -  (or ] / [): shift gear, with virtual shifting on\n\
-                     N: skip to the next workout step\n\
-                     V: switch between 3D view and dashboard\n\
-                     C: change the camera in the 3D view",
-                );
-        });
-        ui.add_space(2.0);
-
         // Never draw past the window edge, even if a control row overflowed.
         let avail = ui.available_rect_before_wrap().intersect(ui.clip_rect());
         ui.allocate_rect(avail, Sense::hover());
@@ -468,14 +156,9 @@ impl App {
         let dt = ui.ctx().input(|i| i.unstable_dt as f64).clamp(0.0, 0.1);
         // Without a trainer, a notice on the view leads to Devices.
         let view_3d = self.store.settings.view_3d;
-        let chart_h = 104.0;
-        let board = Rect::from_min_max(
-            avail.min,
-            Pos2::new(avail.max.x, avail.max.y - chart_h - 8.0),
-        );
-        if self.trainer_link().is_none() {
+        if self.trainer_link().is_none() && view_3d {
             let banner = ui.interact(
-                Self::banner_rect(if view_3d { avail } else { board }, view_3d),
+                Self::banner_rect(avail, true),
                 ui.scope_id().with("trainer-banner"),
                 Sense::click(),
             );
@@ -487,11 +170,7 @@ impl App {
             }
         }
         if !view_3d {
-            // Numbers above, the workout or the road below.
-            let chart_rect =
-                Rect::from_min_max(Pos2::new(avail.min.x, avail.max.y - chart_h), avail.max);
-            self.dashboard(&painter, board);
-            self.ride_profile(&painter, chart_rect, Some(CARD));
+            self.dashboard_view(ui, &painter, avail);
             return;
         }
 
@@ -544,8 +223,392 @@ impl App {
             self.world.draw(&clip, view, &scene);
         }
         self.hud(&painter, view, &plan, gpu && self.gpu.frosts_glass());
+        self.ride_controls(ui, plan.controls);
+        if let Some(m) = plan.music {
+            self.now_playing(ui, m);
+        }
         if self.ride.state == ride::State::Ready {
             self.tired_banner(ui, true);
+        }
+    }
+
+    /// The dashboard: the numbers on glass over the soft picture, the
+    /// workout or the road below, and the controls along the bottom.
+    fn dashboard_view(&mut self, ui: &mut egui::Ui, painter: &egui::Painter, avail: Rect) {
+        if let Some(b) = theme::backdrop(ui.ctx()) {
+            let at = |p: Pos2| {
+                let t = (p - b.screen.min) / b.screen.size();
+                b.uv.min + t * b.uv.size()
+            };
+            painter.image(
+                b.frosted,
+                avail,
+                Rect::from_min_max(at(avail.min), at(avail.max)),
+                Color32::WHITE,
+            );
+            painter.rect_filled(avail, 0.0, Color32::from_black_alpha(70));
+        }
+        let r = avail.shrink(24.0);
+        let bar = Rect::from_center_size(
+            Pos2::new(r.center().x, r.bottom() - 36.0),
+            Vec2::new(r.width().min(720.0), 72.0),
+        );
+        let profile = Rect::from_min_max(
+            Pos2::new(r.left(), bar.top() - 16.0 - 110.0),
+            Pos2::new(r.right(), bar.top() - 16.0),
+        );
+        let board = Rect::from_min_max(r.min, Pos2::new(r.right(), profile.top() - 16.0));
+        self.dashboard(painter, board);
+        theme::frosted(painter, profile, 22.0);
+        self.ride_profile(painter, profile.shrink2(Vec2::new(14.0, 10.0)), None);
+        theme::frosted(painter, bar, 36.0);
+        self.ride_controls(ui, bar.shrink2(Vec2::new(12.0, 8.0)));
+        if self.trainer_link().is_none() {
+            let banner = ui.interact(
+                Self::banner_rect(board, false),
+                ui.scope_id().with("trainer-banner"),
+                Sense::click(),
+            );
+            if banner
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
+                self.tab = Tab::Devices;
+            }
+        }
+    }
+
+    /// What to ride (workout, free ride, slope, heart rate) and where
+    /// (route, reversed): chosen on Home, before the ride.
+    pub(super) fn ride_choices(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(10.0, 8.0);
+            let ctx = ui.ctx().clone();
+            let pad = self.pad_shown && self.pad_nav();
+            self.home_lists = [None, None];
+            let mut mode = self.ride.mode;
+            let seg = ui.scope(|ui| {
+                segmented(
+                    ui,
+                    &mut mode,
+                    &[
+                        (
+                            Mode::Workout,
+                            "Workout",
+                            "Structured workout: the trainer holds the target power (ERG)",
+                        ),
+                        (
+                            Mode::Route,
+                            "Free ride",
+                            "Resistance follows the road's gradient",
+                        ),
+                        (Mode::Slope, "Slope", "Choose a fixed gradient yourself"),
+                        (
+                            Mode::HeartRate,
+                            "Heart rate",
+                            "Hold a target heart rate: VeloForge adjusts the trainer's power for you",
+                        ),
+                    ],
+                )
+            });
+            if seg.inner {
+                self.set_ride_mode(mode);
+            }
+            {
+                if self.ride.mode == Mode::Workout {
+                    let current = self
+                        .ride
+                        .workout
+                        .as_ref()
+                        .map(|w| w.name.clone())
+                        .unwrap_or("Choose workout".into());
+                    let mut pick = None;
+                    let combo = egui::ComboBox::from_id_salt("ride-workout")
+                        .width(160.0)
+                        .selected_text(current.clone())
+                        .show_ui(ui, |ui| {
+                            for w in self.library() {
+                                let label = format!("{}  ·  {}", w.name, fmt_dur(w.duration()));
+                                if ui
+                                    .selectable_label(
+                                        self.ride_workout.as_deref() == Some(&w.id),
+                                        label,
+                                    )
+                                    .clicked()
+                                {
+                                    pick = Some(w.id.clone());
+                                }
+                            }
+                        });
+                    self.home_lists[0] = Some(combo.response.id);
+                    if pad && combo.response.has_focus() {
+                        let r = combo.response.rect;
+                        if let Some((prev, next)) = self.home_neighbours(0) {
+                            super::home_click::peek(
+                                &ctx,
+                                r,
+                                self.store.settings.click_pad,
+                                &prev,
+                                &current,
+                                &next,
+                            );
+                        }
+                    }
+                    if let Some(id) = pick {
+                        self.load_ride(Some(id), None);
+                    }
+                }
+                let mut ri = self.route_idx;
+                let units = self.store.settings.units;
+                let mut random = false;
+                let route_name = units.route_name(&self.routes[ri].name);
+                let combo = egui::ComboBox::from_id_salt("ride-route")
+                    .width(170.0)
+                    .selected_text(route_name.clone())
+                    .show_ui(ui, |ui| {
+                        for (i, r) in self.routes.iter().enumerate() {
+                            ui.selectable_value(&mut ri, i, units.route_name(&r.name));
+                        }
+                        ui.separator();
+                        random = ui.selectable_label(false, "+ New random route").clicked();
+                    });
+                self.home_lists[1] = Some(combo.response.id);
+                if pad && combo.response.has_focus() {
+                    let r = combo.response.rect;
+                    if let Some((prev, next)) = self.home_neighbours(1) {
+                        super::home_click::peek(
+                            &ctx,
+                            r,
+                            self.store.settings.click_pad,
+                            &prev,
+                            &route_name,
+                            &next,
+                        );
+                    }
+                }
+                if random {
+                    self.new_random_route();
+                    ri = self.route_idx;
+                }
+                if ri != self.route_idx {
+                    self.choose_route(self.routes[ri].base_id().to_string());
+                }
+                let current = &self.routes[self.route_idx];
+                let mut reversed = current.is_reversed();
+                let rev = ui.toggle_value(&mut reversed, "Reverse");
+                if rev.changed() {
+                    let base = current.base_id().to_string();
+                    self.choose_route(if reversed {
+                        format!("{base}{}", route::REVERSED)
+                    } else {
+                        base
+                    });
+                }
+            }
+        });
+    }
+
+    /// The ride's controls in one row of round buttons: back, start or
+    /// pause, skip, the mode's own minus and plus, the view, the camera,
+    /// the sky, who you ride with, and Finish.
+    fn ride_controls(&mut self, ui: &mut egui::Ui, rect: Rect) {
+        use super::glass::{self, Glyph};
+        let active = self.ride_active();
+        let workout = self.ride.mode == Mode::Workout;
+        let skip = workout && active && !self.ride.workout_done();
+        // The middle pair and its label.
+        let (value, what): (String, &str) = match self.ride.mode {
+            Mode::Workout => (format!("{:.0}%", self.ride.intensity * 100.0), "intensity"),
+            _ if self.gears_on() => (
+                crate::gears::teeth(self.store.settings.gear).replace('x', "×"),
+                "gear",
+            ),
+            Mode::Route => (
+                format!("{:.0}%", self.store.settings.difficulty * 100.0),
+                "difficulty",
+            ),
+            Mode::Slope => (format!("{:+.1}%", self.ride.manual_grade), "slope"),
+            Mode::HeartRate => (format!("{:.0}", self.ride.hr_control.target_bpm), "bpm"),
+        };
+        // With virtual shifting the gears have their own panel: shift with
+        // the Click, the keyboard or the phone, not here.
+        let stepper = !(self.gears_on() && self.ride.mode != Mode::Workout);
+        let divider = 17.0;
+        let mut width = 44.0 + divider + 52.0 + divider + 44.0 * 4.0;
+        if stepper {
+            width += 44.0 * 2.0 + 70.0 + divider;
+        }
+        if skip {
+            width += 44.0;
+        }
+        if active {
+            width += divider + 92.0;
+        }
+        let row = |ui: &mut egui::Ui| {
+            let (r, _) = ui.allocate_exact_size(Vec2::new(1.0, 28.0), Sense::hover());
+            ui.painter()
+                .rect_filled(r, 0.0, Color32::from_white_alpha(51));
+        };
+        let mut down = false;
+        let mut up = false;
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            |ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.add_space(((rect.width() - width) / 2.0).max(0.0));
+                if glass::round(ui, 44.0, Glyph::Back, false, "Back to Home").clicked() {
+                    self.tab = Tab::Home;
+                }
+                ui.add_space(8.0);
+                row(ui);
+                ui.add_space(8.0);
+                match self.ride.state {
+                    ride::State::Ready => {
+                        let can = self.can_start();
+                        let r = ui
+                            .add_enabled_ui(can, |ui| {
+                                glass::round(ui, 52.0, Glyph::Play, true, "Start (Space)")
+                            })
+                            .inner;
+                        if r.clicked() {
+                            self.ride.start();
+                        }
+                    }
+                    ride::State::Running | ride::State::Paused => {
+                        let running = self.ride.state == ride::State::Running;
+                        let (g, hover) = if running {
+                            (Glyph::Pause, "Pause (Space)")
+                        } else {
+                            (Glyph::Play, "Carry on (Space)")
+                        };
+                        if glass::round(ui, 52.0, g, true, hover).clicked() {
+                            if running {
+                                self.ride.state = ride::State::Paused;
+                            } else {
+                                self.ride.start();
+                            }
+                        }
+                    }
+                }
+                if skip
+                    && glass::round(ui, 44.0, Glyph::Skip, false, "Skip to the next step (N)")
+                        .clicked()
+                {
+                    self.ride.skip_step();
+                }
+                if stepper {
+                    ui.add_space(8.0);
+                    row(ui);
+                    ui.add_space(8.0);
+                    down = glass::round(
+                        ui,
+                        44.0,
+                        Glyph::Minus,
+                        false,
+                        "Easier (Down, or - to shift)",
+                    )
+                    .clicked();
+                    let (r, _) = ui.allocate_exact_size(Vec2::new(70.0, 44.0), Sense::hover());
+                    ui.painter().text(
+                        r.center() - Vec2::new(0.0, 7.0),
+                        Align2::CENTER_CENTER,
+                        &value,
+                        theme::medium(16.0),
+                        Color32::WHITE,
+                    );
+                    ui.painter().text(
+                        r.center() + Vec2::new(0.0, 11.0),
+                        Align2::CENTER_CENTER,
+                        what,
+                        theme::regular(11.0),
+                        glass::QUIET,
+                    );
+                    up = glass::round(ui, 44.0, Glyph::Plus, false, "Harder (Up, or + to shift)")
+                        .clicked();
+                }
+                ui.add_space(8.0);
+                row(ui);
+                ui.add_space(8.0);
+                let three = self.store.settings.view_3d;
+                let (g, hover) = if three {
+                    (Glyph::Grid, "Switch to the dashboard (V)")
+                } else {
+                    (Glyph::Cube, "Switch to the 3D view (V)")
+                };
+                if glass::round(ui, 44.0, g, false, hover).clicked() {
+                    self.store.settings.view_3d = !three;
+                    self.mark_dirty();
+                }
+                if glass::round(ui, 44.0, Glyph::Camera, false, "Change the camera (C)").clicked() {
+                    self.ride_action(crate::remote::Action::Camera);
+                }
+                let sky = glass::round(ui, 44.0, Glyph::Sun, false, "Time of day and weather");
+                self.sky_menu(&sky);
+                let with = glass::round(
+                    ui,
+                    44.0,
+                    Glyph::People,
+                    false,
+                    "Ride with a pacer or a ghost",
+                );
+                self.companion_menu(&with);
+                if active {
+                    ui.add_space(8.0);
+                    row(ui);
+                    ui.add_space(8.0);
+                    if glass::pill(ui, "Finish", true)
+                        .on_hover_text(if self.ride_simulated || self.demo {
+                            "End the ride. Rides with the simulated trainer are practice: they \
+                             are not saved."
+                        } else {
+                            "End and save the ride"
+                        })
+                        .clicked()
+                    {
+                        // Ask first, as holding Y does.
+                        self.finish_ask = Some(Instant::now());
+                    }
+                    if ui
+                        .add(
+                            egui::Label::new(RichText::new("  Discard").color(glass::QUIET))
+                                .sense(Sense::click()),
+                        )
+                        .on_hover_text("Throw this ride away")
+                        .clicked()
+                    {
+                        self.modal = Some(Modal::ConfirmDiscard);
+                    }
+                }
+            },
+        );
+        if down || up {
+            self.ride_step(up);
+        }
+    }
+
+    /// The minus and plus beside the controls' middle: intensity, gear,
+    /// difficulty, slope or target heart rate.
+    fn ride_step(&mut self, up: bool) {
+        let d = if up { 1.0 } else { -1.0 };
+        match self.ride.mode {
+            Mode::Workout => {
+                self.ride.intensity = (self.ride.intensity + 0.05 * d).clamp(0.5, 1.5);
+            }
+            _ if self.gears_on() => self.shift(up),
+            Mode::Route => {
+                self.store.settings.difficulty =
+                    (self.store.settings.difficulty + 0.1 * d).clamp(0.0, 1.0);
+                self.mark_dirty();
+            }
+            Mode::Slope => {
+                self.ride.manual_grade = (self.ride.manual_grade + 0.5 * d).clamp(-5.0, 15.0);
+            }
+            Mode::HeartRate => {
+                self.ride.hr_control.target_bpm =
+                    (self.ride.hr_control.target_bpm + 2.0 * d).clamp(80.0, 200.0);
+            }
         }
     }
 
@@ -612,15 +675,29 @@ impl App {
             effort: self.ride.effort,
             pedalling: self.ride.pedalling,
             jersey: Color32::from_rgb(r, g, b),
+            skin: {
+                let [r, g, b] = self.store.settings.skin;
+                Color32::from_rgb(r, g, b)
+            },
             tag: None,
         }];
         if let Some(gap) = self.ride.companion_gap() {
-            let (jersey, tag) = match &self.ride.companion {
+            let you = {
+                let [r, g, b] = self.store.settings.skin;
+                Color32::from_rgb(r, g, b)
+            };
+            let (jersey, skin, tag) = match &self.ride.companion {
                 Some(ride::Companion::Pacer(p)) => {
-                    (self.pacer_jersey(), format!("Pacer · {:.0} W", p.watts))
+                    let [r, g, b] = crate::world::SKIN_TONES[2].1;
+                    (
+                        self.pacer_jersey(),
+                        Color32::from_rgb(r, g, b),
+                        format!("Pacer · {:.0} W", p.watts),
+                    )
                 }
                 Some(ride::Companion::Ghost(gh)) => (
                     Color32::from_rgb(200, 232, 255),
+                    you,
                     format!("Ghost · {}", gh.label.split(',').next().unwrap_or("")),
                 ),
                 None => unreachable!(),
@@ -633,6 +710,7 @@ impl App {
                 effort: self.ride.companion_effort,
                 pedalling: self.ride.companion_pedalling,
                 jersey,
+                skin,
                 tag: Some(tag),
             });
         }
@@ -640,7 +718,7 @@ impl App {
     }
 
     /// Time of day and weather for the 3D world.
-    fn sky_menu(&mut self, ui: &mut egui::Ui) {
+    fn sky_menu(&mut self, button: &egui::Response) {
         let s = &mut self.store.settings;
         let label = if s.weather == Weather::Clear {
             s.time_of_day.label().to_string()
@@ -648,7 +726,8 @@ impl App {
             format!("{} · {}", s.time_of_day.label(), s.weather.label())
         };
         let mut changed = false;
-        ui.menu_button(format!("{label} ▾"), |ui| {
+        let _ = label;
+        egui::Popup::menu(button).show(|ui| {
             ui.set_min_width(170.0);
             ui.label(RichText::new("Time of day").weak());
             for t in TimeOfDay::ALL {
@@ -664,9 +743,7 @@ impl App {
             for c in crate::world::Camera::ALL {
                 changed |= ui.radio_value(&mut s.camera, c, c.label()).changed();
             }
-        })
-        .response
-        .on_hover_text("Time of day, weather and camera");
+        });
         if changed {
             self.mark_dirty();
         }
@@ -674,7 +751,7 @@ impl App {
 
     /// "Ride with": nobody, a pacer at a fixed power, or a ghost of an
     /// earlier ride on this route.
-    fn companion_menu(&mut self, ui: &mut egui::Ui) {
+    fn companion_menu(&mut self, button: &egui::Response) {
         let label = match &self.ride.companion {
             None => "Ride alone".to_string(),
             Some(ride::Companion::Pacer(p)) => format!("Pacer {:.0} W", p.watts),
@@ -687,7 +764,8 @@ impl App {
             .collect();
         let ftp = self.store.settings.ftp;
         let mut load = None;
-        ui.menu_button(format!("{label} ▾"), |ui| {
+        let _ = label;
+        egui::Popup::menu(button).show(|ui| {
             ui.set_min_width(260.0);
             if ui
                 .selectable_label(self.ride.companion.is_none(), "Ride alone")
@@ -753,9 +831,7 @@ impl App {
                     ui.close();
                 }
             }
-        })
-        .response
-        .on_hover_text("Ride with a pacer or race your ghost");
+        });
         if let Some(h) = load {
             self.load_ghost(&h);
         }
@@ -832,8 +908,7 @@ impl App {
     fn dashboard(&self, painter: &egui::Painter, rect: Rect) {
         let s = &self.store.settings;
         let ftp = s.ftp;
-        painter.rect_filled(rect, 0.0, theme::BG);
-        let r = rect.shrink(12.0);
+        let r = rect;
         let gap = 10.0;
         let h1 = r.height() * 0.28;
         let h2 = r.height() * 0.19;
@@ -1233,7 +1308,11 @@ impl App {
             painter.text(
                 panel.center_top() + Vec2::new(0.0, 10.0),
                 Align2::CENTER_TOP,
-                "Press Start (or Space) when you're ready",
+                if self.store.settings.start_by_pedalling {
+                    "Start pedalling, or press Start (Space)"
+                } else {
+                    "Press Start (or Space) when you're ready"
+                },
                 small.clone(),
                 Color32::from_rgb(240, 200, 90),
             );
@@ -1369,7 +1448,17 @@ impl App {
             .iter()
             .map(|s| s.hr.filter(|h| *h > 0.0))
             .collect();
-        charts::live_chart(painter, chart, &p, &target, &hr, ftp, 600, theme::CARD);
+        theme::frosted(painter, chart, 22.0);
+        charts::live_chart(
+            painter,
+            chart.shrink(8.0),
+            &p,
+            &target,
+            &hr,
+            ftp,
+            600,
+            Color32::TRANSPARENT,
+        );
         self.trainer_warning(painter, Self::banner_rect(rect, false));
     }
 }

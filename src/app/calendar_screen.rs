@@ -120,24 +120,22 @@ impl App {
             self.missed_banner(ui);
             self.tired_banner(ui, false);
             ui.horizontal(|ui| {
-                if icon_button(ui, Icon::Left, "", None)
-                    .on_hover_text("Previous month")
-                    .clicked()
-                {
-                    self.month = plan::add_months(self.month, -1);
-                }
-                ui.heading(self.month.format("%B %Y").to_string());
-                if icon_button(ui, Icon::Right, "", None)
-                    .on_hover_text("Next month")
-                    .clicked()
-                {
-                    self.month = plan::add_months(self.month, 1);
-                }
-                if ui.button("Today").clicked() {
-                    self.month = plan::first_of_month(Local::now().date_naive());
-                    self.sel_day = Local::now().date_naive();
-                }
+                use super::glass::{self, Glyph};
+                glass::title(ui, &self.month.format("%B %Y").to_string());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if glass::round(ui, 36.0, Glyph::Forward, false, "Next month").clicked() {
+                        self.month = plan::add_months(self.month, 1);
+                    }
+                    if glass::pill(ui, "Today", true).clicked() {
+                        self.month = plan::first_of_month(Local::now().date_naive());
+                        self.sel_day = Local::now().date_naive();
+                    }
+                    if glass::round(ui, 36.0, Glyph::Back, false, "Previous month").clicked() {
+                        self.month = plan::add_months(self.month, -1);
+                    }
+                });
             });
+            ui.add_space(6.0);
             let today = Local::now().date_naive();
             let detail_h = 190.0;
             let avail = ui.available_rect_before_wrap();
@@ -155,8 +153,8 @@ impl App {
                     Pos2::new(grid.left() + cw * (d as f32 + 0.5), grid.top() + 10.0),
                     Align2::CENTER_CENTER,
                     plan::weekday_label(d),
-                    FontId::proportional(13.0),
-                    Color32::from_gray(170),
+                    theme::medium(12.5),
+                    super::glass::QUIET,
                 );
             }
             let start = plan::month_grid_start(self.month);
@@ -178,42 +176,42 @@ impl App {
                         clicked_day = Some(date);
                     }
                     let in_month = date.month() == self.month.month();
-                    let mut fill = if in_month {
-                        CARD
+                    let fill = if resp.hovered() {
+                        Color32::from_white_alpha(36)
+                    } else if date == self.sel_day {
+                        Color32::from_white_alpha(31)
+                    } else if in_month {
+                        Color32::from_white_alpha(15)
                     } else {
-                        Color32::from_rgb(24, 26, 32)
+                        Color32::TRANSPARENT
                     };
-                    if resp.hovered() {
-                        fill = fill.gamma_multiply(1.3);
-                    }
-                    painter.rect_filled(r, CornerRadius::same(6), fill);
+                    painter.rect_filled(r, CornerRadius::same(12), fill);
                     if date == self.sel_day {
                         painter.rect_stroke(
                             r,
-                            CornerRadius::same(6),
-                            Stroke::new(2.0, Color32::from_rgb(240, 130, 60)),
-                            egui::StrokeKind::Inside,
-                        );
-                    } else if date == today {
-                        painter.rect_stroke(
-                            r,
-                            CornerRadius::same(6),
-                            Stroke::new(1.5, Color32::from_rgb(90, 160, 240)),
+                            CornerRadius::same(12),
+                            Stroke::new(1.5, Color32::from_white_alpha(200)),
                             egui::StrokeKind::Inside,
                         );
                     }
+                    let num = Pos2::new(r.left() + 16.0, r.top() + 14.0);
+                    if date == today {
+                        painter.circle_filled(num, 11.0, Color32::from_white_alpha(235));
+                    }
                     painter.text(
-                        r.left_top() + Vec2::new(6.0, 4.0),
-                        Align2::LEFT_TOP,
+                        num,
+                        Align2::CENTER_CENTER,
                         date.day().to_string(),
-                        FontId::proportional(12.0),
-                        if in_month {
-                            Color32::from_gray(220)
+                        theme::medium(12.5),
+                        if date == today {
+                            Color32::from_rgb(28, 29, 33)
+                        } else if in_month {
+                            Color32::WHITE
                         } else {
-                            Color32::from_gray(110)
+                            Color32::from_white_alpha(90)
                         },
                     );
-                    let mut yy = r.top() + 22.0;
+                    let mut yy = r.top() + 30.0;
                     for p in self.store.plan.iter().filter(|p| p.date == date) {
                         let Some(w) = by_id(&p.workout_id) else {
                             continue;
@@ -229,24 +227,30 @@ impl App {
                         let c = charts::category_color(w.category);
                         let missed = !p.done && !p.skipped && p.date < today;
                         let fill = if p.skipped {
-                            Color32::from_gray(70)
-                        } else if p.done {
-                            c.gamma_multiply(0.45)
-                        } else if missed {
-                            c.gamma_multiply(0.35)
+                            Color32::from_white_alpha(20)
                         } else {
-                            c.gamma_multiply(0.85)
+                            Color32::from_rgba_unmultiplied(
+                                c.r(),
+                                c.g(),
+                                c.b(),
+                                if p.done { 60 } else { 95 },
+                            )
                         };
-                        painter.rect_filled(pill, CornerRadius::same(4), fill);
+                        painter.rect_filled(pill, CornerRadius::same(5), fill);
+                        painter.rect_filled(
+                            Rect::from_min_size(pill.min, Vec2::new(3.0, pill.height())),
+                            CornerRadius::same(2),
+                            c,
+                        );
                         if missed {
                             painter.rect_stroke(
                                 pill,
-                                CornerRadius::same(4),
-                                Stroke::new(1.5, Color32::from_rgb(235, 100, 80)),
+                                CornerRadius::same(5),
+                                Stroke::new(1.0, super::glass::ALERT),
                                 egui::StrokeKind::Inside,
                             );
                         }
-                        let mut tx = pill.left() + 4.0;
+                        let mut tx = pill.left() + 7.0;
                         if p.done {
                             paint_icon(
                                 &painter,
@@ -255,7 +259,7 @@ impl App {
                                     Vec2::splat(10.0),
                                 ),
                                 Icon::Check,
-                                Color32::BLACK,
+                                Color32::WHITE,
                             );
                             tx += 13.0;
                         }
@@ -263,8 +267,8 @@ impl App {
                             Pos2::new(tx, pill.center().y),
                             Align2::LEFT_CENTER,
                             &w.name,
-                            FontId::proportional(11.0),
-                            Color32::BLACK,
+                            theme::regular(11.0),
+                            Color32::WHITE,
                         );
                         yy += 18.0;
                     }
@@ -281,7 +285,11 @@ impl App {
                             Pos2::new(r.left() + 4.0, yy),
                             Vec2::new(r.width() - 8.0, 16.0),
                         );
-                        painter.rect_filled(pill, CornerRadius::same(4), Color32::from_gray(80));
+                        painter.rect_filled(
+                            pill,
+                            CornerRadius::same(5),
+                            Color32::from_white_alpha(31),
+                        );
                         painter.with_clip_rect(pill).text(
                             pill.left_center() + Vec2::new(4.0, 0.0),
                             Align2::LEFT_CENTER,
@@ -307,8 +315,8 @@ impl App {
                     wr.center(),
                     Align2::CENTER_CENTER,
                     format!("{week_tss:.0}\nTSS"),
-                    FontId::proportional(12.0),
-                    Color32::from_gray(160),
+                    theme::regular(12.0),
+                    super::glass::QUIET,
                 );
             }
             if let Some(d) = clicked_day {
@@ -319,33 +327,35 @@ impl App {
                 Sense::hover(),
             );
 
-            // Day detail.
-            ui.separator();
+            // The chosen day: a glass bar for each planned workout.
+            ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.heading(self.sel_day.format("%A %d %B").to_string());
-                ui.separator();
-                egui::ComboBox::from_id_salt("add-wk")
-                    .width(220.0)
-                    .selected_text(
-                        by_id(&self.add_workout)
-                            .map(|w| w.name.clone())
-                            .unwrap_or_default(),
-                    )
-                    .show_ui(ui, |ui| {
-                        for w in &lib {
-                            ui.selectable_value(&mut self.add_workout, w.id.clone(), &w.name);
-                        }
-                    });
-                if ui.button("Add to this day").clicked() {
-                    self.store.plan.push(PlannedWorkout {
-                        date: self.sel_day,
-                        workout_id: self.add_workout.clone(),
-                        done: false,
-                        skipped: false,
-                    });
-                    self.mark_dirty();
-                }
+                super::glass::heading(ui, &self.sel_day.format("%A %-d %B").to_string());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if super::glass::pill(ui, "Add to this day", true).clicked() {
+                        self.store.plan.push(PlannedWorkout {
+                            date: self.sel_day,
+                            workout_id: self.add_workout.clone(),
+                            done: false,
+                            skipped: false,
+                        });
+                        self.mark_dirty();
+                    }
+                    egui::ComboBox::from_id_salt("add-wk")
+                        .width(220.0)
+                        .selected_text(
+                            by_id(&self.add_workout)
+                                .map(|w| w.name.clone())
+                                .unwrap_or_default(),
+                        )
+                        .show_ui(ui, |ui| {
+                            for w in &lib {
+                                ui.selectable_value(&mut self.add_workout, w.id.clone(), &w.name);
+                            }
+                        });
+                });
             });
+            ui.add_space(4.0);
             let mut action: Option<(usize, &str)> = None;
             egui::ScrollArea::vertical()
                 .id_salt("day-detail")
@@ -357,43 +367,72 @@ impl App {
                         .enumerate()
                         .filter(|(_, p)| p.date == self.sel_day)
                     {
+                        use super::glass;
                         let w = by_id(&p.workout_id);
-                        ui.horizontal(|ui| {
-                            let (name, info) = match w {
-                                Some(w) => (
-                                    w.name.clone(),
-                                    format!("{} · {:.0} TSS", fmt_dur(w.duration()), w.load().1),
-                                ),
-                                None => (format!("{} (missing)", p.workout_id), String::new()),
-                            };
-                            ui.label(RichText::new(name).strong());
-                            ui.label(info);
-                            if p.done {
-                                ui.label(
-                                    RichText::new("Done")
-                                        .strong()
-                                        .color(Color32::from_rgb(110, 210, 130)),
-                                );
-                            }
-                            if w.is_some() && icon_button(ui, Icon::Play, "Ride", None).clicked() {
-                                action = Some((i, "ride"));
-                            }
-                            if ui
-                                .button(if p.done { "Mark not done" } else { "Mark done" })
-                                .clicked()
-                            {
-                                action = Some((i, "toggle"));
-                            }
-                            if icon_button(ui, Icon::Left, "Day earlier", None).clicked() {
-                                action = Some((i, "earlier"));
-                            }
-                            if icon_button(ui, Icon::Right, "Day later", None).clicked() {
-                                action = Some((i, "later"));
-                            }
-                            if ui.button("Remove").clicked() {
-                                action = Some((i, "remove"));
-                            }
-                        });
+                        egui::Frame::new()
+                            .fill(Color32::from_white_alpha(31))
+                            .stroke(Stroke::new(1.0, Color32::from_white_alpha(36)))
+                            .corner_radius(20)
+                            .inner_margin(egui::Margin::symmetric(16, 10))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.horizontal(|ui| {
+                                    let (name, info) = match w {
+                                        Some(w) => (
+                                            w.name.clone(),
+                                            format!(
+                                                "{} · {:.0} TSS · {}",
+                                                fmt_dur(w.duration()),
+                                                w.load().1,
+                                                w.category.label()
+                                            ),
+                                        ),
+                                        None => {
+                                            (format!("{} (missing)", p.workout_id), String::new())
+                                        }
+                                    };
+                                    ui.vertical(|ui| {
+                                        ui.spacing_mut().item_spacing.y = 2.0;
+                                        ui.label(
+                                            RichText::new(name)
+                                                .font(theme::medium(14.5))
+                                                .color(Color32::WHITE),
+                                        );
+                                        ui.label(RichText::new(info).color(glass::QUIET));
+                                    });
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if w.is_some()
+                                                && glass::pill_white(ui, "Ride").clicked()
+                                            {
+                                                action = Some((i, "ride"));
+                                            }
+                                            if glass::pill(
+                                                ui,
+                                                if p.done { "Not done" } else { "Mark done" },
+                                                true,
+                                            )
+                                            .clicked()
+                                            {
+                                                action = Some((i, "toggle"));
+                                            }
+                                            if glass::pill_alert(ui, "Remove").clicked() {
+                                                action = Some((i, "remove"));
+                                            }
+                                            if glass::pill(ui, "Day later", false).clicked() {
+                                                action = Some((i, "later"));
+                                            }
+                                            if glass::pill(ui, "Day earlier", false).clicked() {
+                                                action = Some((i, "earlier"));
+                                            }
+                                            if p.done {
+                                                ui.label(RichText::new("Done").color(glass::OK));
+                                            }
+                                        },
+                                    );
+                                });
+                            });
                     }
                     for h in self
                         .store

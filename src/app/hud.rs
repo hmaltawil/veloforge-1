@@ -6,12 +6,19 @@ use super::*;
 use crate::gfx::Glass;
 use crate::theme;
 
-const MARGIN: f32 = 14.0;
-const PANEL_W: f32 = 226.0;
-const PAD: f32 = 14.0;
-const RADIUS: f32 = 14.0;
-/// Height of the strip with the map and the profile.
-const STRIP_H: f32 = 98.0;
+const MARGIN: f32 = 24.0;
+const LEFT_W: f32 = 300.0;
+const RIGHT_W: f32 = 260.0;
+const PAD: f32 = 20.0;
+const RADIUS: f32 = 28.0;
+/// Height of the strip along the bottom with the map and the profile.
+const STRIP_H: f32 = 96.0;
+/// The row of controls inside the middle panel.
+pub(super) const CONTROLS_H: f32 = 56.0;
+/// The gear ladder in the middle panel, riding with virtual shifting.
+const GEARS_H: f32 = 126.0;
+/// The music card's width; the devices under it are centred on it.
+const MUSIC_W: f32 = 236.0;
 
 /// One line of the banner in the middle: text, size, colour, emphasised.
 type Line = (String, f32, Color32, bool);
@@ -21,9 +28,17 @@ type Line = (String, f32, Color32, bool);
 pub(super) struct HudPlan {
     left: Rect,
     right: Rect,
-    map: Rect,
-    profile: Rect,
-    banner: Option<Rect>,
+    /// The middle panel: the interval or the gears, then the controls.
+    centre: Rect,
+    /// Inside `centre`: the set-up row before the ride, and the controls.
+    pub(super) setup: Option<Rect>,
+    pub(super) controls: Rect,
+    /// The pacer or ghost, under the middle panel.
+    chip: Option<Rect>,
+    /// Your music, above the devices at the bottom right.
+    pub(super) music: Option<Rect>,
+    /// The strip along the bottom (no glass: a shade).
+    strip: Rect,
     warning: Option<Rect>,
 }
 
@@ -32,10 +47,10 @@ impl HudPlan {
         let mut g = vec![
             (self.left, RADIUS),
             (self.right, RADIUS),
-            (self.map, RADIUS),
-            (self.profile, RADIUS),
+            (self.centre, RADIUS),
         ];
-        g.extend(self.banner.map(|b| (b, RADIUS)));
+        g.extend(self.chip.map(|c| (c, c.height() / 2.0)));
+        g.extend(self.music.map(|m| (m, 20.0)));
         g.extend(self.warning.map(|w| (w, 10.0)));
         g
     }
@@ -184,7 +199,11 @@ impl App {
                 ));
             }
             if ready {
-                lines.push(hint("Press Start (or Space) when you're ready"));
+                lines.push(hint(if self.store.settings.start_by_pedalling {
+                    "Start pedalling, or press Start (Space)"
+                } else {
+                    "Press Start (or Space) when you're ready"
+                }));
             }
             lines
         } else if self.ride.mode == Mode::HeartRate {
@@ -197,7 +216,11 @@ impl App {
                     false,
                 ),
                 (Some(h), Some(_)) => (format!("Heart rate {h:.0} bpm"), 12.5, dim, false),
-                _ if ready => hint("Press Start (or Space) to begin"),
+                _ if ready => hint(if self.store.settings.start_by_pedalling {
+                    "Start pedalling, or press Start (Space)"
+                } else {
+                    "Press Start (or Space) to begin"
+                }),
                 _ => ("Waiting for heart rate…".into(), 12.5, dim, false),
             };
             vec![
@@ -221,54 +244,97 @@ impl App {
                     Color32::WHITE,
                     true,
                 ),
-                hint("Press Start (or Space) to roll out"),
+                hint(if self.store.settings.start_by_pedalling {
+                    "Start pedalling, or press Start (Space)"
+                } else {
+                    "Press Start (or Space) to roll out"
+                }),
             ]
         } else {
             Vec::new()
         }
     }
 
+    /// Riding with virtual shifting where the gears drive the trainer:
+    /// the middle panel shows the gears rather than an interval.
+    pub(super) fn gears_panel(&self) -> bool {
+        self.gears_on() && self.ride.mode != Mode::Workout
+    }
+
     pub(super) fn hud_plan(&self, view: Rect) -> HudPlan {
         let top = view.top() + MARGIN;
-        let mut left_h: f32 = 110.0 + 62.0;
+        let mut left_h: f32 = 194.0;
         if self.hud_target().is_some() {
             left_h += 36.0;
         }
-        let mut right_h: f32 = 84.0 + 2.0 * 46.0 + 6.0;
-        if self.companion_status().is_some() {
-            right_h += 50.0;
-        }
-        let strip_top = view.bottom() - MARGIN - STRIP_H;
+        let right_h: f32 = 206.0;
+        let strip = Rect::from_min_max(
+            Pos2::new(view.left() + MARGIN, view.bottom() - MARGIN - STRIP_H),
+            Pos2::new(view.right() - MARGIN, view.bottom() - MARGIN),
+        );
         // On a short window the side panels give way to the strip.
-        let room = (strip_top - 10.0 - top).max(120.0);
+        let room = (strip.top() - 10.0 - top).max(120.0);
         let left = Rect::from_min_size(
             Pos2::new(view.left() + MARGIN, top),
-            Vec2::new(PANEL_W, left_h.min(room)),
+            Vec2::new(LEFT_W, left_h.min(room)),
         );
         let right = Rect::from_min_size(
-            Pos2::new(view.right() - MARGIN - PANEL_W, top),
-            Vec2::new(PANEL_W, right_h.min(room)),
+            Pos2::new(view.right() - MARGIN - RIGHT_W, top),
+            Vec2::new(RIGHT_W, right_h.min(room)),
         );
-        let map = Rect::from_min_size(
-            Pos2::new(view.left() + MARGIN, strip_top),
-            Vec2::new(STRIP_H * 1.25, STRIP_H),
+        let content_h = if self.gears_panel() {
+            let note = self.gear_status().is_some_and(|g| g.1.is_some());
+            if note {
+                GEARS_H
+            } else {
+                GEARS_H - 24.0
+            }
+        } else {
+            let lines = self.banner_lines();
+            if lines.is_empty() {
+                0.0
+            } else {
+                lines.iter().map(|l| l.1 + 7.0).sum::<f32>() + 10.0
+            }
+        };
+        let setup_h = 0.0;
+        let h = 14.0 + content_h + setup_h + CONTROLS_H + 8.0;
+        let w = (view.width() - LEFT_W - RIGHT_W - 4.0 * MARGIN).clamp(380.0, 700.0);
+        let centre =
+            Rect::from_min_size(Pos2::new(view.center().x - w / 2.0, top), Vec2::new(w, h));
+        let inner = centre.shrink2(Vec2::new(16.0, 0.0));
+        let controls = Rect::from_min_max(
+            Pos2::new(inner.left(), centre.bottom() - 8.0 - CONTROLS_H),
+            Pos2::new(inner.right(), centre.bottom() - 8.0),
         );
-        let profile = Rect::from_min_max(
-            Pos2::new(map.right() + 10.0, strip_top),
-            Pos2::new(view.right() - MARGIN, strip_top + STRIP_H),
-        );
-        let lines = self.banner_lines();
-        let banner = (!lines.is_empty()).then(|| {
-            let h: f32 = lines.iter().map(|l| l.1 + 7.0).sum::<f32>() + 15.0;
-            let w = (view.width() - 2.0 * (PANEL_W + MARGIN + 12.0)).clamp(260.0, 440.0);
-            Rect::from_min_size(Pos2::new(view.center().x - w / 2.0, top), Vec2::new(w, h))
+        let setup = (setup_h > 0.0).then(|| {
+            Rect::from_min_max(
+                Pos2::new(inner.left(), controls.top() - setup_h),
+                Pos2::new(inner.right(), controls.top()),
+            )
+        });
+        let chip = self.companion_status().map(|_| {
+            Rect::from_center_size(
+                Pos2::new(view.center().x, centre.bottom() + 16.0 + 23.0),
+                Vec2::new(300.0, 46.0),
+            )
+        });
+        // The music card sits above the devices, at the bottom right.
+        let music = (!self.store.settings.songs.is_empty()).then(|| {
+            Rect::from_min_max(
+                Pos2::new(strip.right() - MUSIC_W, strip.bottom() - 66.0 - 150.0),
+                Pos2::new(strip.right(), strip.bottom() - 66.0),
+            )
         });
         HudPlan {
             left,
             right,
-            map,
-            profile,
-            banner,
+            centre,
+            setup,
+            controls,
+            chip,
+            music,
+            strip,
             warning: self
                 .trainer_message()
                 .map(|_| Self::banner_rect(view, true)),
@@ -278,23 +344,37 @@ impl App {
     /// Paint the HUD. `frosted`: the 3D view blurs what is behind the panels.
     pub(super) fn hud(&self, painter: &egui::Painter, view: Rect, plan: &HudPlan, frosted: bool) {
         let painter = painter.with_clip_rect(view);
+        // The strip along the bottom sits on a shade, not on glass.
+        shade(
+            &painter,
+            Rect::from_min_max(Pos2::new(view.left(), view.bottom() - 240.0), view.max),
+            0,
+            150,
+        );
         for (r, radius) in plan.glass() {
-            theme::glass(&painter, r, radius, frosted);
+            hud_glass(&painter, r, radius, frosted);
         }
         self.hud_effort(&painter.with_clip_rect(plan.left), plan.left);
         self.hud_ride(&painter.with_clip_rect(plan.right), plan.right);
-        self.hud_map(&painter, plan.map);
-        self.hud_profile(&painter, plan.profile);
-        if let Some(b) = plan.banner {
-            let mut y = b.top() + 10.0;
+        let content = Rect::from_min_max(
+            plan.centre.min + Vec2::new(16.0, 14.0),
+            Pos2::new(
+                plan.centre.right() - 16.0,
+                plan.setup.map(|s| s.top()).unwrap_or(plan.controls.top()),
+            ),
+        );
+        if self.gears_panel() {
+            self.hud_gears(&painter, content);
+        } else {
+            let mut y = content.top();
             for (text, size, color, strong) in self.banner_lines() {
                 let font = if strong {
-                    theme::semibold(size)
+                    theme::figure(size + 6.0)
                 } else {
                     theme::regular(size)
                 };
                 painter.text(
-                    Pos2::new(b.center().x, y),
+                    Pos2::new(content.center().x, y),
                     Align2::CENTER_TOP,
                     text,
                     font,
@@ -303,14 +383,47 @@ impl App {
                 y += size + 7.0;
             }
         }
+        // A hairline over the controls.
+        painter.line_segment(
+            [
+                Pos2::new(plan.controls.left(), plan.controls.top()),
+                Pos2::new(plan.controls.right(), plan.controls.top()),
+            ],
+            Stroke::new(1.0, Color32::from_white_alpha(36)),
+        );
+        if let (Some(c), Some((title, text, unit, col))) = (plan.chip, self.companion_status()) {
+            painter.circle_filled(
+                Pos2::new(c.left() + 23.0, c.center().y),
+                15.0,
+                Color32::from_white_alpha(230),
+            );
+            painter.text(
+                Pos2::new(c.left() + 23.0, c.center().y),
+                Align2::CENTER_CENTER,
+                title.chars().next().unwrap_or('P').to_string(),
+                theme::semibold(12.0),
+                Color32::from_rgb(28, 29, 33),
+            );
+            painter.text(
+                Pos2::new(c.left() + 46.0, c.center().y),
+                Align2::LEFT_CENTER,
+                format!(
+                    "{}  {text} {unit}",
+                    title.to_lowercase().replace(char::is_uppercase, "")
+                ),
+                theme::medium(13.5),
+                col,
+            );
+        }
+        self.hud_strip(&painter, plan.strip);
         if self.ride.state == ride::State::Paused {
             let r = Rect::from_center_size(view.center(), Vec2::new(250.0, 84.0));
-            painter.rect_filled(r, CornerRadius::same(16), Color32::from_black_alpha(150));
+            hud_glass(&painter, r, 24.0, false);
             painter.text(
                 r.center() - Vec2::new(0.0, 8.0),
                 Align2::CENTER_CENTER,
-                "PAUSED",
-                theme::bold(36.0),
+                "Paused",
+                theme::semibold(30.0),
                 Color32::WHITE,
             );
             painter.text(
@@ -323,6 +436,149 @@ impl App {
         }
         if let Some(r) = plan.warning {
             self.trainer_warning(&painter, r);
+        }
+    }
+
+    /// The gears in the middle panel: the one you are in, and all fifteen
+    /// as a ladder from the easiest to the hardest.
+    pub(super) fn hud_gears(&self, painter: &egui::Painter, r: Rect) {
+        use crate::gears;
+        let gear = gears::clamp(self.store.settings.gear);
+        let (_, note, warn) = self.gear_status().unwrap_or_default();
+        let colour = if warn {
+            theme::WARN
+        } else if self.gear_flashing() {
+            theme::ACCENT
+        } else {
+            Color32::WHITE
+        };
+        let mid = r.center().x;
+        let y = r.top() + 20.0;
+        let big = painter.text(
+            Pos2::new(mid, y),
+            Align2::CENTER_CENTER,
+            gears::teeth(gear).replace('x', "×"),
+            theme::figure(40.0),
+            colour,
+        );
+        theme::caption(
+            painter,
+            Pos2::new(big.left() - 16.0, y),
+            Align2::RIGHT_CENTER,
+            "GEAR",
+            theme::TEXT_DIM,
+        );
+        painter.text(
+            Pos2::new(big.right() + 16.0, y),
+            Align2::LEFT_CENTER,
+            format!("{} of {}", gear + 1, gears::count()),
+            theme::regular(14.0),
+            theme::TEXT,
+        );
+        // The ladder: bars as tall as the gear is hard.
+        let ladder = Rect::from_min_max(
+            Pos2::new(r.left() + 6.0, y + 26.0),
+            Pos2::new(r.right() - 6.0, y + 70.0),
+        );
+        self.gear_ladder(painter, ladder, colour);
+        // Only when the gears cannot work: why.
+        if let Some(n) = note {
+            painter.text(
+                Pos2::new(mid, ladder.bottom() + 14.0),
+                Align2::CENTER_CENTER,
+                format!("Gears {n}"),
+                theme::regular(12.5),
+                if warn { theme::WARN } else { theme::TEXT },
+            );
+        }
+    }
+
+    /// The fifteen gears as bars as tall as each gear is hard, the one you
+    /// are in lit in `colour`, the easier ones brighter than the harder.
+    pub(super) fn gear_ladder(&self, painter: &egui::Painter, ladder: Rect, colour: Color32) {
+        use crate::gears;
+        let gear = gears::clamp(self.store.settings.gear);
+        let n = gears::count();
+        let max = gears::get(n - 1).ratio() as f32;
+        let w = (ladder.width() - (n - 1) as f32 * 4.0) / n as f32;
+        for (i, g) in gears::all().iter().enumerate() {
+            let h = 8.0 + (g.ratio() as f32 / max) * (ladder.height() - 8.0);
+            let x = ladder.left() + i as f32 * (w + 4.0);
+            let c = if i == gear {
+                colour
+            } else if i < gear {
+                Color32::from_white_alpha(107)
+            } else {
+                Color32::from_white_alpha(46)
+            };
+            painter.rect_filled(
+                Rect::from_min_max(
+                    Pos2::new(x, ladder.bottom() - h),
+                    Pos2::new(x + w, ladder.bottom()),
+                ),
+                CornerRadius::same(3),
+                c,
+            );
+        }
+    }
+
+    /// Along the bottom, on the shade: the map, the profile, and how the
+    /// devices are.
+    fn hud_strip(&self, painter: &egui::Painter, r: Rect) {
+        let map = Rect::from_min_size(
+            Pos2::new(r.left(), r.bottom() - 86.0),
+            Vec2::new(112.0, 86.0),
+        );
+        self.hud_map(painter, map);
+        let devices_w = 230.0;
+        let profile = Rect::from_min_max(
+            Pos2::new(map.right() + 24.0, r.bottom() - 86.0),
+            Pos2::new(r.right() - devices_w - 24.0, r.bottom()),
+        );
+        self.ride_profile(painter, profile, None);
+        // The devices, two by two.
+        let recording = self.ride.state == ride::State::Running;
+        let items = [
+            (
+                self.trainer_link().is_some(),
+                match self.ride.mode {
+                    Mode::Workout => "Trainer · ERG",
+                    _ if self.gears_on() => "Trainer · gears",
+                    _ => "Trainer",
+                },
+            ),
+            (fresh(&self.metrics.power).is_some(), "Power"),
+            (fresh(&self.metrics.hr).is_some(), "Heart rate"),
+            (recording, "Recording"),
+        ];
+        // Two by two, centred under the music card.
+        let x0 = r.right() - MUSIC_W / 2.0 - 112.0;
+        for (i, (ok, label)) in items.iter().enumerate() {
+            let p = Pos2::new(
+                x0 + (i % 2) as f32 * 128.0,
+                r.bottom() - 46.0 + (i / 2) as f32 * 24.0,
+            );
+            let rec = *label == "Recording";
+            let dot = match (*ok, rec) {
+                (true, true) => theme::BAD,
+                (true, false) => Color32::from_rgb(110, 231, 160),
+                _ => Color32::from_gray(120),
+            };
+            painter.circle_filled(p, 4.0, dot);
+            let text = painter.layout_no_wrap(
+                label.to_string(),
+                theme::regular(12.5),
+                if rec && *ok {
+                    Color32::from_rgb(252, 165, 165)
+                } else {
+                    Color32::from_white_alpha(220)
+                },
+            );
+            painter.galley(
+                Pos2::new(p.x + 10.0, p.y - text.size().y / 2.0),
+                text,
+                Color32::WHITE,
+            );
         }
     }
 
@@ -351,13 +607,13 @@ impl App {
                 theme::mix(pcol, Color32::WHITE, 0.25),
             );
         }
-        y += 70.0;
+        y += 86.0;
         theme::value(
             painter,
-            Pos2::new(x0 - 2.0, y + 6.0),
+            Pos2::new(x0 - 2.0, y + 8.0),
             &power.map(|p| format!("{p:.0}")).unwrap_or("—".into()),
             "W",
-            56.0,
+            72.0,
             Color32::WHITE,
         );
         if let Some(p) = power {
@@ -555,13 +811,13 @@ impl App {
                 theme::TEXT_DIM,
             );
         }
-        y += 62.0;
+        y += 70.0;
         theme::value(
             painter,
-            Pos2::new(x0 - 2.0, y + 4.0),
+            Pos2::new(x0 - 2.0, y + 6.0),
             &format!("{:.1}", units.speed(self.ride.speed * 3.6)),
             units.speed_unit(),
-            46.0,
+            52.0,
             Color32::WHITE,
         );
         y += 10.0;
@@ -612,25 +868,6 @@ impl App {
             units.height_unit(),
             Color32::WHITE,
         );
-        y += 52.0;
-        if let Some((title, text, unit, col)) = self.companion_status() {
-            rule(y);
-            theme::caption(
-                painter,
-                Pos2::new(x0, y + 8.0),
-                Align2::LEFT_TOP,
-                &title,
-                theme::TEXT_DIM,
-            );
-            theme::value(
-                painter,
-                Pos2::new(x0 - 1.0, y + 46.0),
-                &text,
-                &unit,
-                21.0,
-                col,
-            );
-        }
     }
 
     /// The route seen from above, with what you have ridden and where you are.
@@ -648,7 +885,7 @@ impl App {
             z0 = z0.min(p.z);
             z1 = z1.max(p.z);
         }
-        let inner = r.shrink(12.0);
+        let inner = r.shrink(6.0);
         let scale = (inner.width() as f64 / (x1 - x0).max(1.0))
             .min(inner.height() as f64 / (z1 - z0).max(1.0));
         let (cx, cz) = ((x0 + x1) / 2.0, (z0 + z1) / 2.0);
@@ -675,12 +912,12 @@ impl App {
         };
         painter.add(egui::Shape::line(
             line(0..pts.len()),
-            Stroke::new(2.5, Color32::from_white_alpha(70)),
+            Stroke::new(2.5, Color32::from_white_alpha(115)),
         ));
         if split > 0 {
             painter.add(egui::Shape::line(
                 line(0..split + 1),
-                Stroke::new(2.5, theme::ACCENT),
+                Stroke::new(2.5, Color32::WHITE),
             ));
         }
         let dot = |d: f64, c: Color32, radius: f32| {
@@ -694,9 +931,39 @@ impl App {
         }
         dot(here, Color32::WHITE, 4.0);
     }
+}
 
-    /// The elevation (or the workout) along the bottom.
-    fn hud_profile(&self, painter: &egui::Painter, r: Rect) {
-        self.ride_profile(painter, r, None);
-    }
+/// A glass panel over the 3D view: where the renderer frosts behind it,
+/// the mock-ups' tint and edge; otherwise a darker fill.
+fn hud_glass(painter: &egui::Painter, rect: Rect, radius: f32, frosted: bool) {
+    let r = CornerRadius::same(radius.min(255.0) as u8);
+    painter.rect_filled(
+        rect,
+        r,
+        if frosted {
+            Color32::from_rgba_unmultiplied(30, 32, 38, 107)
+        } else {
+            Color32::from_rgba_unmultiplied(20, 22, 28, 205)
+        },
+    );
+    painter.rect_stroke(
+        rect,
+        r,
+        Stroke::new(1.0, Color32::from_white_alpha(41)),
+        egui::StrokeKind::Inside,
+    );
+}
+
+/// A shade from `top` to `bottom` opacity (0-255) of black down `rect`.
+fn shade(painter: &egui::Painter, rect: Rect, top: u8, bottom: u8) {
+    let mut mesh = egui::Mesh::default();
+    let t = Color32::from_black_alpha(top);
+    let b = Color32::from_black_alpha(bottom);
+    mesh.colored_vertex(rect.left_top(), t);
+    mesh.colored_vertex(rect.right_top(), t);
+    mesh.colored_vertex(rect.right_bottom(), b);
+    mesh.colored_vertex(rect.left_bottom(), b);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    painter.add(egui::Shape::mesh(mesh));
 }

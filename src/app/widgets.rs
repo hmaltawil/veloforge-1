@@ -10,7 +10,6 @@ pub(super) enum Icon {
     Left,
     Right,
     Play,
-    Pause,
     Check,
 }
 
@@ -39,18 +38,6 @@ pub(super) fn paint_icon(painter: &egui::Painter, r: Rect, icon: Icon, c: Color3
                 Pos2::new(x1 - 2.0, cy),
                 Pos2::new(x0 + 2.0, y1 - 1.0),
             ]));
-        }
-        Icon::Pause => {
-            painter.rect_filled(
-                Rect::from_min_max(Pos2::new(x0 + 2.0, y0 + 1.0), Pos2::new(cx - 1.5, y1 - 1.0)),
-                1.0,
-                c,
-            );
-            painter.rect_filled(
-                Rect::from_min_max(Pos2::new(cx + 1.5, y0 + 1.0), Pos2::new(x1 - 2.0, y1 - 1.0)),
-                1.0,
-                c,
-            );
         }
         Icon::Check => {
             let pts = vec![
@@ -113,54 +100,6 @@ pub(super) fn icon_button(
         );
     }
     resp
-}
-
-/// A tab in the top bar: plain text, with an accent bar under the open one.
-pub(super) fn nav_tab(
-    ui: &mut egui::Ui,
-    selected: bool,
-    text: &str,
-    compact: bool,
-) -> egui::Response {
-    let font = if selected {
-        theme::semibold(14.0)
-    } else {
-        theme::medium(14.0)
-    };
-    let galley = ui
-        .painter()
-        .layout_no_wrap(text.to_string(), font, Color32::WHITE);
-    let pad = if compact { 14.0 } else { 24.0 };
-    let size = galley.size() + Vec2::new(pad, 12.0);
-    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
-    if ui.is_rect_visible(rect) {
-        let color = if selected {
-            Color32::WHITE
-        } else if resp.hovered() {
-            theme::TEXT
-        } else {
-            theme::TEXT_DIM
-        };
-        if resp.hovered() && !selected {
-            ui.painter()
-                .rect_filled(rect, CornerRadius::same(8), Color32::from_white_alpha(10));
-        }
-        ui.painter().galley_with_override_text_color(
-            rect.center() - galley.size() / 2.0,
-            galley,
-            color,
-        );
-        if selected {
-            let bar = Rect::from_center_size(
-                Pos2::new(rect.center().x, rect.bottom() + 6.5),
-                Vec2::new(rect.width() - pad + 4.0, 3.0),
-            );
-            ui.painter()
-                .with_clip_rect(ui.ctx().content_rect())
-                .rect_filled(bar, CornerRadius::same(2), ACCENT);
-        }
-    }
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// A row in a list that fills the width: a stripe of colour, a name, and
@@ -249,8 +188,9 @@ pub(super) fn segmented<T: PartialEq + Copy>(
     let total: f32 = widths.iter().sum::<f32>() + 6.0;
     let (rect, _) = ui.allocate_exact_size(Vec2::new(total, h), Sense::hover());
     let enabled = ui.is_enabled();
+    let round = CornerRadius::same((h / 2.0) as u8);
     ui.painter()
-        .rect_filled(rect, CornerRadius::same(9), Color32::from_rgb(22, 25, 32));
+        .rect_filled(rect, round, Color32::from_white_alpha(14));
     let mut changed = false;
     let mut x = rect.left() + 3.0;
     for (i, (o, galley)) in options.iter().zip(galleys).enumerate() {
@@ -283,12 +223,8 @@ pub(super) fn segmented<T: PartialEq + Copy>(
         if selected {
             ui.painter().rect_filled(
                 r,
-                CornerRadius::same(7),
-                if enabled {
-                    Color32::from_rgb(58, 64, 82)
-                } else {
-                    Color32::from_rgb(38, 42, 54)
-                },
+                CornerRadius::same(((h - 6.0) / 2.0) as u8),
+                Color32::from_white_alpha(if enabled { 44 } else { 22 }),
             );
         }
         ui.painter().galley_with_override_text_color(
@@ -459,7 +395,7 @@ pub(super) fn tile(
     unit: &str,
     accent: Color32,
 ) {
-    theme::card(painter, rect, 12.0);
+    theme::card(painter, rect, 22.0);
     painter.rect_filled(
         Rect::from_min_max(
             rect.left_top() + Vec2::new(0.0, 12.0),

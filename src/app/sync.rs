@@ -181,7 +181,7 @@ impl App {
             // note go in the caption above.
             "gear": self.gear_status().map(|_| crate::gears::teeth(s.gear)),
             "gear_note": self.gear_status().map(|(_, note, _)| {
-                let n = format!("Gear {}/{}", crate::gears::clamp(s.gear) + 1, crate::gears::GEARS.len());
+                let n = format!("Gear {}/{}", crate::gears::clamp(s.gear) + 1, crate::gears::count());
                 match note {
                     Some(note) => format!("{n} · {note}"),
                     None => n,

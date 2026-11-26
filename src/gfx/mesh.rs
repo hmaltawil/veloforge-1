@@ -1453,6 +1453,12 @@ impl Joints {
 
 /// The rider's pose for `p`.
 pub fn joints(p: &RiderPose) -> Joints {
+    // The bike being ridden: its crank length and where the hands hold the
+    // hoods.
+    let fit = match super::bike_model::model().filter(|_| super::bike_model::aero()) {
+        Some(m) => (m.crank, m.grip),
+        None => (0.17, [0.59, 0.89, 0.2]),
+    };
     use std::f32::consts::{PI, TAU};
     let stand = p.stand.clamp(0.0, 1.0);
     let tuck = p.tuck.clamp(0.0, 1.0) * (1.0 - stand);
@@ -1474,12 +1480,17 @@ pub fn joints(p: &RiderPose) -> Joints {
     let mut foot_up = [[0.0; 3]; 2];
     for (k, side) in [1.0f32, -1.0].into_iter().enumerate() {
         let th = p.crank + if side > 0.0 { 0.0 } else { PI };
-        let spindle = bike.at(-0.02 + 0.17 * th.sin(), 0.28 + 0.17 * th.cos(), side * 0.1);
+        let crank = fit.0;
+        let spindle = bike.at(
+            -0.02 + crank * th.sin(),
+            0.28 + crank * th.cos(),
+            side * 0.1,
+        );
         let toe_down = (0.3 - 0.25 * (th - 1.83).cos()) * (1.0 - 0.3 * stand);
         let f = bike.dir(toe_down.cos(), -toe_down.sin(), 0.0);
         let n = bike.dir(toe_down.sin(), toe_down.cos(), 0.0);
         ball[k] = add(spindle, scale(n, 0.012));
-        ankle[k] = add(ball[k], add(scale(f, -0.135), scale(n, 0.066)));
+        ankle[k] = add(ball[k], add(scale(f, -0.105), scale(n, 0.07)));
         foot_fwd[k] = f;
         foot_up[k] = n;
     }
@@ -1522,7 +1533,7 @@ pub fn joints(p: &RiderPose) -> Joints {
     let mut grip = [[0.0; 3]; 2];
     for (k, side) in [1.0f32, -1.0].into_iter().enumerate() {
         shoulder[k] = add(shoulders, body.dir(0.01, -0.028, side * 0.168));
-        grip[k] = bike.at(0.59, 0.89, side * 0.2);
+        grip[k] = bike.at(fit.1[0], fit.1[1], side * fit.1[2]);
         wrist[k] = add(grip[k], bike.dir(-0.045, 0.035, 0.0));
         elbow[k] = ik(
             shoulder[k],

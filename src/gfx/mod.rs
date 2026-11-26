@@ -7,6 +7,12 @@
 //! Falls back to the software view in `world.rs` if anything goes wrong
 //! (see [`GpuWorld::error`]).
 
+mod bike_model;
+pub use bike_model::{
+    available as aero_bike_available, set_aero as use_aero_bike, set_paint as set_bike_paint,
+};
+pub use body::set_kit;
+pub use preview::PreviewLook;
 mod body;
 mod buildings;
 mod fields;
@@ -17,6 +23,7 @@ mod lettering;
 mod math;
 mod mesh;
 pub(crate) mod mountains;
+mod preview;
 mod shaders;
 mod terrain;
 
@@ -394,7 +401,7 @@ struct FrameData {
     road: Vec<f32>,
     rider: Vec<f32>,
     /// Each rider's bone matrices and jersey colour.
-    skins: Vec<([M4; body::BONES], V3)>,
+    skins: Vec<([M4; body::BONES], V3, V3)>,
     posts: Vec<f32>,
     reflectors: Vec<f32>,
     planks: Vec<f32>,
@@ -527,7 +534,7 @@ fn start_sculpting() {
         let _ = std::thread::Builder::new()
             .name("sculpt-rider".into())
             .spawn(|| {
-                let _ = SKIN.set(body::build(0.01));
+                let _ = SKIN.set(body::build(0.008));
             });
         let _ = std::thread::Builder::new()
             .name("bake-trees".into())
@@ -943,8 +950,18 @@ impl GpuWorld {
                 time: (self.time % 3600.0) as f32,
             };
             let joints = mesh::joints(&pose);
-            rider.extend(mesh::bike(&pose, &joints).v);
-            skins.push((body::skinning(&self.rest_inverse, &joints), pose.jersey));
+            if bike_model::aero() {
+                // You in full; others (usually further off) lighter.
+                rider.extend(bike_model::mesh(&pose, &joints, i > 0).v);
+            } else {
+                rider.extend(mesh::bike(&pose, &joints).v);
+            }
+            let k = fig.skin;
+            skins.push((
+                body::skinning(&self.rest_inverse, &joints),
+                pose.jersey,
+                srgb(k.r(), k.g(), k.b()),
+            ));
             rider_shadow.extend_from_slice(&[pos[0], pos[1] + 0.02, pos[2], 0.9]);
             if i == 0 {
                 lamp_pos = add(add(pos, scale(up_r, 1.0)), scale(fwd_r, 0.7));
@@ -1459,6 +1476,10 @@ struct GlState {
     /// The rider's sculpted body, made on the first frame.
     skin: Option<Buffers>,
     skin_tried: bool,
+    /// The rider preview (`preview.rs`): its programs are made, and the
+    /// bike's buffer, refilled each frame.
+    preview_ready: bool,
+    preview_bike: Option<Buffers>,
     pub error: Option<String>,
     programs: HashMap<&'static str, Program>,
     sky_vao: Option<glow::VertexArray>,
@@ -3435,10 +3456,13 @@ impl GlState {
         };
         unsafe {
             let p = self.programs.get_mut(program).unwrap();
-            for (bones, tint) in &f.skins {
+            let kit: Vec<f32> = body::kit().iter().flatten().copied().collect();
+            gl.uniform_3_f32_slice(p.loc(gl, "u_kit"), &kit);
+            for (bones, tint, skin) in &f.skins {
                 let flat: Vec<f32> = bones.iter().flatten().copied().collect();
                 gl.uniform_matrix_4_f32_slice(p.loc(gl, "u_bones"), false, &flat);
                 p.v3(gl, "u_tint", *tint);
+                p.v3(gl, "u_skin", *skin);
                 gl.bind_vertex_array(Some(vao));
                 gl.draw_elements(glow::TRIANGLES, count, glow::UNSIGNED_INT, 0);
             }

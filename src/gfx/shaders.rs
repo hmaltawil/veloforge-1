@@ -1075,7 +1075,9 @@ void main() {
 "#;
 
 /// The rider's body, bent by its bones (`body.rs`): each vertex follows up
-/// to four bones. Negative colours are shares of the jersey colour.
+/// to four bones. Negative colours are shares of the jersey colour, a
+/// colour of 2 is the rider's skin, and 4 and up the kit (`body::KIT_MARK`).
+/// Each carries its shading on top of the mark.
 pub const SKINNED_VS: &str = r#"
 in vec3 a_pos;
 in vec3 a_nrm;
@@ -1086,6 +1088,8 @@ in vec4 a_weights;
 uniform mat4 u_vp;
 uniform mat4 u_bones[17];
 uniform vec3 u_tint;
+uniform vec3 u_skin;
+uniform vec3 u_kit[5];
 out vec3 v_pos;
 out vec3 v_nrm;
 out vec3 v_col;
@@ -1099,7 +1103,17 @@ void main() {
     vec4 p = m * vec4(a_pos, 1.0);
     v_pos = p.xyz;
     v_nrm = normalize(mat3(m) * a_nrm);
-    v_col = a_col.r < 0.0 ? -a_col * u_tint : a_col;
+    if (a_col.r < 0.0) {
+        v_col = -a_col * u_tint;
+    } else if (a_col.r > 3.5) {
+        float m = a_col.r - 4.0;
+        float k = floor(m * 0.5);
+        v_col = u_kit[int(k)] * (m - 2.0 * k);
+    } else if (a_col.r > 1.5) {
+        v_col = u_skin * (a_col.r - 2.0);
+    } else {
+        v_col = a_col;
+    }
     v_mat = a_mat;
     v_h = 0.5;
     gl_Position = u_vp * p;
@@ -1687,8 +1701,11 @@ void main() {
     c *= mix(u_tint_shadow, u_tint_light, smoothstep(0.0, 0.8, l));
     vec2 vg = v_uv - 0.5;
     c *= 1.0 - u_grade.z * smoothstep(0.25, 1.1, dot(vg, vg) * 2.2);
-    // The glass darkens what is behind it so text stays readable.
-    c = mix(c, c * 0.42 + vec3(0.012, 0.016, 0.024), glass);
+    // Behind the glass the scene is blurred and its colours lifted a
+    // little (like saturate(160%)); the panel's own veil, painted over
+    // it, keeps text readable.
+    float behind_l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    c = mix(c, clamp(mix(vec3(behind_l), c, 1.6), 0.0, 1.0), glass);
     c += (ign(gl_FragCoord.xy + fract(u_time) * 61.0) - 0.5) / 255.0;
     frag = vec4(c, 1.0);
 }

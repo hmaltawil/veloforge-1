@@ -1,5 +1,5 @@
-//! The egui application: tabs for riding, workouts, the training calendar,
-//! history, devices and settings.
+//! The egui application: a side menu leading to Home, riding, the library
+//! of workouts, the training calendar, your activity, devices and settings.
 
 use crate::charts;
 use crate::devices::{
@@ -24,14 +24,23 @@ use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 use std::time::Instant;
 
+mod activity_screen;
 mod bench;
 mod calendar_screen;
 mod devices_screen;
+mod glass;
 mod history_screen;
+mod home_click;
+mod home_screen;
 mod hud;
+mod library_screen;
+mod menu;
+mod music_ui;
+mod pad;
 mod progress_screen;
 mod recording;
 mod ride_screen;
+mod ride_start;
 mod segments;
 mod settings_ui;
 mod sync;
@@ -44,17 +53,31 @@ use widgets::*;
 // The workout builder's number fields.
 pub(crate) use widgets::{cadence_edit, pct_edit, secs_edit};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Tab {
+    /// Today's ride, this week and what comes next.
+    Home,
     Ride,
-    Workouts,
-    Plan,
-    History,
-    Progress,
+    /// Workouts to ride (routes are still in Settings).
+    Library,
+    Calendar,
+    /// Rides you have done, and the trends they make.
+    Activity,
     Devices,
     Settings,
 }
 
+/// The parts of Activity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActivityView {
+    Rides,
+    Trends,
+    Records,
+    /// Every ride in one table (the old History).
+    Table,
+}
+
+#[derive(Clone)]
 struct LinkInfo {
     name: String,
     link: Link,
@@ -92,6 +115,16 @@ struct Metrics {
     hr_noisy: Option<bool>,
     /// When any cadence was last received (cadence tiles hide without it).
     cadence_seen: Option<Instant>,
+}
+
+/// Use the gearing in the settings for virtual shifting.
+fn apply_gearing(s: &crate::store::Settings) {
+    let wheel = crate::gears::TYRES
+        .iter()
+        .find(|t| t.0 == s.tyre)
+        .map(|t| t.1)
+        .unwrap_or(crate::gears::WHEEL_M);
+    crate::gears::set(&s.chainrings, &s.cassette, wheel);
 }
 
 fn fresh(m: &Option<Metric>) -> Option<f32> {
@@ -165,6 +198,28 @@ pub struct App {
     dirty: bool,
     last_save: Instant,
     tab: Tab,
+    activity_view: ActivityView,
+    library_view: library_screen::LibraryView,
+    /// Activity: the ride shown (its file), and its samples once read.
+    activity_ride: Option<String>,
+    activity_cache: Option<RideDetails>,
+    /// Settings › Appearance: small copies of the background pictures.
+    picture_thumbs: std::collections::HashMap<String, Option<egui::TextureHandle>>,
+    /// Your music, and what it is doing.
+    music: crate::music::Player,
+    /// Songs' covers from their tags, read the first time each is shown.
+    song_art: std::collections::HashMap<String, Option<egui::TextureHandle>>,
+    /// Settings: waiting for a Click button to give to this music action.
+    music_learn: Option<crate::music::Action>,
+    /// The music was paused because the ride was.
+    music_auto_paused: bool,
+    /// Lower the music until then (a workout beep is playing).
+    duck_until: Option<Instant>,
+    /// Library › Routes: the scenery shown, and the route looked at.
+    library_scenery: Option<crate::route::Scenery>,
+    library_route: Option<usize>,
+    /// The picture behind the screens, in each part's colour.
+    wallpapers: menu::Wallpapers,
 
     adapter: Option<Result<String, String>>,
     scanning: bool,
@@ -178,6 +233,37 @@ pub struct App {
     sim_effort: f32,
     raw_log: bool,
     show_all_devices: bool,
+    /// The Devices section last chosen in its sidebar, and whether to
+    /// scroll to it this frame.
+    devices_section: devices_screen::DevSection,
+    devices_jump: bool,
+    /// How many times "another quote" was pressed on Home.
+    quote_more: usize,
+    /// Starting by pedalling: when the countdown began, when the rider last
+    /// pedalled, the last second ticked, and whether they have stopped
+    /// since the last ride (so riding on after Finish starts nothing).
+    start_count: Option<Instant>,
+    last_pedal: Option<Instant>,
+    start_ticked: u32,
+    start_armed: bool,
+    /// The Click's Y held down during a ride: since when, and whether the
+    /// hold already asked to finish.
+    y_held: Option<(Instant, bool)>,
+    /// "Finish the ride?" is up, since then.
+    finish_ask: Option<Instant>,
+    /// Your own cassette as typed in Settings, while it is being typed.
+    cassette_text: Option<String>,
+    /// What the Click has lit on Home's ride bar, and whether it has been
+    /// used there.
+    /// Home's workout and route lists, by their ids this frame (for ▲ ▼).
+    home_lists: [Option<egui::Id>; 2],
+    /// The Click finding its way: keys to type in next frame, whether the
+    /// ring shows, frames left to keep the lit control in view, and what
+    /// was lit as this frame began.
+    pad_queue: Vec<pad::PadKey>,
+    pad_shown: bool,
+    pad_scroll: u8,
+    ctx_focus: Option<egui::Id>,
 
     routes: Vec<Route>,
     route_idx: usize,
@@ -207,8 +293,11 @@ pub struct App {
     gpu: GpuWorld,
     /// The window has a depth buffer, so the GPU view can run.
     gpu_capable: bool,
+    /// The rider preview's angle (Settings › Profile), and the one it
+    /// eases to.
+    preview_yaw: f32,
+    preview_yaw_to: f32,
     gpu_reported: bool,
-    logo: egui::TextureHandle,
     icu: crate::icu::Worker,
     /// Saved credentials (what syncing uses).
     icu_creds: crate::icu::Credentials,
@@ -286,17 +375,10 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, depth_buffer: bool) -> App {
         theme::apply(&cc.egui_ctx);
         install_fallback_font(&cc.egui_ctx);
-        let logo = cc.egui_ctx.load_texture(
-            "logo",
-            egui::ColorImage::from_rgba_unmultiplied(
-                [64, 64],
-                include_bytes!("../packaging/icons/veloforge-64.rgba"),
-            ),
-            egui::TextureOptions::LINEAR,
-        );
 
         let paths = Paths::new();
         let mut store = Store::load(&paths.state_file());
+        apply_gearing(&store.settings);
         // People who already ride with VeloForge do not need the welcome.
         if !store.history.is_empty() || !store.settings.auto_connect.is_empty() {
             store.settings.onboarded = true;
@@ -314,7 +396,20 @@ impl App {
             paths,
             dirty: false,
             last_save: Instant::now(),
-            tab: Tab::Ride,
+            tab: Tab::Home,
+            activity_view: ActivityView::Rides,
+            library_view: library_screen::LibraryView::Workouts,
+            activity_ride: None,
+            activity_cache: None,
+            picture_thumbs: Default::default(),
+            music: Default::default(),
+            song_art: Default::default(),
+            music_learn: None,
+            music_auto_paused: false,
+            duck_until: None,
+            library_scenery: None,
+            library_route: None,
+            wallpapers: menu::Wallpapers::default(),
             adapter: None,
             scanning: false,
             found: Vec::new(),
@@ -325,6 +420,21 @@ impl App {
             sim_effort: 180.0,
             raw_log: false,
             show_all_devices: false,
+            devices_section: devices_screen::DevSection::Connected,
+            devices_jump: false,
+            quote_more: 0,
+            start_count: None,
+            last_pedal: None,
+            start_ticked: 0,
+            start_armed: false,
+            y_held: None,
+            finish_ask: None,
+            cassette_text: None,
+            home_lists: [None, None],
+            pad_queue: Vec::new(),
+            pad_shown: false,
+            pad_scroll: 0,
+            ctx_focus: None,
             routes: Vec::new(),
             route_idx: 0,
             ride: Ride::new(Mode::Route, None, None),
@@ -356,8 +466,9 @@ impl App {
             sound,
             gpu: GpuWorld::default(),
             gpu_capable: depth_buffer && cc.gl.is_some(),
+            preview_yaw: 0.62,
+            preview_yaw_to: 0.62,
             gpu_reported: false,
-            logo,
             icu: match std::env::var("VELOFORGE_ICU_URL") {
                 Ok(url) => crate::icu::Worker::spawn_with_base(cc.egui_ctx.clone(), url),
                 Err(_) => crate::icu::Worker::spawn(cc.egui_ctx.clone()),
@@ -845,8 +956,18 @@ impl App {
                 Event::Shift { id, up } => {
                     let p = self.presses.entry(id).or_insert((0, Instant::now(), up));
                     *p = (p.0 + 1, Instant::now(), up);
-                    self.shift(up);
+                    // B (or −) answers "Finish the ride?" with no.
+                    if self.finish_ask.is_some() && !up {
+                        self.keep_riding();
+                    } else if self.pad_nav() {
+                        // Off the ride: + presses what is lit, − goes back.
+                        self.pad_shift(up);
+                    } else {
+                        self.shift(up);
+                    }
                 }
+                Event::ClickButton { bits } => self.click_pressed(bits),
+                Event::ClickReleased { bits } => self.click_released(bits),
                 Event::Data { id, reading } => {
                     let now = Instant::now();
                     let sim_on = self.sim_on();
@@ -955,6 +1076,23 @@ impl App {
             drafting: s.drafting,
             flat_workouts: s.flat_workouts,
         };
+        apply_gearing(s);
+        devices::CLICK_RESTART.store(s.click_restart, std::sync::atomic::Ordering::Relaxed);
+        crate::gfx::use_aero_bike(!s.classic_bike);
+        crate::gfx::set_kit(s.kit_white);
+        let lin = |c: u8| {
+            let c = c as f32 / 255.0;
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        crate::gfx::set_bike_paint([
+            lin(s.bike_colour[0]),
+            lin(s.bike_colour[1]),
+            lin(s.bike_colour[2]),
+        ]);
         self.ride.gear = self.gears_on().then(|| crate::gears::clamp(s.gear));
         let route = &self.routes[self.route_idx];
         let before = self.ride.workout_time() as f32;
@@ -1007,9 +1145,11 @@ impl App {
                     .is_some_and(|w| w.duration() > 0.0))
     }
 
-    fn cue(&self, cue: Cue) {
+    fn cue(&mut self, cue: Cue) {
         if self.store.settings.sounds {
             self.sound.play(cue);
+            // The music steps back while the beep plays.
+            self.duck_until = Some(Instant::now() + std::time::Duration::from_millis(1500));
         }
     }
 
@@ -1095,6 +1235,10 @@ struct RideDetails {
 // ----------------------------------------------------------------------
 
 impl eframe::App for App {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.pad_input(ctx, raw_input);
+    }
+
     /// Ride timing, trainer control and saving live here rather than in `ui`
     /// because eframe keeps calling `logic` while the window is minimised.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -1197,6 +1341,9 @@ impl App {
         // Keyboard shortcuts while riding.
         if self.tab == Tab::Ride && !ctx.egui_wants_keyboard_input() {
             // Consume the keys so a focused button is not activated as well.
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::M)) {
+                self.music_action(crate::music::Action::PlayPause);
+            }
             let (space, up, down, v, n, c) = ctx.input_mut(|i| {
                 let none = egui::Modifiers::NONE;
                 (
@@ -1243,29 +1390,57 @@ impl App {
             }
         }
 
-        egui::Panel::top("tabs")
-            .frame(
-                egui::Frame::new()
-                    .fill(theme::BAR)
-                    .inner_margin(egui::Margin::symmetric(10, 8)),
-            )
-            .show(ui, |ui| self.top_bar(ui));
-        egui::CentralPanel::default_margins().show(ui, |ui| match self.tab {
-            Tab::Ride => self.ride_tab(ui),
-            Tab::Workouts => self.workouts_tab(ui),
-            Tab::Plan => self.plan_tab(ui),
-            Tab::History => self.history_tab(ui),
-            Tab::Progress => {
-                egui::ScrollArea::vertical()
-                    .id_salt("progress-scroll")
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| self.progress_tab(ui));
-            }
-            Tab::Devices => self.devices_tab(ui),
-            Tab::Settings => self.settings_tab(ui),
-        });
+        self.pad_begin(&ctx);
+        self.music_tick(&ctx);
+        self.ride_start_tick(&ctx);
+        self.paint_backdrop(&ctx);
+        // Riding takes the whole window: Back on its controls leads home.
+        if self.tab != Tab::Ride {
+            egui::Panel::left("menu")
+                .resizable(false)
+                .show_separator_line(false)
+                .exact_size(menu::width(self.tab))
+                .frame(egui::Frame::new().inner_margin(menu::margin(self.tab)))
+                .show(ui, |ui| self.side_menu(ui));
+        }
+        if self.tab == Tab::Ride {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE.fill(theme::BG))
+                .show(ui, |ui| self.ride_tab(ui));
+        } else {
+            // The other screens sit on one large pane of frosted glass.
+            egui::CentralPanel::default()
+                .frame(egui::Frame::new().inner_margin(egui::Margin {
+                    left: 0,
+                    right: 48,
+                    top: 48,
+                    bottom: 40,
+                }))
+                .show(ui, |ui| {
+                    let pane = ui.max_rect();
+                    theme::frosted(ui.painter(), pane, 36.0);
+                    // Home lays out its own sidebar and margins.
+                    let inner = if self.tab == Tab::Home {
+                        pane
+                    } else {
+                        pane.shrink2(Vec2::new(28.0, 26.0))
+                    };
+                    let inside = egui::UiBuilder::new().max_rect(inner);
+                    ui.scope_builder(inside, |ui| match self.tab {
+                        Tab::Home => self.home_tab(ui),
+                        Tab::Ride => {}
+                        Tab::Library => self.library_tab(ui),
+                        Tab::Calendar => self.plan_tab(ui),
+                        Tab::Activity => self.activity_tab(ui),
+                        Tab::Devices => self.devices_tab(ui),
+                        Tab::Settings => self.settings_tab(ui),
+                    });
+                });
+        }
         self.modals(&ctx);
         self.auto_finish_card(&ctx);
+        self.ride_overlays(&ctx);
+        self.pad_ring(&ctx);
 
         if let Some((msg, at)) = &self.toast {
             if at.elapsed().as_secs_f32() < 4.0 {
@@ -1304,137 +1479,6 @@ impl App {
 }
 
 impl App {
-    fn top_bar(&mut self, ui: &mut egui::Ui) {
-        // On a narrow window the name and the chips' details make way.
-        let compact = ui.available_width() < 1120.0;
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = if compact { 0.0 } else { 4.0 };
-            ui.add_space(4.0);
-            ui.add(egui::Image::new(egui::load::SizedTexture::new(
-                self.logo.id(),
-                Vec2::splat(24.0),
-            )));
-            ui.add_space(4.0);
-            if !compact {
-                ui.label(
-                    RichText::new("VeloForge")
-                        .font(theme::semibold(17.0))
-                        .color(Color32::from_rgb(244, 240, 234)),
-                );
-                ui.add_space(18.0);
-            }
-            for (tab, label) in [
-                (Tab::Ride, "Ride"),
-                (Tab::Workouts, "Workouts"),
-                (Tab::Plan, "Calendar & Plan"),
-                (Tab::History, "History"),
-                (Tab::Progress, "Progress"),
-                (Tab::Devices, "Devices"),
-                (Tab::Settings, "Settings"),
-            ] {
-                if nav_tab(ui, self.tab == tab, label, compact).clicked() {
-                    self.tab = tab;
-                }
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-                // Status chips (right to left).
-                let chip = |ui: &mut egui::Ui, ok: bool, label: &str| {
-                    let c = if ok {
-                        theme::GOOD
-                    } else {
-                        Color32::from_gray(90)
-                    };
-                    egui::Frame::new()
-                        .fill(if ok {
-                            Color32::from_rgb(24, 36, 32)
-                        } else {
-                            theme::CARD
-                        })
-                        .corner_radius(12)
-                        .inner_margin(egui::Margin::symmetric(10, 4))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 6.0;
-                                let (r, _) =
-                                    ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
-                                if ok {
-                                    ui.painter().circle_filled(
-                                        r.center(),
-                                        6.0,
-                                        c.gamma_multiply(0.25),
-                                    );
-                                }
-                                ui.painter().circle_filled(r.center(), 3.5, c);
-                                ui.label(RichText::new(label).font(theme::medium(12.0)).color(
-                                    if ok {
-                                        Color32::from_rgb(214, 232, 222)
-                                    } else {
-                                        theme::TEXT_FAINT
-                                    },
-                                ));
-                            });
-                        });
-                };
-                chip(ui, fresh(&self.metrics.hr).is_some(), "HR");
-                if self.remote.as_ref().is_some_and(|r| r.phone_connected()) {
-                    chip(ui, true, "Phone");
-                }
-                chip(ui, fresh(&self.metrics.power).is_some(), "Power");
-                let trainer = self.trainer_link().map(|l| l.name.clone());
-                chip(
-                    ui,
-                    trainer.is_some(),
-                    match &trainer {
-                        Some(_) if compact => "Trainer",
-                        Some(name) => name,
-                        None => "No trainer",
-                    },
-                );
-                if self.ride.state != ride::State::Running {
-                    if let Some(crate::update::Status::Available(r)) = &self.update {
-                        let label = if compact {
-                            "Update".to_string()
-                        } else {
-                            format!("Update {}", r.version)
-                        };
-                        let button = egui::Button::new(
-                            RichText::new(label)
-                                .font(theme::medium(12.0))
-                                .color(Color32::WHITE),
-                        )
-                        .fill(ACCENT)
-                        .corner_radius(12);
-                        if ui
-                            .add(button)
-                            .on_hover_text(format!(
-                                "VeloForge {} is available. Click to open its download page.",
-                                r.version
-                            ))
-                            .clicked()
-                        {
-                            ui.ctx().open_url(egui::OpenUrl::new_tab(&r.url));
-                        }
-                    }
-                }
-                if self.ride.state == ride::State::Running {
-                    // A recording light that breathes.
-                    let t = ui.input(|i| i.time);
-                    let pulse = 0.55 + 0.45 * (t * 2.6).sin() as f32;
-                    ui.add_space(4.0);
-                    ui.label(
-                        RichText::new(fmt_dur(self.ride.elapsed as f32))
-                            .font(theme::medium(12.5))
-                            .color(Color32::from_rgb(240, 120, 110)),
-                    );
-                    let (r, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
-                    ui.painter()
-                        .circle_filled(r.center(), 4.0, theme::BAD.gamma_multiply(pulse));
-                }
-            });
-        });
-    }
-
     // ------------------------------------------------------------------
     // Ride
 

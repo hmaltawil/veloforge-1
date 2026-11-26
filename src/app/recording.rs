@@ -420,6 +420,9 @@ impl App {
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
+        if ext == "mp3" {
+            return self.add_song(path, bytes);
+        }
         let text = match bytes {
             Some(b) => String::from_utf8_lossy(b).into_owned(),
             None => match std::fs::read_to_string(path) {
@@ -454,7 +457,7 @@ impl App {
                     self.store.custom_workouts.retain(|x| x.id != id);
                     self.store.custom_workouts.push(w);
                     self.selected_workout = Some(id);
-                    self.tab = Tab::Workouts;
+                    self.tab = Tab::Library;
                     self.mark_dirty();
                     self.notify(format!("Imported workout “{name}”"));
                 }

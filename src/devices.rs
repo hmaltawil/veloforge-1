@@ -23,6 +23,18 @@ static RAW_LOG: AtomicBool = AtomicBool::new(false);
 /// While a spindown runs, normal trainer commands are held back.
 static CALIBRATING: AtomicBool = AtomicBool::new(false);
 
+/// Keep a Click v2's left half going without Zwift: restart it before its
+/// lock makes it drop (set from the settings).
+pub static CLICK_RESTART: AtomicBool = AtomicBool::new(true);
+
+/// Devices being restarted on purpose: reconnected at once, without the
+/// wait a dropped device gets.
+static RESTARTING: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// How long after connecting a locked left half is restarted (it drops by
+/// itself after about 75 s).
+const LEFT_RESTART_SECS: u64 = 55;
+
 /// Progress of a trainer spindown (calibration).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Calibration {
@@ -137,6 +149,15 @@ pub enum Event {
     Shift {
         id: String,
         up: bool,
+    },
+    /// One of a Zwift Click v2's other buttons was pressed (Y, Z, A …):
+    /// its bit, for the music.
+    ClickButton {
+        bits: u64,
+    },
+    /// Those buttons came back up: how long one was held can matter.
+    ClickReleased {
+        bits: u64,
     },
     Log(String),
 }
@@ -898,7 +919,15 @@ impl State {
                 .remove(&id)
                 .map(|t| t.elapsed().as_secs())
                 .unwrap_or(0);
-            if self.wanted.contains(&id) {
+            let planned = RESTARTING.lock().ok().is_some_and(|mut r| {
+                let had = r.contains(&id);
+                r.retain(|x| *x != id);
+                had
+            });
+            if planned && self.wanted.contains(&id) {
+                // Restarted on purpose: straight back, without a word.
+                self.connect(id, 0);
+            } else if self.wanted.contains(&id) {
                 self.ui.log(format!(
                     "{} disconnected after {after} s, reconnecting…",
                     self.name_of(&id)
@@ -1166,9 +1195,13 @@ async fn setup(
         .filter(|c| c.is_some())
         .count()
         + usize::from(click.is_some());
-    let mut click_log = click
-        .as_ref()
-        .map(|c| ClickLog::new(id.clone(), c.heard.clone()));
+    let mut click_log = click.as_ref().map(|c| {
+        ClickLog::new(
+            id.clone(),
+            c.heard.clone(),
+            c.kind == Some(zwift::Kind::ClickV2Left),
+        )
+    });
     let click_gen = (gen_cell.clone(), generation);
     let has_ibd = ibd.is_some();
     let got_data = Arc::new(AtomicBool::new(false));
@@ -1328,7 +1361,7 @@ async fn setup(
         ));
     }
     if let Some(c) = &click {
-        c.greet(&p, &name, &ui, click_gen).await;
+        c.greet(&p, &id, &name, &ui, click_gen).await;
     }
 
     let mut caps = Vec::new();
@@ -1424,6 +1457,7 @@ struct ZwiftClick {
     indicate: Characteristic,
     write: Characteristic,
     handshake: Vec<u8>,
+    kind: Option<zwift::Kind>,
     heard: Arc<Heard>,
 }
 
@@ -1433,6 +1467,10 @@ struct Heard {
     replied: AtomicBool,
     /// Any other message.
     any: AtomicBool,
+    /// It answered with Zwift's challenge: Zwift has it locked.
+    locked: AtomicBool,
+    /// When a button was last down.
+    pressed_at: std::sync::Mutex<Option<Instant>>,
 }
 
 /// Zwift's characteristics, on a Zwift controller (never on a trainer: a
@@ -1500,6 +1538,7 @@ async fn zwift_setup(
         indicate,
         write,
         handshake: zwift::handshake(kind),
+        kind,
         heard: Default::default(),
     })
 }
@@ -1511,6 +1550,7 @@ impl ZwiftClick {
     async fn greet(
         &self,
         p: &Peripheral,
+        id: &str,
         name: &str,
         ui: &Ui,
         (gen_cell, generation): (Arc<AtomicU32>, u32),
@@ -1528,6 +1568,77 @@ impl ZwiftClick {
             }
         }
         zwift_write(p, &self.write, &self.handshake, name, ui).await;
+        let v2 = matches!(
+            self.kind,
+            Some(zwift::Kind::ClickV2Left | zwift::Kind::ClickV2Right)
+        );
+        if self.kind == Some(zwift::Kind::ClickV2Left) {
+            // Keeps a left half Zwift unlocked recently unlocked.
+            send_quietly(p, &self.write, zwift::UNLOCK_ACK).await;
+            ui.log(format!(
+                "{name}: sent the unlock reply ({})",
+                zwift::hex(zwift::UNLOCK_ACK)
+            ));
+        }
+        if v2 {
+            // Say RideOn again every few seconds, so neither half dozes off
+            // and drops its link.
+            let (p, write, hello) = (p.clone(), self.write.clone(), self.handshake.clone());
+            let (k_gen, k_ui, k_name) = (gen_cell.clone(), ui.clone(), name.to_string());
+            let left = self.kind == Some(zwift::Kind::ClickV2Left);
+            let (k_heard, k_id) = (self.heard.clone(), id.to_string());
+            tokio::spawn(async move {
+                let mut failed = 0u32;
+                let since = Instant::now();
+                loop {
+                    tokio::time::sleep(Duration::from_secs(zwift::KEEPALIVE_SECS)).await;
+                    if k_gen.load(Ordering::SeqCst) != generation {
+                        return;
+                    }
+                    // A locked left half drops after about 75 s: restart
+                    // it first, between presses, and straight back.
+                    let quiet = k_heard
+                        .pressed_at
+                        .lock()
+                        .ok()
+                        .and_then(|t| *t)
+                        .is_none_or(|t| t.elapsed() > Duration::from_millis(1500));
+                    if left
+                        && CLICK_RESTART.load(Ordering::Relaxed)
+                        && k_heard.locked.load(Ordering::Relaxed)
+                        && since.elapsed() >= Duration::from_secs(LEFT_RESTART_SECS)
+                        && quiet
+                    {
+                        static TOLD: AtomicBool = AtomicBool::new(false);
+                        if !TOLD.swap(true, Ordering::Relaxed) {
+                            k_ui.log(format!(
+                                "{k_name}: restarting it about once a minute to keep it going without Zwift \
+                                 (switch this off under Devices → Virtual shifting)"
+                            ));
+                        }
+                        if let Ok(mut r) = RESTARTING.lock() {
+                            r.push(k_id.clone());
+                        }
+                        let _ = p.disconnect().await;
+                        return;
+                    }
+                    if send_quietly(&p, &write, &hello).await {
+                        failed = 0;
+                    } else {
+                        failed += 1;
+                        if failed == 3 {
+                            k_ui.log(format!(
+                                "{k_name}: keeping it awake is failing; it may drop its link"
+                            ));
+                        }
+                    }
+                }
+            });
+            ui.log(format!(
+                "{name}: keeping it awake: RideOn every {} s",
+                zwift::KEEPALIVE_SECS
+            ));
+        }
         let (p, name, ui, heard) = (p.clone(), name.to_string(), ui.clone(), self.heard.clone());
         let (write, first) = (self.write.clone(), self.handshake.clone());
         tokio::spawn(async move {
@@ -1560,6 +1671,22 @@ impl ZwiftClick {
     }
 }
 
+/// Write to the controller without logging; true when it went.
+async fn send_quietly(p: &Peripheral, ch: &Characteristic, data: &[u8]) -> bool {
+    let kind = if ch
+        .properties
+        .contains(CharPropFlags::WRITE_WITHOUT_RESPONSE)
+    {
+        WriteType::WithoutResponse
+    } else {
+        WriteType::WithResponse
+    };
+    matches!(
+        tokio::time::timeout(Duration::from_secs(2), p.write(ch, data, kind)).await,
+        Ok(Ok(()))
+    )
+}
+
 /// Write to the controller (as it allows: without a response if it can).
 async fn zwift_write(p: &Peripheral, ch: &Characteristic, data: &[u8], name: &str, ui: &Ui) {
     let kind = if ch
@@ -1589,6 +1716,9 @@ async fn zwift_write(p: &Peripheral, ch: &Characteristic, data: &[u8], name: &st
 /// worth of shifting does not push everything else out of the log.
 struct ClickLog {
     id: String,
+    /// A Click v2's left half: it reports its one shift button with the
+    /// same bit as + on the right half, so its "up" is a shift down.
+    left: bool,
     heard: Arc<Heard>,
     presses: zwift::Presses,
     pressed: u32,
@@ -1598,15 +1728,17 @@ struct ClickLog {
     others: HashSet<u8>,
     unreadable: u32,
     stopped: u32,
+    locked: bool,
 }
 
 impl ClickLog {
     /// Presses logged one by one before only every 50th is.
     const DETAILED: u32 = 20;
 
-    fn new(id: String, heard: Arc<Heard>) -> ClickLog {
+    fn new(id: String, heard: Arc<Heard>, left: bool) -> ClickLog {
         ClickLog {
             id,
+            left,
             heard,
             presses: Default::default(),
             pressed: 0,
@@ -1616,6 +1748,7 @@ impl ClickLog {
             others: HashSet::new(),
             unreadable: 0,
             stopped: 0,
+            locked: false,
         }
     }
 
@@ -1632,7 +1765,10 @@ impl ClickLog {
         }
         match message {
             Message::RideOn(rest) => {
-                self.heard.replied.store(true, Ordering::Relaxed);
+                // Answered again every few seconds (the keepalive): told once.
+                if self.heard.replied.swap(true, Ordering::Relaxed) {
+                    return;
+                }
                 let like = match rest.get(..2) {
                     Some([1, 3]) => "as a Click does",
                     Some([2, 3]) => "as a Click v2 does",
@@ -1641,7 +1777,15 @@ impl ClickLog {
                 };
                 ui.log(format!("{name}: answered the handshake {like} ({hex})"));
             }
-            Message::Buttons(b) => {
+            Message::Buttons(mut b) => {
+                if self.left {
+                    std::mem::swap(&mut b.up, &mut b.down);
+                }
+                if b.up || b.down || b.other != 0 {
+                    if let Ok(mut t) = self.heard.pressed_at.lock() {
+                        *t = Some(Instant::now());
+                    }
+                }
                 if !self.reported {
                     self.reported = true;
                     ui.log(format!(
@@ -1655,6 +1799,36 @@ impl ClickLog {
                     ));
                 }
                 let (up, down) = self.presses.update(b);
+                let other = self.presses.other_pressed();
+                if other != 0 {
+                    let which = [
+                        (zwift::Y, "Y"),
+                        (zwift::Z, "Z"),
+                        (zwift::A, "A"),
+                        (zwift::PAD_LEFT, "left"),
+                        (zwift::PAD_UP, "up"),
+                        (zwift::PAD_RIGHT, "right"),
+                        (zwift::PAD_DOWN, "down"),
+                    ]
+                    .iter()
+                    .filter(|(bit, _)| other & bit != 0)
+                    .map(|(_, n)| *n)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                    ui.log(format!(
+                        "{name}: button {} pressed ({hex})",
+                        if which.is_empty() {
+                            format!("{other:#06x}")
+                        } else {
+                            which
+                        }
+                    ));
+                    ui.send(Event::ClickButton { bits: other });
+                }
+                let released = self.presses.other_released();
+                if released != 0 {
+                    ui.send(Event::ClickReleased { bits: released });
+                }
                 for (pressed, up) in [(up, true), (down, false)] {
                     if !pressed {
                         continue;
@@ -1692,6 +1866,17 @@ impl ClickLog {
                     ui.log(format!(
                         "{name}: says it has stopped ({hex}). A Click v2 half does this while Zwift has it locked; \
                          its other half, and the keyboard, still shift"
+                    ));
+                }
+            }
+            Message::Locked => {
+                self.heard.locked.store(true, Ordering::Relaxed);
+                if !self.locked {
+                    self.locked = true;
+                    ui.log(format!(
+                        "{name}: locked by Zwift (it answered with Zwift's challenge: {hex}). To unlock it, open \
+                         Zwift and connect the Click there once today, then close Zwift and connect it here again. \
+                         Until then B on the right half shifts down."
                     ));
                 }
             }
@@ -1742,7 +1927,7 @@ mod sim_tests {
             ctx: eframe::egui::Context::default(),
         };
         let heard = Arc::new(Heard::default());
-        let mut log = ClickLog::new("click-1".into(), heard.clone());
+        let mut log = ClickLog::new("click-1".into(), heard.clone(), false);
         for m in messages {
             log.handle(&bytes(m), "Zwift Click", &ui);
         }

@@ -30,7 +30,52 @@ pub const HAND: [usize; 2] = [13, 16];
 
 /// Skin and fabric get their own shading in `OBJECT_FS`.
 pub const MAT_SKIN: f32 = 6.0;
+/// The colour skin vertices carry, plus their shading (0-1): the shader
+/// puts the rider's skin tone there.
+pub const SKIN_MARK: f32 = 2.0;
 pub const MAT_FABRIC: f32 = 7.0;
+/// Kit colours (helmet, gloves, socks, shoes, and the shoes' dark details)
+/// are marked `KIT_MARK + 2 × piece + shading` and filled in when drawn,
+/// so the rider can pick black or white without the body being rebuilt.
+pub const KIT_MARK: f32 = 4.0;
+
+/// The kit's colours drawn now (see [`set_kit`]).
+static KIT: std::sync::RwLock<[V3; 5]> =
+    std::sync::RwLock::new(kit_colours([true, false, true, true]));
+
+/// The colours of the kit pieces for black or white (`white`: helmet,
+/// gloves, socks, shoes), and the shoes' details, dark on white shoes and
+/// grey on black ones.
+pub const fn kit_colours(white: [bool; 4]) -> [V3; 5] {
+    const fn pick(w: bool, on: V3, off: V3) -> V3 {
+        if w {
+            on
+        } else {
+            off
+        }
+    }
+    [
+        pick(white[0], [0.86, 0.86, 0.88], [0.025, 0.025, 0.028]),
+        pick(white[1], [0.8, 0.8, 0.8], [0.022, 0.022, 0.026]),
+        pick(white[2], [0.82, 0.82, 0.82], [0.028, 0.028, 0.03]),
+        pick(white[3], [0.86, 0.86, 0.87], [0.03, 0.03, 0.034]),
+        pick(white[3], [0.03, 0.03, 0.034], [0.2, 0.2, 0.21]),
+    ]
+}
+
+/// Dress the rider in black or white kit (Settings › Profile).
+pub fn set_kit(white: [bool; 4]) {
+    if let Ok(mut k) = KIT.write() {
+        *k = kit_colours(white);
+    }
+}
+
+/// The kit's colours drawn now.
+pub fn kit() -> [V3; 5] {
+    KIT.read()
+        .map(|k| *k)
+        .unwrap_or(kit_colours([true, false, true, true]))
+}
 
 /// Floats per vertex: position, normal, colour, material, four bone
 /// indices and four weights.
@@ -59,12 +104,24 @@ pub enum Paint {
 }
 
 impl Paint {
+    /// Which kit piece this is, if any (see [`KIT_MARK`]).
+    fn kit(self) -> Option<usize> {
+        match self {
+            Paint::Helmet => Some(0),
+            Paint::Glove => Some(1),
+            Paint::Sock => Some(2),
+            Paint::Shoe => Some(3),
+            Paint::Dial => Some(4),
+            _ => None,
+        }
+    }
+
     /// Colour and material. Negative colours are multiples of the jersey
-    /// colour, filled in when drawn.
+    /// colour, and colours of 2 the rider's skin, both filled in when drawn.
     fn look(self) -> (V3, f32) {
         let fabric = MAT_FABRIC;
         match self {
-            Paint::Skin => ([0.56, 0.34, 0.23], MAT_SKIN),
+            Paint::Skin => ([SKIN_MARK; 3], MAT_SKIN),
             Paint::Hair => ([0.045, 0.032, 0.024], fabric),
             Paint::Jersey => ([-1.0, -1.0, -1.0], fabric),
             Paint::JerseyDark => ([-0.42, -0.42, -0.42], fabric),
@@ -673,7 +730,7 @@ pub fn sculpt(j: &Joints) -> Sculpt {
         (0.66, Paint::Gripper),
         (9.0, Paint::Skin),
     ];
-    const SHIN_BANDS: &[(f32, Paint)] = &[(0.58, Paint::Skin), (9.0, Paint::Sock)];
+    const SHIN_BANDS: &[(f32, Paint)] = &[(0.64, Paint::Skin), (9.0, Paint::Sock)];
     for (k, s) in [1.0f32, -1.0].into_iter().enumerate() {
         let (hip, knee, ankle) = (j.hip[k], j.knee[k], j.ankle[k]);
         let u = norm(sub(knee, hip));
@@ -722,8 +779,8 @@ pub fn sculpt(j: &Joints) -> Sculpt {
             LOWER_LEG[k],
         ));
         add_part(part(
-            cone(knee, ankle, 0.047, 0.03),
-            0.035,
+            cone(knee, ankle, 0.047, 0.025),
+            0.03,
             shin_paint(),
             LOWER_LEG[k],
         ));
@@ -736,8 +793,8 @@ pub fn sculpt(j: &Joints) -> Sculpt {
             ));
         }
         add_part(part(
-            ell(ankle, sax, [0.03, 0.03, 0.034]),
-            0.02,
+            ell(ankle, sax, [0.028, 0.028, 0.031]),
+            0.014,
             solid(Paint::Sock),
             LOWER_LEG[k],
         ));
@@ -794,24 +851,19 @@ pub fn sculpt(j: &Joints) -> Sculpt {
                     add(scale(u, 0.022), add(scale(z, s * 0.006), scale(up, 0.004))),
                 ),
                 axes_along(u, scale(z, s)),
-                [0.068, 0.047, 0.043],
+                [0.072, 0.052, 0.048],
             ),
             0.04,
             upper_paint(),
             ARM[k],
         ));
-        add_part(part(
-            cone(sh, el, 0.044, 0.034),
-            0.035,
-            upper_paint(),
-            ARM[k],
-        ));
+        add_part(part(cone(sh, el, 0.05, 0.04), 0.035, upper_paint(), ARM[k]));
         // Biceps in front, triceps behind.
         add_part(part(
             ell(
                 add(lerp(sh, el, 0.55), scale(front, 0.008)),
                 ax,
-                [0.085, 0.034, 0.036],
+                [0.09, 0.041, 0.042],
             ),
             0.03,
             upper_paint(),
@@ -821,7 +873,7 @@ pub fn sculpt(j: &Joints) -> Sculpt {
             ell(
                 add(lerp(sh, el, 0.45), scale(front, -0.012)),
                 ax,
-                [0.09, 0.03, 0.036],
+                [0.095, 0.037, 0.041],
             ),
             0.03,
             upper_paint(),
@@ -843,13 +895,13 @@ pub fn sculpt(j: &Joints) -> Sculpt {
         let v = norm(sub(wr, el));
         let fax = axes_along(v, z);
         add_part(part(
-            cone(el, wr, 0.034, 0.023),
+            cone(el, wr, 0.041, 0.026),
             0.03,
             solid(Paint::Skin),
             ARM[k],
         ));
         add_part(part(
-            ell(lerp(el, wr, 0.27), fax, [0.085, 0.038, 0.034]),
+            ell(lerp(el, wr, 0.27), fax, [0.095, 0.046, 0.042]),
             0.03,
             solid(Paint::Skin),
             ARM[k],
@@ -892,18 +944,42 @@ pub fn sculpt(j: &Joints) -> Sculpt {
             solid(Paint::Glove),
             HAND[k],
         ));
-        // Fingers wrapped down round the hood, and the thumb inside.
+        // The glove's knuckles over the top of the hood, the bare fingers
+        // down its front, and their tips curled back under it.
         hands.parts.push(rigid(
-            cone(
-                add(g, bike.dir(0.025, 0.02, 0.0)),
-                add(g, bike.dir(0.03, -0.035, 0.0)),
-                0.019,
-                0.016,
-            ),
-            0.02,
+            Shape::Box {
+                c: add(g, bike.dir(0.022, 0.021, 0.0)),
+                axes: ax,
+                half: [0.013, 0.011, 0.036],
+                round: 0.009,
+            },
+            0.014,
+            solid(Paint::Glove),
+            HAND[k],
+        ));
+        hands.parts.push(rigid(
+            Shape::Box {
+                c: add(g, bike.dir(0.043, 0.002, 0.0)),
+                axes: ax,
+                half: [0.01, 0.021, 0.033],
+                round: 0.008,
+            },
+            0.012,
             solid(Paint::Skin),
             HAND[k],
         ));
+        hands.parts.push(rigid(
+            Shape::Box {
+                c: add(g, bike.dir(0.031, -0.024, 0.0)),
+                axes: ax,
+                half: [0.013, 0.008, 0.03],
+                round: 0.007,
+            },
+            0.01,
+            solid(Paint::Skin),
+            HAND[k],
+        ));
+        // The thumb, round the inside of the hood.
         hands.parts.push(rigid(
             cone(
                 add(j.wrist[k], bike.dir(0.01, 0.0, -s * 0.02)),
@@ -944,15 +1020,15 @@ pub fn sculpt(j: &Joints) -> Sculpt {
             add(b, add(scale(f, x), add(scale(n, y), scale(bike.right, w))))
         };
         let shoe = |shape: Shape, k2: f32, p: Paint| rigid(shape, k2, solid(p), FOOT[k]);
-        // White uppers with dark details.
+        // White uppers with dark details: the padded collar round the
+        // ankle opening, the heel counter, and a strap across the forefoot.
         let upper = |shape: Shape, k2: f32| {
             let paint: Painter = Box::new(move |p| {
                 let q = sub(p, b);
                 let (x, y) = (dot(q, f), dot(q, n));
-                // The rim of the ankle opening, and a strap across the
-                // forefoot.
-                if (x < -0.1 && y > 0.072 + (x + 0.1) * -0.25)
-                    || ((-0.012..0.006).contains(&(x + 0.02 * y)) && y > 0.03)
+                if (x < -0.065 && y > 0.044 + (x + 0.065) * -0.2)
+                    || x < -0.15
+                    || ((-0.012..0.006).contains(&(x + 0.02 * y)) && y > 0.028)
                 {
                     Paint::Dial
                 } else {
@@ -961,41 +1037,53 @@ pub fn sculpt(j: &Joints) -> Sculpt {
             });
             rigid(shape, k2, paint, FOOT[k])
         };
-        // Low, narrow toe; the forefoot over the cleat; the instep rising
-        // to the ankle; the heel cup.
+        // A low, pointed toe; the forefoot over the cleat; the instep rising
+        // to the ankle; a neat heel cup.
         shoes.parts.push(upper(
-            ell(on(0.05, 0.019, 0.0), ax, [0.045, 0.019, 0.034]),
+            ell(on(0.062, 0.016, 0.0), ax, [0.052, 0.015, 0.03]),
             0.02,
         ));
         shoes.parts.push(upper(
-            ell(on(-0.01, 0.026, 0.0), ax, [0.062, 0.024, 0.039]),
+            ell(on(-0.005, 0.024, 0.0), ax, [0.066, 0.022, 0.036]),
             0.02,
         ));
         shoes.parts.push(upper(
             Shape::Box {
-                c: on(-0.065, 0.03, 0.0),
+                c: on(-0.065, 0.029, 0.0),
                 axes: ax,
-                half: [0.065, 0.012, 0.019],
-                round: 0.016,
+                half: [0.065, 0.011, 0.019],
+                round: 0.015,
             },
             0.02,
         ));
         shoes.parts.push(upper(
-            ell(on(-0.085, 0.042, 0.0), ax, [0.058, 0.03, 0.034]),
+            ell(on(-0.1, 0.044, 0.0), ax, [0.05, 0.031, 0.034]),
             0.02,
         ));
         shoes.parts.push(upper(
-            ell(on(-0.135, 0.043, 0.0), ax, [0.037, 0.04, 0.032]),
-            0.02,
+            ell(on(-0.132, 0.038, 0.0), ax, [0.038, 0.034, 0.03]),
+            0.018,
         ));
+        // A stiff sole with a visible edge, and the cleat under the ball of
+        // the foot where it clips into the pedal.
         shoes.parts.push(shoe(
             Shape::Box {
-                c: on(-0.043, 0.003, 0.0),
+                c: on(-0.043, 0.004, 0.0),
                 axes: ax,
-                half: [0.112, 0.004, 0.033],
+                half: [0.116, 0.0055, 0.035],
                 round: 0.005,
             },
             0.004,
+            Paint::Sole,
+        ));
+        shoes.parts.push(shoe(
+            Shape::Box {
+                c: on(0.0, -0.005, 0.0),
+                axes: ax,
+                half: [0.026, 0.004, 0.025],
+                round: 0.003,
+            },
+            0.003,
             Paint::Sole,
         ));
         // The dial on the instep and the heel tab.
@@ -1049,23 +1137,64 @@ pub fn sculpt(j: &Joints) -> Sculpt {
         solid(Paint::Skin),
         HEAD,
     ));
+    // A firm chin, forward of the jaw.
     head.parts.push(rigid(
-        ell(on(0.07, -0.088, 0.0), hax, [0.03, 0.028, 0.034]),
-        0.025,
+        ell(on(0.08, -0.092, 0.0), hax, [0.026, 0.024, 0.028]),
+        0.022,
+        solid(Paint::Skin),
+        HEAD,
+    ));
+    // The nose: its bridge from between the eyes, a rounded tip standing
+    // well clear of the face, and the wings either side of it.
+    head.parts.push(rigid(
+        cone(on(0.093, 0.0, 0.0), on(0.117, -0.033, 0.0), 0.0085, 0.011),
+        0.012,
         solid(Paint::Skin),
         HEAD,
     ));
     head.parts.push(rigid(
-        cone(
-            on(0.088, -0.004, 0.0),
-            on(0.101, -0.028, 0.0),
-            0.007,
-            0.0095,
-        ),
-        0.01,
+        ell(on(0.116, -0.036, 0.0), hax, [0.012, 0.011, 0.012]),
+        0.008,
         solid(Paint::Skin),
         HEAD,
     ));
+    for s in [1.0f32, -1.0] {
+        head.parts.push(rigid(
+            ell(on(0.104, -0.042, s * 0.014), hax, [0.011, 0.008, 0.009]),
+            0.008,
+            solid(Paint::Skin),
+            HEAD,
+        ));
+    }
+    // The brow above the glasses.
+    head.parts.push(rigid(
+        ell(on(0.083, 0.022, 0.0), hax, [0.016, 0.012, 0.048]),
+        0.02,
+        solid(Paint::Skin),
+        HEAD,
+    ));
+    // Lips, a crease between them where the two meet.
+    head.parts.push(rigid(
+        ell(on(0.103, -0.059, 0.0), hax, [0.011, 0.0075, 0.022]),
+        0.007,
+        solid(Paint::Skin),
+        HEAD,
+    ));
+    head.parts.push(rigid(
+        ell(on(0.099, -0.071, 0.0), hax, [0.01, 0.0075, 0.019]),
+        0.007,
+        solid(Paint::Skin),
+        HEAD,
+    ));
+    for s in [1.0f32, -1.0] {
+        // The angle of the jaw below each ear.
+        head.parts.push(rigid(
+            ell(on(0.005, -0.068, s * 0.05), hax, [0.028, 0.022, 0.018]),
+            0.025,
+            solid(Paint::Skin),
+            HEAD,
+        ));
+    }
     for s in [1.0f32, -1.0] {
         // Cheekbones.
         head.parts.push(rigid(
@@ -1450,7 +1579,15 @@ pub fn build(cell: f32) -> Skin {
     let mut vertices = Vec::with_capacity(verts.len() * STRIDE);
     for v in &verts {
         let (col, mat) = v.paint.look();
-        let col = scale(col, v.ao);
+        // Skin keeps its mark, with the shading in the creases on top of
+        // it (2 + shading); everything else is shaded directly.
+        let col = if v.paint == Paint::Skin {
+            [SKIN_MARK + v.ao; 3]
+        } else if let Some(k) = v.paint.kit() {
+            [KIT_MARK + 2.0 * k as f32 + v.ao.clamp(0.0, 1.0); 3]
+        } else {
+            scale(col, v.ao)
+        };
         vertices.extend_from_slice(&[
             v.p[0], v.p[1], v.p[2], v.n[0], v.n[1], v.n[2], col[0], col[1], col[2], mat,
         ]);

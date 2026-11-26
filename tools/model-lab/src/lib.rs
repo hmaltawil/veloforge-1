@@ -4,6 +4,11 @@
 
 #![allow(dead_code)]
 
+// The aero road bike modelled in Blender (build.sh sets lab_aero when the
+// code has it).
+#[cfg(lab_aero)]
+#[path = "../../../src/gfx/bike_model.rs"]
+mod bike_model;
 #[path = "../../../src/gfx/body.rs"]
 mod body;
 // Farm buildings (build.sh sets lab_buildings when the code has them).
@@ -57,7 +62,7 @@ thread_local! {
     }) };
 }
 
-/// Build the body with cells `cell` metres across (the app uses 0.01).
+/// Build the body with cells `cell` metres across (the app uses 0.008).
 /// Returns the number of indices.
 #[no_mangle]
 pub extern "C" fn build_body(cell: f32) -> u32 {
@@ -133,7 +138,18 @@ pub extern "C" fn pose(
             time,
         };
         let j = mesh::joints(&p);
-        l.bike = mesh::bike(&p, &j).v;
+        #[cfg(lab_aero)]
+        {
+            l.bike = if bike_model::aero() {
+                bike_model::mesh(&p, &j, false).v
+            } else {
+                mesh::bike(&p, &j).v
+            };
+        }
+        #[cfg(not(lab_aero))]
+        {
+            l.bike = mesh::bike(&p, &j).v;
+        }
         l.joints.clear();
         for v in [j.hips, j.shoulders, j.head]
             .iter()
@@ -170,6 +186,14 @@ pub extern "C" fn pose(
             // Negative colours are shares of the jersey colour.
             let c = if s[6] < 0.0 {
                 [-s[6] * r, -s[7] * g, -s[8] * b]
+            } else if cfg!(lab_kit) && s[6] > 3.5 {
+                // The kit, in its default black and white.
+                kit_colour(s[6])
+            } else if s[6] > 1.5 {
+                // The rider's skin (chosen in the app): a medium tone here,
+                // with its shading (the colour less 2).
+                let k = s[6] - 2.0;
+                [0.56 * k, 0.34 * k, 0.23 * k]
             } else {
                 [s[6], s[7], s[8]]
             };
@@ -473,4 +497,18 @@ pub extern "C" fn noise_texture(size: u32) -> *const u8 {
             .collect();
         n.as_ptr()
     })
+}
+
+/// A kit colour mark resolved to the default kit (see `body::KIT_MARK`).
+#[cfg(lab_kit)]
+fn kit_colour(mark: f32) -> [f32; 3] {
+    let m = mark - body::KIT_MARK;
+    let k = (m * 0.5).floor();
+    let c = body::kit_colours([true, false, true, true])[k as usize];
+    scale(c, m - 2.0 * k)
+}
+
+#[cfg(not(lab_kit))]
+fn kit_colour(_: f32) -> [f32; 3] {
+    [0.5; 3]
 }

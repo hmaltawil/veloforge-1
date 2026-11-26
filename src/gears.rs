@@ -66,9 +66,217 @@ pub const MIN_WATTS: f32 = 10.0;
 /// The most the trainer is asked for (a sprint in top gear).
 pub const MAX_WATTS: f32 = 2000.0;
 
+/// Common cassettes, smallest cog first, as their makers list them.
+pub const CASSETTES: [(&str, &[u8]); 12] = [
+    (
+        "SRAM XPLR 13-speed 10–46",
+        &[10, 11, 12, 13, 15, 17, 19, 21, 24, 28, 32, 38, 46],
+    ),
+    (
+        "SRAM XPLR 12-speed 10–44",
+        &[10, 11, 13, 15, 17, 19, 21, 24, 28, 32, 38, 44],
+    ),
+    (
+        "SRAM AXS 12-speed 10–36",
+        &[10, 11, 12, 13, 15, 17, 19, 21, 24, 28, 32, 36],
+    ),
+    (
+        "SRAM AXS 12-speed 10–33",
+        &[10, 11, 12, 13, 14, 15, 17, 19, 21, 24, 28, 33],
+    ),
+    (
+        "SRAM AXS 12-speed 10–30",
+        &[10, 11, 12, 13, 14, 15, 17, 19, 21, 24, 27, 30],
+    ),
+    (
+        "SRAM AXS 12-speed 10–28",
+        &[10, 11, 12, 13, 14, 15, 16, 17, 19, 21, 24, 28],
+    ),
+    (
+        "Shimano GRX 12-speed 10–45",
+        &[10, 12, 14, 16, 18, 21, 24, 28, 32, 36, 40, 45],
+    ),
+    (
+        "Shimano 12-speed 11–34",
+        &[11, 12, 13, 14, 15, 17, 19, 21, 24, 27, 30, 34],
+    ),
+    (
+        "Shimano 12-speed 11–30",
+        &[11, 12, 13, 14, 15, 16, 17, 19, 21, 24, 27, 30],
+    ),
+    (
+        "Shimano 11-speed 11–34 (HG800)",
+        &[11, 13, 15, 17, 19, 21, 23, 25, 27, 30, 34],
+    ),
+    (
+        "Shimano 11-speed 11–32",
+        &[11, 12, 13, 14, 16, 18, 20, 22, 25, 28, 32],
+    ),
+    (
+        "Shimano 11-speed 11–28",
+        &[11, 12, 13, 14, 15, 17, 19, 21, 23, 25, 28],
+    ),
+];
+
+/// Wheel and tyre sizes, with how far each rolls in one turn (metres).
+pub const TYRES: [(&str, f64); 8] = [
+    ("700 × 25c", 2.105),
+    ("700 × 28c", 2.136),
+    ("700 × 32c", 2.155),
+    ("700 × 40c", 2.200),
+    ("700 × 42c", 2.224),
+    ("700 × 45c", 2.242),
+    ("650b × 47", 2.081),
+    ("29 × 2.2", 2.300),
+];
+
+/// The gears a rider uses with these chainrings and this cassette, easiest
+/// first. One ring: every cog. Two rings: each ring on the cogs on its own
+/// side of the cassette (about seven in ten of them), as a rider shifts,
+/// leaving out crossed gears and any within 3% of the one before. With a
+/// 34/50 and an 11-34 that is the 15 gears in `GEARS`.
+pub fn build(rings: &[u8], cogs: &[u8]) -> Vec<Gear> {
+    let mut cogs: Vec<u8> = cogs.iter().copied().filter(|&c| c >= 8).collect();
+    cogs.sort_unstable();
+    cogs.dedup();
+    let mut rings: Vec<u8> = rings.iter().copied().filter(|&r| r >= 10).collect();
+    rings.sort_unstable();
+    rings.dedup();
+    if cogs.is_empty() || rings.is_empty() {
+        return GEARS.to_vec();
+    }
+    let mut all: Vec<Gear> = if rings.len() == 1 {
+        cogs.iter().map(|&c| g(rings[0], c)).collect()
+    } else {
+        let side = (cogs.len() * 7).div_ceil(10).max(1);
+        let small = rings[0];
+        let big = rings[rings.len() - 1];
+        let mut v: Vec<Gear> = cogs[cogs.len() - side..]
+            .iter()
+            .map(|&c| g(small, c))
+            .collect();
+        v.extend(cogs[..side].iter().map(|&c| g(big, c)));
+        v
+    };
+    // Easiest first; on a tie the small ring's gear comes first and stays.
+    all.sort_by(|a, b| a.ratio().total_cmp(&b.ratio()).then(a.ring.cmp(&b.ring)));
+    let mut out: Vec<Gear> = Vec::with_capacity(all.len());
+    for x in all {
+        if out.last().is_none_or(|l| x.ratio() > l.ratio() * 1.03) {
+            out.push(x);
+        }
+    }
+    out
+}
+
+/// The gearing in use: set from the settings, `GEARS` and a road wheel
+/// until then.
+struct Gearing {
+    gears: Vec<Gear>,
+    wheel: f64,
+    from: (Vec<u8>, Vec<u8>),
+}
+
+static CURRENT: std::sync::RwLock<Option<Gearing>> = std::sync::RwLock::new(None);
+
+/// Use these chainrings, cassette and wheel from now on (nothing is done
+/// when they are the ones in use).
+pub fn set(rings: &[u8], cogs: &[u8], wheel_m: f64) {
+    let from = (rings.to_vec(), cogs.to_vec());
+    let same = CURRENT.read().ok().is_some_and(|c| {
+        c.as_ref()
+            .is_some_and(|c| c.from == from && c.wheel == wheel_m)
+    });
+    if same {
+        return;
+    }
+    let gears = build(rings, cogs);
+    if let Ok(mut cur) = CURRENT.write() {
+        *cur = Some(Gearing {
+            gears,
+            wheel: wheel_m,
+            from,
+        });
+    }
+}
+
+/// Every gear in use, easiest first.
+pub fn all() -> Vec<Gear> {
+    CURRENT
+        .read()
+        .ok()
+        .and_then(|c| c.as_ref().map(|c| c.gears.clone()))
+        .unwrap_or_else(|| GEARS.to_vec())
+}
+
+/// How many gears there are.
+pub fn count() -> usize {
+    CURRENT
+        .read()
+        .ok()
+        .and_then(|c| c.as_ref().map(|c| c.gears.len()))
+        .unwrap_or(GEARS.len())
+        .max(1)
+}
+
+/// Gear `i` (brought into range).
+pub fn get(i: usize) -> Gear {
+    let i = i.min(count() - 1);
+    CURRENT
+        .read()
+        .ok()
+        .and_then(|c| c.as_ref().and_then(|c| c.gears.get(i).copied()))
+        .unwrap_or(GEARS[i.min(GEARS.len() - 1)])
+}
+
+/// How far the wheel rolls in one turn, in metres.
+pub fn wheel() -> f64 {
+    CURRENT
+        .read()
+        .ok()
+        .and_then(|c| c.as_ref().map(|c| c.wheel))
+        .unwrap_or(WHEEL_M)
+}
+
+/// "40T ring with a 10–46 cassette", "34/50 chainset with an 11–34 cassette".
+pub fn describe(rings: &[u8], cogs: &[u8]) -> String {
+    let lo = cogs.iter().min().copied().unwrap_or(0);
+    let hi = cogs.iter().max().copied().unwrap_or(0);
+    // Said aloud: "an eleven", "an eighteen", "an eight".
+    let a = if matches!(lo, 8 | 11 | 18) { "an" } else { "a" };
+    let mut rings = rings.to_vec();
+    rings.sort_unstable();
+    let front = match rings.as_slice() {
+        [one] => format!("{one}T ring"),
+        r => format!(
+            "{} chainset",
+            r.iter()
+                .map(|x| x.to_string())
+                .collect::<Vec<_>>()
+                .join("/")
+        ),
+    };
+    format!("{front} with {a} {lo}–{hi} cassette")
+}
+
+/// The gear in `gears` closest to `ratio`: where a rider lands when the
+/// gearing changes.
+pub fn nearest(gears: &[Gear], ratio: f64) -> usize {
+    gears
+        .iter()
+        .enumerate()
+        .min_by(|a, b| {
+            (a.1.ratio() - ratio)
+                .abs()
+                .total_cmp(&(b.1.ratio() - ratio).abs())
+        })
+        .map(|(i, _)| i)
+        .unwrap_or(0)
+}
+
 /// The gear index brought into range (a stored one from an older gear set).
 pub fn clamp(gear: usize) -> usize {
-    gear.min(GEARS.len() - 1)
+    gear.min(count() - 1)
 }
 
 /// One gear up (`up`) or down, stopping at the ends.
@@ -84,18 +292,18 @@ pub fn shift(gear: usize, up: bool) -> usize {
 /// "50x17 · gear 12/15".
 pub fn label(gear: usize) -> String {
     let i = clamp(gear);
-    format!("{} · gear {}/{}", teeth(i), i + 1, GEARS.len())
+    format!("{} · gear {}/{}", teeth(i), i + 1, count())
 }
 
 /// "50x17".
 pub fn teeth(gear: usize) -> String {
-    let g = GEARS[clamp(gear)];
+    let g = get(gear);
     format!("{}x{}", g.ring, g.cog)
 }
 
 /// The speed in m/s that `rpm` turns the wheel at in `gear`.
 pub fn speed(rpm: f32, gear: usize) -> f64 {
-    rpm.max(0.0) as f64 / 60.0 * GEARS[clamp(gear)].ratio() * WHEEL_M
+    rpm.max(0.0) as f64 / 60.0 * get(gear).ratio() * wheel()
 }
 
 /// The power in watts that holds a steady `v` m/s on a `grade` percent
@@ -193,6 +401,35 @@ mod tests {
         assert!((GEARS[14].ratio() - 50.0 / 11.0).abs() < 1e-9);
         assert_eq!(teeth(START_GEAR), "34x17");
         assert_eq!(label(11), "50x17 · gear 12/15");
+    }
+
+    #[test]
+    fn two_rings_give_the_gears_riders_use() {
+        // The standard set comes out of the general rule.
+        let hg800 = CASSETTES.iter().find(|c| c.0.contains("HG800")).unwrap().1;
+        assert_eq!(build(&[34, 50], hg800), GEARS.to_vec());
+        // Easiest first, each a real step up.
+        for c in CASSETTES {
+            for rings in [&[34u8, 50][..], &[46, 33], &[40]] {
+                let v = build(rings, c.1);
+                assert!(v.len() >= 10, "{} {rings:?}", c.0);
+                for w in v.windows(2) {
+                    assert!(w[1].ratio() > w[0].ratio() * 1.03, "{} {w:?}", c.0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn one_ring_uses_every_cog() {
+        let xplr = CASSETTES[0].1;
+        let v = build(&[40], xplr);
+        assert_eq!(v.len(), 13);
+        assert_eq!(v[0], g(40, 46));
+        assert_eq!(v[12], g(40, 10));
+        // Nothing usable: the standard set.
+        assert_eq!(build(&[], xplr), GEARS.to_vec());
+        assert_eq!(nearest(&v, 40.0 / 21.0), 5);
     }
 
     #[test]
