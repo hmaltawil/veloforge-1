@@ -404,6 +404,12 @@ pub struct Ride {
     pub gearing: Gearing,
     /// The power the gears ask of the trainer, eased towards its target.
     gear_watts: Option<f32>,
+    /// The gear the gears last rode in, to tell a shift.
+    last_gear: Option<usize>,
+    /// When (on `clock`) the last shift was.
+    shifted_at: Option<f64>,
+    /// Whether the last command sent was a shift's.
+    sent_shifting: bool,
 }
 
 /// Coasting riders hold their pedals level: ease the crank angle (0 with
@@ -451,6 +457,9 @@ impl Ride {
             gear: None,
             gearing: Gearing::Off,
             gear_watts: None,
+            last_gear: None,
+            shifted_at: None,
+            sent_shifting: false,
         }
     }
 
@@ -701,8 +710,13 @@ impl Ride {
         }
         let send = match (self.last_sent, desired) {
             (None, _) => true,
-            // The gears' power changes as you pedal: sent twice a second
-            // so the trainer keeps up, but not for every watt.
+            // A shift goes out on the next frame, and every change just
+            // after it as soon as the trainer can take it.
+            (Some((Control::Erg(a), t)), Control::Erg(b)) if geared && self.shifting() => {
+                a != b && (!self.sent_shifting || self.clock - t >= gears::SHIFT_SEND_GAP - 1e-6)
+            }
+            // Otherwise the gears' power changes as you pedal: sent twice a
+            // second so the trainer keeps up, but not for every watt.
             (Some((Control::Erg(a), t)), Control::Erg(b)) if geared => {
                 a.abs_diff(b) >= 2 && self.clock - t >= 0.5
             }
@@ -719,6 +733,7 @@ impl Ride {
                 c => c,
             };
             self.last_sent = Some((desired, self.clock));
+            self.sent_shifting = geared && self.shifting();
             Some(desired)
         } else {
             None
@@ -732,6 +747,7 @@ impl Ride {
     fn free_ride(&mut self, grade: f32, live: Live, phys: &Physics, dt: f64) -> (Control, bool) {
         let Some(gear) = self.gear else {
             self.gearing = Gearing::Off;
+            self.last_gear = None;
             return (Control::Grade(grade), false);
         };
         let Some(rpm) = live.cadence else {
@@ -740,13 +756,33 @@ impl Ride {
         };
         self.gearing = Gearing::Driving;
         let target = gears::target_power(rpm, gear, grade as f64, phys);
-        // Start from what you are riding, so switching to the gears (or
-        // back to them after a workout's interval) is not a jolt.
-        let w = self
-            .gear_watts
-            .get_or_insert(live.power.clamp(gears::MIN_WATTS, gears::MAX_WATTS));
-        *w = gears::ease(*w, target, dt);
+        let shifted = self.last_gear.is_some_and(|g| g != gear);
+        self.last_gear = Some(gear);
+        let w = match self.gear_watts {
+            // A shift lands at once, and the rest follows quickly.
+            Some(w) if shifted => {
+                self.shifted_at = Some(self.clock);
+                gears::jump(w, target)
+            }
+            Some(w) if self.shifting() => gears::ease_shift(w, target, dt),
+            // Changes of gradient and cadence come on gently.
+            Some(w) => gears::ease(w, target, dt),
+            // Start from what you are riding, so switching to the gears (or
+            // back to them after a workout's interval) is not a jolt.
+            None => gears::ease(
+                live.power.clamp(gears::MIN_WATTS, gears::MAX_WATTS),
+                target,
+                dt,
+            ),
+        };
+        self.gear_watts = Some(w);
         (Control::Erg(w.round() as u16), true)
+    }
+
+    /// Whether a shift was made just now, so the power follows it quickly.
+    fn shifting(&self) -> bool {
+        self.shifted_at
+            .is_some_and(|t| self.clock - t < gears::SHIFT_SECS)
     }
 
     /// The last command sent to the trainer.
@@ -1670,13 +1706,17 @@ mod tests {
         // Distance follows the speed.
         assert!(ride.distance > 90.0 * want * 0.8, "{}", ride.distance);
 
-        // Shift up two: harder, and it comes on smoothly.
+        // Shift up two: harder, at once.
         let sent = ride_geared(&mut ride, r, 13, Some(90.0), &mut power, 10.0);
         assert!(power > steady * 1.3, "{power} vs {steady}");
+        let first = sent[0] as f32;
+        assert!(
+            (first - steady) / (power - steady) > 0.6,
+            "{steady} -> {sent:?}"
+        );
         let mut last = steady as u16;
         for &w in &sent {
-            // At most a 200 W rise in the half second between commands.
-            assert!(w >= last && w - last <= 200, "{last} -> {w}");
+            assert!(w >= last, "{last} -> {w}");
             last = w;
         }
         // Shift down to the bottom: easier than where we started.
@@ -1772,5 +1812,270 @@ mod tests {
         let flat = at(0.0);
         let steep = at(8.0);
         assert!(steep > flat * 2.0, "{steep} vs {flat}");
+    }
+
+    /// Ride `ride` (with the gears, on its slope) for `secs` at
+    /// 60 frames a second: `gear_at` gives the gear and `rpm_at` the cadence
+    /// at each moment. Returns every power sent, with its time.
+    fn ride_frames(
+        ride: &mut Ride,
+        secs: f64,
+        gear_at: impl Fn(f64) -> usize,
+        rpm_at: impl Fn(f64) -> f32,
+    ) -> Vec<(f64, f32)> {
+        let r = &route::builtin()[1];
+        let dt = 1.0 / 60.0;
+        let mut sent = Vec::new();
+        let mut t = 0.0;
+        while t < secs - 1e-9 {
+            ride.gear = Some(gear_at(t));
+            let live = Live {
+                power: ride.gear_watts.unwrap_or(150.0),
+                cadence: Some(rpm_at(t)),
+                hr: None,
+                speed_kmh: None,
+            };
+            if let Some(Control::Erg(w)) = ride.update(dt, live, r, phys(), 250.0, 1.0, true) {
+                sent.push((t, w as f32));
+            }
+            t += dt;
+        }
+        sent
+    }
+
+    /// Settled on a 2% slope in `gear`, with the cadence wandering so the
+    /// gears' power has just been sent, as when riding.
+    fn settled_on_the_gears(gear: usize) -> Ride {
+        let mut ride = Ride::new(Mode::Slope, None, None);
+        ride.manual_grade = 2.0;
+        ride.start();
+        let sent = ride_frames(
+            &mut ride,
+            20.0,
+            |_| gear,
+            |t| 90.0 + 1.5 * (t * std::f64::consts::TAU / 1.3).sin() as f32,
+        );
+        // The last command went out moments ago: the throttle is running.
+        assert!(sent.last().unwrap().0 > 19.5, "{sent:?}");
+        ride
+    }
+
+    #[test]
+    fn a_shift_is_sent_on_the_very_next_tick() {
+        let p = phys();
+        for (from, to) in [(9, 10), (10, 9), (13, 12)] {
+            let mut ride = settled_on_the_gears(from);
+            let before = ride.gear_watts.unwrap();
+            let target = gears::target_power(90.0, to, 2.0, &p);
+            let sent = ride_frames(&mut ride, 1.0 / 60.0, |_| to, |_| 90.0);
+            // Sent on the frame of the press, already most of the way there.
+            let &[(_, w)] = sent.as_slice() else {
+                panic!("{from} -> {to}: {sent:?}")
+            };
+            let share = (w - before) / (target - before);
+            assert!((0.65..0.85).contains(&share), "{from} -> {to}: {share}");
+            // 90% of the way by the next command, a tenth of a second on.
+            let sent = ride_frames(&mut ride, 0.2, |_| to, |_| 90.0);
+            let (t, w) = sent[0];
+            assert!((0.1..0.12).contains(&t), "{sent:?}");
+            assert!((w - before) / (target - before) >= 0.9, "{sent:?}");
+            // And settled on it.
+            ride_frames(&mut ride, 1.0, |_| to, |_| 90.0);
+            let Some(Control::Erg(end)) = ride.trainer_setting() else {
+                panic!()
+            };
+            assert!((end as f32 - target).abs() <= 2.0, "{end} vs {target}");
+        }
+    }
+
+    #[test]
+    fn quick_shifts_go_at_once_and_end_on_the_last_gear() {
+        let p = phys();
+        for (from, to) in [(7, 10), (10, 7)] {
+            let mut ride = settled_on_the_gears(from);
+            let up = to > from;
+            // Three presses 50 ms apart.
+            let gear = |t: f64| {
+                let presses = [0.0, 0.05, 0.1].iter().filter(|&&p| t >= p - 1e-9).count();
+                if up {
+                    from + presses
+                } else {
+                    from - presses
+                }
+            };
+            let sent = ride_frames(&mut ride, 2.0, gear, |_| 90.0);
+            // The first press goes out at once...
+            assert!(sent[0].0 < 1e-9, "{sent:?}");
+            // ...and the rest no more often than the trainer can take them.
+            for w in sent.windows(2) {
+                assert!(w[1].0 - w[0].0 >= gears::SHIFT_SEND_GAP - 0.001, "{sent:?}");
+            }
+            assert!(sent.len() <= 6, "{sent:?}");
+            // Each command moves on towards the last gear, and ends on it.
+            for w in sent.windows(2) {
+                assert_eq!(w[1].1 > w[0].1, up, "{sent:?}");
+            }
+            let target = gears::target_power(90.0, to, 2.0, &p);
+            let before = gears::target_power(90.0, from, 2.0, &p);
+            let (t90, _) = sent
+                .iter()
+                .find(|(_, w)| (w - before) / (target - before) >= 0.9)
+                .unwrap();
+            assert!(*t90 < 0.3, "{sent:?}");
+            let end = sent.last().unwrap().1;
+            assert!((end - target).abs() <= 2.0, "{end} vs {target}: {sent:?}");
+        }
+    }
+
+    #[test]
+    fn a_change_of_gradient_still_eases_gently() {
+        let mut ride = settled_on_the_gears(7);
+        let before = ride.gear_watts.unwrap();
+        let flat = gears::target_power(90.0, 7, 2.0, &phys());
+        // Over a crest onto 6%: much harder, but no shift.
+        ride.manual_grade = 6.0;
+        let steep = gears::target_power(90.0, 7, 6.0, &phys());
+        assert!(steep > flat + 100.0);
+        let sent = ride_frames(&mut ride, 6.0, |_| 7, |_| 90.0);
+        // Commands twice a second, never more than 200 W apart...
+        let mut last = (f64::NEG_INFINITY, before);
+        for &(t, w) in &sent {
+            assert!(t - last.0 >= 0.5 - 1e-6, "{sent:?}");
+            assert!(w > last.1 && w - last.1 <= 200.0 + 1.0, "{sent:?}");
+            last = (t, w);
+        }
+        // ...a third of the way at most after the first half second...
+        let early = sent.iter().take_while(|(t, _)| *t < 0.5).last().unwrap().1;
+        assert!((early - before) / (steep - before) < 0.4, "{sent:?}");
+        // ...and there in a few seconds.
+        assert!((last.1 - steep).abs() < 4.0, "{sent:?}");
+    }
+
+    /// How long one shift took: from the press to the first command, to a
+    /// command 90% of the way to the new power, and to 90% at the pedals on
+    /// a trainer that smooths ERG changes like the app's simulated one;
+    /// and how many commands went out in the first second.
+    struct ShiftTime {
+        first: f64,
+        ninety: f64,
+        felt: f64,
+        commands: usize,
+    }
+
+    /// One shift measured at 60 frames a second on a steady 2% at 90 rpm,
+    /// pressed at `presses` seconds after a moment `phase` seconds into
+    /// steady riding.
+    fn time_a_shift(from: usize, to: usize, presses: &[f64], phase: f64) -> ShiftTime {
+        let r = &route::builtin()[1];
+        let mut ride = Ride::new(Mode::Slope, None, None);
+        ride.manual_grade = 2.0;
+        ride.start();
+        let dt = 1.0 / 60.0;
+        let mut power = 150.0f32;
+        let tick = |ride: &mut Ride, power: &mut f32, rpm: f32| {
+            let live = Live {
+                power: *power,
+                cadence: Some(rpm),
+                hr: None,
+                speed_kmh: None,
+            };
+            match ride.update(dt, live, r, phys(), 250.0, 1.0, true) {
+                Some(Control::Erg(w)) => {
+                    *power = w as f32;
+                    Some(w as f32)
+                }
+                _ => None,
+            }
+        };
+        ride.gear = Some(from);
+        let mut t = 0.0;
+        while t < 20.0 + phase {
+            // Up to the press the cadence wanders a little, so the gears'
+            // power changes and is sent as you pedal, as on the road.
+            let rpm = 90.0 + 1.5 * (t * std::f64::consts::TAU / 1.3).sin() as f32;
+            tick(&mut ride, &mut power, rpm);
+            t += dt;
+        }
+        let old = gears::target_power(90.0, from, 2.0, &phys());
+        let new = gears::target_power(90.0, to, 2.0, &phys());
+        let share = |w: f32| (w - old) / (new - old);
+        let (mut first, mut ninety, mut felt, mut commands) = (None, None, None, 0);
+        // What the trainer holds, following the last command it was sent
+        // as the simulated trainer does (a time constant of 0.67 s).
+        let (mut command, mut pedals) = (old, old);
+        let mut gear = from;
+        let mut t = 0.0;
+        while t < 6.0 {
+            for &p in presses {
+                if t >= p - 1e-9 && t < p + dt - 1e-9 {
+                    gear = gears::shift(gear, to > from);
+                }
+            }
+            ride.gear = Some(gear);
+            // Counted from the frame the press arrives on: that frame's
+            // command goes out at its end, one frame later.
+            let sent_at = t + dt;
+            if let Some(w) = tick(&mut ride, &mut power, 90.0) {
+                command = w;
+                if (w - old).abs() >= 1.0 {
+                    first.get_or_insert(sent_at);
+                }
+                if share(w) >= 0.9 {
+                    ninety.get_or_insert(sent_at);
+                }
+                if t < 1.0 {
+                    commands += 1;
+                }
+            }
+            pedals += (command - pedals) * (1.0 - (-1.5 * dt as f32).exp());
+            if share(pedals) >= 0.9 {
+                felt.get_or_insert(sent_at);
+            }
+            t += dt;
+        }
+        assert_eq!(gear, to);
+        ShiftTime {
+            first: first.unwrap(),
+            ninety: ninety.unwrap(),
+            felt: felt.unwrap(),
+            commands,
+        }
+    }
+
+    /// How long a shift takes to reach the trainer and to arrive, over the
+    /// moments a press can fall at. Run by hand:
+    /// `cargo test --release shift_timing -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn shift_timing() {
+        let cases: [(&str, usize, usize, &[f64]); 4] = [
+            ("one gear up", 9, 10, &[0.0]),
+            ("one gear down", 10, 9, &[0.0]),
+            ("three up, 80 ms apart", 7, 10, &[0.0, 0.08, 0.16]),
+            ("three down, 80 ms apart", 10, 7, &[0.0, 0.08, 0.16]),
+        ];
+        println!("milliseconds from the press, average (worst) of 50 moments:");
+        println!(
+            "{:24} {:>12} {:>14} {:>14} {:>12}",
+            "", "1st command", "90% command", "90% at pedals", "commands/s"
+        );
+        for (name, from, to, presses) in cases {
+            let runs: Vec<_> = (0..50)
+                .map(|i| time_a_shift(from, to, presses, i as f64 * 0.01))
+                .collect();
+            let stat = |f: &dyn Fn(&ShiftTime) -> f64| {
+                let v: Vec<f64> = runs.iter().map(f).collect();
+                let mean = v.iter().sum::<f64>() / v.len() as f64;
+                let max = v.iter().cloned().fold(0.0, f64::max);
+                format!("{:.0} ({:.0})", mean * 1000.0, max * 1000.0)
+            };
+            let most = runs.iter().map(|r| r.commands).max().unwrap();
+            println!(
+                "{name:24} {:>12} {:>14} {:>14} {most:>12}",
+                stat(&|r| r.first),
+                stat(&|r| r.ninety),
+                stat(&|r| r.felt),
+            );
+        }
     }
 }

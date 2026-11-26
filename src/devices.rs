@@ -207,14 +207,20 @@ enum ControlKind {
 /// one is still being processed, and occasionally needs unlocking again.
 const WAHOO_GAP: Duration = Duration::from_millis(250);
 
+/// Write a Wahoo command, retrying (and unlocking again) if it fails,
+/// unless `newer` says a newer command is waiting to take its place.
 async fn wahoo_write(
     p: &Peripheral,
     ch: &Characteristic,
     data: &[u8],
     last_write: &mut Instant,
+    newer: &(dyn Fn() -> bool + Sync),
 ) -> btleplug::Result<()> {
     let mut result = Ok(());
     for attempt in 0..3 {
+        if attempt > 0 && newer() {
+            break;
+        }
         let since = last_write.elapsed();
         if since < WAHOO_GAP {
             tokio::time::sleep(WAHOO_GAP - since).await;
@@ -238,6 +244,16 @@ struct Controller {
     id: String,
     peripheral: Peripheral,
     kind: ControlKind,
+}
+
+impl Controller {
+    /// How long until the trainer can take the next command.
+    fn ready_in(&self) -> Duration {
+        match &self.kind {
+            ControlKind::Wahoo { last_write, .. } => WAHOO_GAP.saturating_sub(last_write.elapsed()),
+            ControlKind::Ftms(_) => Duration::ZERO,
+        }
+    }
 }
 
 enum Internal {
@@ -930,6 +946,13 @@ impl State {
                     // While a command is held back, poll for the end of calibration.
                     _ = tokio::time::sleep(Duration::from_millis(500)), if held => {}
                 }
+                // Wait until the trainer can take a command before reading
+                // the target, so it gets the latest (a quick run of shifts
+                // ends on the last one), not one that was waiting.
+                let wait = ctrl.ready_in();
+                if !wait.is_zero() {
+                    tokio::time::sleep(wait).await;
+                }
                 if gen_cell.load(Ordering::SeqCst) != generation {
                     break;
                 }
@@ -940,14 +963,24 @@ impl State {
                 }
                 held = false;
                 if let Some(c) = latest {
-                    write_control(&mut ctrl, c, mass, &ui).await;
+                    let newer = || rx.has_changed().unwrap_or(false);
+                    write_control(&mut ctrl, c, mass, &ui, &newer).await;
                 }
             }
         });
     }
 }
 
-async fn write_control(ctrl: &mut Controller, c: Control, mass: f32, ui: &Ui) {
+/// Send `c` to the trainer. The writer only ever sends the latest target
+/// (a watch channel holds just one), so commands never queue up; `newer`
+/// says a newer one has arrived since, so a failing write is not retried.
+async fn write_control(
+    ctrl: &mut Controller,
+    c: Control,
+    mass: f32,
+    ui: &Ui,
+    newer: &(dyn Fn() -> bool + Sync),
+) {
     let p = ctrl.peripheral.clone();
     let (ch, data) = match (&mut ctrl.kind, c) {
         (ControlKind::Ftms(ch), Control::Erg(w)) => {
@@ -977,7 +1010,9 @@ async fn write_control(ctrl: &mut Controller, c: Control, mass: f32, ui: &Ui) {
         }
         let write = async {
             match &mut ctrl.kind {
-                ControlKind::Wahoo { last_write, .. } => wahoo_write(&p, &ch, &d, last_write).await,
+                ControlKind::Wahoo { last_write, .. } => {
+                    wahoo_write(&p, &ch, &d, last_write, newer).await
+                }
                 ControlKind::Ftms(_) => p.write(&ch, &d, WriteType::WithResponse).await,
             }
         };
@@ -1340,12 +1375,14 @@ async fn setup(
         // Give the trainer a moment after (re)connecting before commanding it.
         tokio::time::sleep(Duration::from_millis(400)).await;
         let mut last_write = Instant::now();
-        wahoo_write(&p, &ch, &wahoo::unlock(), &mut last_write).await?;
+        let never = || false;
+        wahoo_write(&p, &ch, &wahoo::unlock(), &mut last_write, &never).await?;
         wahoo_write(
             &p,
             &ch,
             &wahoo::set_sim_mode(mass, 0.004, 0.51),
             &mut last_write,
+            &never,
         )
         .await?;
         Some(Controller {

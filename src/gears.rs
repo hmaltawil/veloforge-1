@@ -121,8 +121,8 @@ pub fn target_power(rpm: f32, gear: usize, grade: f64, phys: &Physics) -> f32 {
     w.clamp(MIN_WATTS, MAX_WATTS)
 }
 
-/// How quickly the trainer's power follows a new target: most of the way in
-/// about a second, so a shift or a change of gradient comes on smoothly.
+/// How quickly the trainer's power follows a change of gradient or
+/// cadence: most of the way in about a second, so a hill comes on smoothly.
 const EASE_SECS: f32 = 0.8;
 /// And never faster than this, in watts per second.
 const MAX_RATE: f32 = 400.0;
@@ -133,6 +133,33 @@ pub fn ease(current: f32, target: f32, dt: f64) -> f32 {
     let k = 1.0 - (-dt / EASE_SECS).exp();
     let step = ((target - current) * k).clamp(-MAX_RATE * dt, MAX_RATE * dt);
     current + step
+}
+
+/// A shift lands at once, as the chain moving to the next sprocket does on
+/// a real bike: the power jumps this share of the way to the new gear's...
+const SHIFT_JUMP: f32 = 0.75;
+/// ...and the rest follows this quickly (90% of the way by the next
+/// command), so the trainer is not hit with the whole step in one command.
+/// The trainer smooths the change a little itself as well.
+const SHIFT_EASE_SECS: f32 = 0.1;
+/// How long after a shift the power follows its target that quickly (and
+/// is sent to the trainer that often), before easing gently again.
+pub const SHIFT_SECS: f64 = 0.5;
+/// While shifting, commands go to the trainer at most this often (the first
+/// of a shift goes at once): a quick run of presses is sent as it happens
+/// without flooding the trainer, and always ends on the latest gear.
+pub const SHIFT_SEND_GAP: f64 = 0.12;
+
+/// The power the moment you shift: most of the way to the new gear's.
+pub fn jump(current: f32, target: f32) -> f32 {
+    current + (target - current) * SHIFT_JUMP
+}
+
+/// Move `current` towards `target` over `dt` seconds just after a shift:
+/// quickly, and without the rate limit of [`ease`].
+pub fn ease_shift(current: f32, target: f32, dt: f64) -> f32 {
+    let k = 1.0 - (-dt as f32 / SHIFT_EASE_SECS).exp();
+    current + (target - current) * k
 }
 
 #[cfg(test)]
@@ -239,7 +266,34 @@ mod tests {
     }
 
     #[test]
-    fn power_follows_a_shift_smoothly() {
+    fn a_shift_lands_almost_at_once() {
+        // Most of the way at once, then the rest quickly.
+        let w = jump(150.0, 300.0);
+        assert!((w - 262.5).abs() < 1e-3, "{w}");
+        let mut t = 0.0;
+        let mut w = w;
+        let mut ninety = None;
+        while t < SHIFT_SECS {
+            w = ease_shift(w, 300.0, 1.0 / 60.0);
+            t += 1.0 / 60.0;
+            if w >= 285.0 {
+                ninety.get_or_insert(t);
+            }
+        }
+        // 90% within a tenth of a second of the jump, all but a watt by
+        // the end of the shift.
+        assert!(ninety.unwrap() < 0.1, "{ninety:?}");
+        assert!((w - 300.0).abs() < 1.0, "{w}");
+        // The same easier: a shift down comes off as fast.
+        let down = ease_shift(jump(300.0, 150.0), 150.0, 0.1);
+        assert!((150.0..170.0).contains(&down), "{down}");
+        // Several presses in a row: each jumps from where the last left off.
+        let two = jump(jump(150.0, 200.0), 250.0);
+        assert!(two > 220.0 && two < 250.0, "{two}");
+    }
+
+    #[test]
+    fn power_follows_a_change_of_gradient_smoothly() {
         let mut w = 150.0;
         let mut prev = w;
         let mut t = 0.0;
