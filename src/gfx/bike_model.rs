@@ -187,7 +187,149 @@ pub fn mesh(p: &RiderPose, j: &Joints, far: bool) -> Mesh {
         }
     }
     rear_light(&mut m, &bike, far);
+    cockpit(&mut m, &bike, far);
     m
+}
+
+/// A box `half` in size about `c` (in the bike's terms), turned `tilt`
+/// radians nose up about the bike's sideways axis, faces flat-shaded.
+fn tilted_box(m: &mut Mesh, bike: &Frame, c: V3, half: V3, tilt: f32, col: V3) {
+    let (s, k) = tilt.sin_cos();
+    let at = |x: f32, y: f32, z: f32| {
+        let (x, y) = (x * half[0], y * half[1]);
+        bike.at(
+            c[0] + x * k - y * s,
+            c[1] + x * s + y * k,
+            c[2] + z * half[2],
+        )
+    };
+    let corner = |i: usize| {
+        at(
+            if i & 1 == 0 { -1.0 } else { 1.0 },
+            if i & 2 == 0 { -1.0 } else { 1.0 },
+            if i & 4 == 0 { -1.0 } else { 1.0 },
+        )
+    };
+    // Each face's corners, wound to face out.
+    for f in [
+        [0, 2, 3, 1],
+        [4, 5, 7, 6],
+        [0, 1, 5, 4],
+        [2, 6, 7, 3],
+        [0, 4, 6, 2],
+        [1, 3, 7, 5],
+    ] {
+        m.quad(corner(f[0]), corner(f[1]), corner(f[2]), corner(f[3]), col);
+    }
+}
+
+/// Out in front of the bar: a mount holding a bike computer on top,
+/// tilted up towards the rider, and a front light under it whose lens
+/// glows white (`MAT_LAMP`), brighter after dark.
+fn cockpit(m: &mut Mesh, bike: &Frame, far: bool) {
+    let black = [0.03, 0.03, 0.032];
+    let sides = if far { 6 } else { 14 };
+    // The mount: an arm forward from the middle of the bar.
+    m.mat = MAT_MATT;
+    m.tube(
+        bike.at(0.462, 0.848, 0.0),
+        bike.at(0.535, 0.846, 0.0),
+        0.009,
+        0.008,
+        sides.min(8),
+        black,
+    );
+    // The computer: a slim slab, its screen on top.
+    let tilt = 0.14;
+    let c = [0.522, 0.866, 0.0];
+    m.mat = MAT_GLOSS;
+    tilted_box(m, bike, c, [0.042, 0.009, 0.025], tilt, black);
+    // The screen: a dark glass panel with lighter data fields on it.
+    let (s, k) = tilt.sin_cos();
+    let on_top = |x: f32, z: f32| {
+        let y = 0.0092;
+        bike.at(c[0] + x * k - y * s, c[1] + x * s + y * k, z)
+    };
+    let up = bike.dir(-s, k, 0.0);
+    let panel = |m: &mut Mesh, x0: f32, x1: f32, z0: f32, z1: f32, col: V3| {
+        let p = [
+            on_top(x0, z0),
+            on_top(x0, z1),
+            on_top(x1, z1),
+            on_top(x1, z0),
+        ];
+        for j in [0, 1, 2, 0, 2, 3] {
+            m.push(p[j], up, col);
+        }
+    };
+    panel(m, -0.034, 0.03, -0.019, 0.019, [0.06, 0.075, 0.085]);
+    if !far {
+        // Fields of figures, as the screen shows them.
+        let fig = [0.32, 0.34, 0.35];
+        for (x0, x1, z0, z1) in [
+            (0.012, 0.024, -0.015, -0.002),
+            (0.012, 0.024, 0.003, 0.015),
+            (-0.006, 0.006, -0.015, 0.015),
+            (-0.026, -0.014, -0.015, -0.002),
+            (-0.026, -0.014, 0.003, 0.015),
+        ] {
+            panel(m, x0, x1, z0, z1, fig);
+        }
+    }
+    // Its holder under it, down to the arm.
+    m.mat = MAT_MATT;
+    m.tube(
+        bike.at(0.52, 0.852, 0.0),
+        bike.at(0.52, 0.86, 0.0),
+        0.008,
+        0.008,
+        sides.min(8),
+        black,
+    );
+
+    // The front light: a barrel hanging under the arm, its lens forward.
+    let (back, front, y, r) = (0.47, 0.565, 0.818, 0.0135);
+    m.tube(
+        bike.at(0.53, 0.84, 0.0),
+        bike.at(0.53, y + r * 0.6, 0.0),
+        0.006,
+        0.006,
+        sides.min(8),
+        black,
+    );
+    m.mat = MAT_GLOSS;
+    m.tube(
+        bike.at(back, y, 0.0),
+        bike.at(front, y, 0.0),
+        r * 0.92,
+        r,
+        sides,
+        black,
+    );
+    // A grey band near the front, as the lens housing.
+    m.tube(
+        bike.at(front - 0.012, y, 0.0),
+        bike.at(front, y, 0.0),
+        r * 1.04,
+        r * 1.04,
+        sides,
+        [0.28, 0.28, 0.3],
+    );
+    m.disc(
+        bike.at(back, y, 0.0),
+        r * 0.92,
+        bike.dir(-1.0, 0.0, 0.0),
+        sides,
+        black,
+    );
+    m.mat = MAT_LAMP;
+    m.disc(
+        bike.at(front + 0.0005, y, 0.0),
+        r * 0.95,
+        bike.dir(1.0, 0.0, 0.0),
+        sides,
+        [0.95, 0.95, 0.9],
+    );
 }
 
 /// Where the rear light sits: the back of the seatpost, a hand's width
