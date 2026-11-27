@@ -5,6 +5,11 @@ D = bpy.data
 for name in ["Camera","Light","Empty.001","Plane","Circle.007","Cylinder.022"] + [o.name for o in D.objects if o.name.startswith("alights")]:
     ob = D.objects.get(name)
     if ob: D.objects.remove(ob, do_unlink=True)
+# 1b. No brake or gear cables (bevelled curves): out of the levers, along
+# the frame and to the rear derailleur.
+for name in ["Cube.010","Cube.019","Cube.020","Cube.021"]:
+    ob = D.objects.get(name)
+    if ob: D.objects.remove(ob, do_unlink=True)
 # 2. Lighter shapes, then every part fixed in its final shape.
 for o in D.objects:
     subs=[m for m in o.modifiers if m.type=='SUBSURF']
@@ -80,7 +85,11 @@ for name, ratio in (("Cylinder.038",0.3),("Cylinder.037",0.25),("Cylinder.084",0
         bpy.ops.object.convert(target='MESH')
 K=float(sys.argv[sys.argv.index("--")+2])
 BB0=mathutils.Vector((0.0,-0.19,-0.54))
-drop=(0.985-BB0.z) - 0.645/K          # how far the saddle top must come down
+# The saddle's top 0.657 above the bottom bracket, where the rider's sit
+# bones rest on its wide back (the body's underside, measured in its seated
+# pose).
+SEAT_HEIGHT=0.657
+drop=(0.985-BB0.z) - SEAT_HEIGHT/K    # how far the saddle top must come down
 seat_dir=mathutils.Vector((0.0,-0.43,1.525)).normalized()
 for name in ("Cube.003","Cube.004"):  # seatpost and saddle
     ob=D.objects.get(name)
@@ -146,7 +155,7 @@ if FAR<1.0:
         bpy.ops.object.select_all(action='DESELECT'); ob.select_set(True); bpy.context.view_layer.objects.active=ob
         bpy.ops.object.convert(target='MESH')
 # 7. Fit to VeloForge: the bottom bracket at (-0.02, 0.28), the saddle's top
-# where the rider sits (0.645 above it), x forward, y up, z right.
+# where the rider sits (SEAT_HEIGHT above it), x forward, y up, z right.
 saddle=D.objects["frame"]  # saddle measured from its original part, kept below
 BB=mathutils.Vector((0.0,-0.19,-0.54))
 SADDLE_TOP_Z=0.985   # Cube.004: centre 0.93, half height 0.055
