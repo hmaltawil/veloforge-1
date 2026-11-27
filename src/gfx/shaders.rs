@@ -706,8 +706,12 @@ vec3 setts(float u, float v, float fw, out vec2 slope) {
     // mottled stone by stone and row by row.
     vec3 avg = vec3(0.125, 0.1, 0.072) * (0.82 + 0.36 * vnoise(vec2(u * 5.0, v * 4.5)))
         * (0.9 + 0.2 * vnoise(vec2(u * 0.6, v * 9.0)));
-    float show = 1.0 - smoothstep(0.02, 0.075, fw);
+    // Further off the stones blur rather than vanish: their joints soften
+    // and their colours even out as a pixel spans more of them, until
+    // (far beyond a stone a pixel) only their mottled average is left.
+    float show = 1.0 - smoothstep(0.18, 0.4, fw);
     if (show <= 0.0) return avg;
+    float contrast = 1.0 - smoothstep(0.03, 0.2, fw);
     // Kept small, so the pattern stays exact far along a long route.
     float block = floor(v / 110.0);
     float vv = v - block * 110.0;
@@ -735,14 +739,15 @@ vec3 setts(float u, float v, float fw, out vec2 slope) {
         : vec3(0.117, 0.094, 0.074);
     stone *= 0.82 + 0.32 * hash12(id + 9.0);
     stone *= 0.93 + 0.14 * (vnoise(vec2(u, v) * 28.0) - 0.5);
+    stone = mix(vec3(0.15, 0.118, 0.085), stone, contrast);
     vec3 joint = vec3(0.012, 0.011, 0.01);
     // Rounded down into the joint at the stone's edge.
     float bevel = clamp(-d / 0.016, 0.0, 1.0);
     vec2 dir = (q.x > 0.0 || q.y > 0.0) ? normalize(max(q, 0.0) + 1e-6) * sign(l)
         : (q.x > q.y ? vec2(sign(l.x), 0.0) : vec2(0.0, sign(l.y)));
-    slope = d < 0.0 ? dir * (1.0 - bevel) * 1.3 * show : vec2(0.0);
+    slope = d < 0.0 ? dir * (1.0 - bevel) * 1.3 * contrast : vec2(0.0);
     // Joints a pixel or less wide still darken it by their share.
-    float aa = max(fw, 0.002);
+    float aa = max(fw * 1.3, 0.002);
     vec3 c = mix(stone, joint, smoothstep(-aa, aa, d));
     return mix(avg, c, show);
 }
@@ -757,8 +762,12 @@ vec3 gravel_road(float u, float v, float fw, float a, out vec2 slope) {
     vec3 col = vec3(0.094, 0.086, 0.074) * (0.9 + 0.3 * (vnoise(w * 1.4) - 0.5));
     vec3 avg = vec3(0.14, 0.13, 0.115) * (0.88 + 0.24 * (vnoise(w * 6.0) - 0.5) + 0.12 * (vnoise(w * 0.8) - 0.5));
     avg *= 1.0 - 0.06 * track;
-    float show = 1.0 - smoothstep(0.008, 0.03, fw);
+    // Further off the pebbles blur rather than vanish: soft-edged and
+    // evening out in colour as a pixel spans more of them.
+    float show = 1.0 - smoothstep(0.07, 0.16, fw);
     if (show <= 0.0) return avg;
+    float contrast = 1.0 - smoothstep(0.012, 0.08, fw);
+    col = mix(avg, col, contrast);
     float density = 0.97 - 0.32 * track + 0.1 * (vnoise(w * 0.8) - 0.5);
     // Three layers of pebbles, each turned and shifted so no grid lines up.
     for (int i = 0; i < 3; i++) {
@@ -771,7 +780,10 @@ vec3 gravel_road(float u, float v, float fw, float a, out vec2 slope) {
         vec2 o = (cell + 0.5) * sz + (vec2(hash12(cell + 3.0), hash12(cell + 4.0)) - 0.5) * (sz - 2.0 * rr);
         vec2 dd = (p - o) / rr * vec2(1.0, 1.25);
         float d2 = dot(dd, dd);
-        if (d2 >= 1.0) continue;
+        // Soft edges as wide as a pixel (or wider, further off).
+        float e = clamp(fw / rr, 0.06, 1.0);
+        if (d2 >= (1.0 + e) * (1.0 + e)) continue;
+        float cover = 1.0 - smoothstep(1.0 - e, 1.0 + e, sqrt(d2));
         float k = hash12(cell + 5.0);
         vec3 pc = k < 0.32 ? vec3(0.24, 0.22, 0.2)
             : k < 0.56 ? vec3(0.137, 0.13, 0.12)
@@ -780,10 +792,11 @@ vec3 gravel_road(float u, float v, float fw, float a, out vec2 slope) {
             : k < 0.88 ? vec3(0.29, 0.077, 0.035)
             : k < 0.94 ? vec3(0.107, 0.137, 0.16)
             : vec3(0.18, 0.16, 0.117);
-        col = pc * (0.85 + 0.3 * hash12(cell + 6.0));
-        slope = dd * 0.32 / (sqrt(1.0 - d2) + 0.2);
+        pc *= 0.85 + 0.3 * hash12(cell + 6.0);
+        col = mix(col, mix(avg, pc, contrast), cover);
+        slope = mix(slope, dd * 0.32 / (sqrt(max(1.0 - d2, 0.0)) + 0.2), cover);
     }
-    slope *= show;
+    slope *= contrast;
     return mix(avg, col, show);
 }
 void main() {
