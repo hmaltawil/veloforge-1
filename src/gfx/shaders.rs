@@ -696,38 +696,75 @@ void surface_at(float v, out float wg, out float wc) {
     }
 }
 // Old stone setts in staggered rows 11 cm deep, each row its own stone
-// length (17 to 24 cm across the road), rounded and worn at the edges,
-// in sandstone, buff and grey, with dark joints. `fw`: metres a pixel
-// spans, past which the stones fade to their average. `slope`: which way
-// and how much the surface leans there (across, along), for the light.
-vec3 setts(float u, float v, float fw, out vec2 slope) {
-    slope = vec2(0.0);
-    // Far off, where a pixel spans several stones: their average,
-    // mottled stone by stone and row by row.
-    vec3 avg = vec3(0.125, 0.1, 0.072) * (0.82 + 0.36 * vnoise(vec2(u * 5.0, v * 4.5)))
-        * (0.9 + 0.2 * vnoise(vec2(u * 0.6, v * 9.0)));
-    // Further off the stones blur rather than vanish: their joints soften
-    // and their colours even out as a pixel spans more of them, until
-    // (far beyond a stone a pixel) only their mottled average is left.
-    float show = 1.0 - smoothstep(0.18, 0.4, fw);
-    if (show <= 0.0) return avg;
-    float contrast = 1.0 - smoothstep(0.03, 0.2, fw);
+// length (17 to 24 cm across the road), in sandstone, buff and grey.
+// Where `p` (across, along the road, in metres) falls among them: the
+// distance to the stone's edge (negative inside), the stone's id, and
+// where in the stone it is and the stone's half size.
+float sett_at(vec2 p, out vec2 id, out vec2 l, out vec2 hs) {
     // Kept small, so the pattern stays exact far along a long route.
-    float block = floor(v / 110.0);
-    float vv = v - block * 110.0;
+    float block = floor(p.y / 110.0);
+    float vv = p.y - block * 110.0;
     float row = floor(vv / 0.11);
     float rid = row + 1000.0 * mod(block, 37.0);
     float len = 0.17 + 0.07 * hash12(vec2(rid, 3.1));
-    float uu = u + hash12(vec2(rid, 9.2)) * 0.37;
+    float uu = p.x + hash12(vec2(rid, 9.2)) * 0.37;
     float cell = floor(uu / len);
-    vec2 id = vec2(cell, rid);
-    vec2 l = vec2((fract(uu / len) - 0.5) * len, (fract(vv / 0.11) - 0.5) * 0.11);
+    id = vec2(cell, rid);
+    l = vec2((fract(uu / len) - 0.5) * len, (fract(vv / 0.11) - 0.5) * 0.11);
     l -= (vec2(hash12(id), hash12(id + 7.0)) - 0.5) * vec2(0.012, 0.008);
-    vec2 hs = vec2(len * 0.5 - 0.01 - 0.008 * hash12(id + 3.0), 0.046 - 0.006 * hash12(id + 5.0));
+    hs = vec2(len * 0.5 - 0.01 - 0.008 * hash12(id + 3.0), 0.046 - 0.006 * hash12(id + 5.0));
     const float r = 0.022;
     vec2 q = abs(l) - (hs - r);
     float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
-    d += 0.008 * (vnoise(vec2(u, v) * 33.0) - 0.5);
+    return d + 0.008 * (vnoise(p * 33.0) - 0.5);
+}
+// How deep the joints are below the stones' crowns, in metres.
+const float SETT_DEPTH = 0.015;
+// How high the road stands at `p`: 0 deep in a joint, 1 on a stone's
+// crown. Each stone is rounded down at its edges and slightly domed, and
+// some sit a little higher or lower than their neighbours.
+float sett_height(vec2 p) {
+    vec2 id, l, hs;
+    float d = sett_at(p, id, l, hs);
+    float edge = smoothstep(0.0, 0.02, -d);
+    vec2 e = l / hs;
+    float dome = 1.0 - 0.5 * dot(e, e);
+    return edge * (0.8 + 0.12 * dome + 0.08 * hash12(id + 11.0));
+}
+// The setts' colour at (u, v), with depth. `fw`: metres a pixel spans.
+// `view`: the way to the eye in the road's terms (across, along, up).
+// Close by, the eye's ray is followed down into the stones (parallax), so
+// a stone's top hides part of the joint behind it as you look along the
+// road. The joints fall into shadow towards their bottom. `slope`: which
+// way and how much the surface leans there (across, along), for the light.
+// Further off the stones blur rather than vanish: their joints soften and
+// their colours and relief even out as a pixel spans more of them, until
+// (far beyond a stone a pixel) only their mottled average is left.
+vec3 setts(float u, float v, float fw, vec3 view, out vec2 slope) {
+    slope = vec2(0.0);
+    vec3 avg = vec3(0.125, 0.1, 0.072) * (0.82 + 0.36 * vnoise(vec2(u * 5.0, v * 4.5)))
+        * (0.9 + 0.2 * vnoise(vec2(u * 0.6, v * 9.0)));
+    float show = 1.0 - smoothstep(0.18, 0.4, fw);
+    if (show <= 0.0) return avg;
+    float contrast = 1.0 - smoothstep(0.03, 0.2, fw);
+    vec2 p = vec2(u, v);
+    // Parallax, near the eye: step the ray down until it meets a stone.
+    float near = 1.0 - smoothstep(0.012, 0.035, fw);
+    if (near > 0.0) {
+        vec2 shift = -view.xy / max(view.z, 0.25) * SETT_DEPTH;
+        float depth = 0.0;
+        vec2 pp = p;
+        float h = sett_height(pp);
+        for (int i = 0; i < 8; i++) {
+            if (1.0 - h <= depth) break;
+            depth += 0.125;
+            pp = p + shift * depth;
+            h = sett_height(pp);
+        }
+        p = mix(p, pp, near);
+    }
+    vec2 id, l, hs;
+    float d = sett_at(p, id, l, hs);
     float k = hash12(id + 8.0);
     vec3 stone = k < 0.125 ? vec3(0.196, 0.142, 0.086)
         : k < 0.25 ? vec3(0.16, 0.107, 0.07)
@@ -738,14 +775,19 @@ vec3 setts(float u, float v, float fw, out vec2 slope) {
         : k < 0.875 ? vec3(0.171, 0.16, 0.131)
         : vec3(0.117, 0.094, 0.074);
     stone *= 0.82 + 0.32 * hash12(id + 9.0);
-    stone *= 0.93 + 0.14 * (vnoise(vec2(u, v) * 28.0) - 0.5);
+    stone *= 0.93 + 0.14 * (vnoise(p * 28.0) - 0.5);
     stone = mix(vec3(0.15, 0.118, 0.085), stone, contrast);
     vec3 joint = vec3(0.012, 0.011, 0.01);
-    // Rounded down into the joint at the stone's edge.
-    float bevel = clamp(-d / 0.016, 0.0, 1.0);
-    vec2 dir = (q.x > 0.0 || q.y > 0.0) ? normalize(max(q, 0.0) + 1e-6) * sign(l)
-        : (q.x > q.y ? vec2(sign(l.x), 0.0) : vec2(0.0, sign(l.y)));
-    slope = d < 0.0 ? dir * (1.0 - bevel) * 1.3 * contrast : vec2(0.0);
+    // The relief: the surface's lean from its height either side, and the
+    // shade that gathers down the stones' sides into the joints.
+    float h0 = sett_height(p);
+    if (contrast > 0.0) {
+        float e = max(fw, 0.004);
+        float hx = sett_height(p + vec2(e, 0.0));
+        float hy = sett_height(p + vec2(0.0, e));
+        slope = vec2(hx - h0, hy - h0) / e * SETT_DEPTH * contrast;
+    }
+    stone *= mix(1.0, 0.75 + 0.25 * h0, contrast);
     // Joints a pixel or less wide still darken it by their share.
     float aa = max(fw * 1.3, 0.002);
     vec3 c = mix(stone, joint, smoothstep(-aa, aa, d));
@@ -833,11 +875,24 @@ void main() {
     surface_at(v, wg, wc);
     float offroad = clamp(wg + wc, 0.0, 1.0);
     vec2 slope = vec2(0.0);
+    // The road's directions across and along it, from how u and v change
+    // over the screen: to follow the eye into the stones and lean their
+    // faces to the light.
+    vec3 tu = vec3(1.0, 0.0, 0.0), tv = vec3(0.0, 0.0, 1.0);
     if (offroad > 0.0) {
         float fw = max(fwidth(u), fwidth(v));
+        vec3 dpx = dFdx(v_pos), dpy = dFdy(v_pos);
+        vec2 dux = dFdx(v_uv), duy = dFdy(v_uv);
+        float det = dux.x * duy.y - dux.y * duy.x;
+        if (abs(det) > 1e-12) {
+            tu = normalize((dpx * duy.y - dpy * dux.y) / det);
+            tv = normalize((dpy * dux.x - dpx * duy.x) / det);
+        }
         if (wc > 0.0) {
+            vec3 e = normalize(u_cam - v_pos);
+            vec3 view = vec3(dot(e, tu), dot(e, tv), e.y);
             vec2 sl;
-            col = mix(col, setts(u, v, fw, sl), wc);
+            col = mix(col, setts(u, v, fw, view, sl), wc);
             slope += sl * wc;
         }
         if (wg > 0.0) {
@@ -883,17 +938,8 @@ void main() {
     vec3 n = normalize(vec3((g - 0.5) * 0.1 * tarmac, 1.0, (fine - 0.5) * 0.06 * tarmac));
     vec3 sn = up;
     if (offroad > 0.0 && dot(slope, slope) > 0.0) {
-        // The road's directions across and along it, from how u and v
-        // change over the screen, to lean the stones' faces to the light.
-        vec3 dpx = dFdx(v_pos), dpy = dFdy(v_pos);
-        vec2 dux = dFdx(v_uv), duy = dFdy(v_uv);
-        float det = dux.x * duy.y - dux.y * duy.x;
-        if (abs(det) > 1e-12) {
-            vec3 tu = normalize((dpx * duy.y - dpy * dux.y) / det);
-            vec3 tv = normalize((dpy * dux.x - dpx * duy.x) / det);
-            sn = normalize(up - tu * slope.x - tv * slope.y);
-            n = normalize(mix(n, sn, offroad));
-        }
+        sn = normalize(up - tu * slope.x - tv * slope.y);
+        n = normalize(mix(n, sn, offroad));
     }
     float vis = sun_vis(v_pos, up);
     vec3 lit = shade(col, sn, 1.0, vis) + col * lamp_light(v_pos, up);
