@@ -1222,8 +1222,10 @@ pub fn sculpt(j: &Joints) -> Sculpt {
     };
     // Long vents following the shell's curve from the brow to the back,
     // shorter towards the sides.
-    let shell_c = on(-0.012, 0.036, 0.0);
-    let shell_r = [0.143f32, 0.092, 0.104];
+    // About 2 cm proud of the forehead and 3.5 cm of the back of the head,
+    // as a road helmet sits.
+    let shell_c = on(-0.016, 0.038, 0.0);
+    let shell_r = [0.126f32, 0.09, 0.1];
     let vents: Vec<Shape> = [-0.066f32, -0.034, 0.0, 0.034, 0.066]
         .iter()
         .map(|&r| {
@@ -1235,8 +1237,8 @@ pub fn sculpt(j: &Joints) -> Sculpt {
                 inner: [shell_r[0] - 0.006, shell_r[1] - 0.006, shell_r[2] - 0.006],
                 side: r,
                 w: 0.0068 - r.abs() * 0.02,
-                from: -0.075 + short,
-                to: 0.11 - short,
+                from: -0.068 + short,
+                to: 0.096 - short,
             }
         })
         .collect();
@@ -1263,14 +1265,11 @@ pub fn sculpt(j: &Joints) -> Sculpt {
         let hp = hp.clone();
         Box::new(move |p| hp(p))
     };
+    helmet
+        .parts
+        .push(rigid(ell(shell_c, hax, shell_r), 0.03, shared(&hp), HEAD));
     helmet.parts.push(rigid(
-        ell(on(-0.012, 0.036, 0.0), hax, [0.143, 0.092, 0.104]),
-        0.03,
-        shared(&hp),
-        HEAD,
-    ));
-    helmet.parts.push(rigid(
-        ell(on(-0.105, 0.024, 0.0), hax, [0.055, 0.05, 0.078]),
+        ell(on(-0.094, 0.026, 0.0), hax, [0.05, 0.048, 0.074]),
         0.03,
         shared(&hp),
         HEAD,
