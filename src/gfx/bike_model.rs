@@ -38,6 +38,13 @@ pub fn aero() -> bool {
     AERO.load(Ordering::Relaxed) && model().is_some()
 }
 
+/// Tyres with tan sidewalls (gumwall) rather than all black.
+static TAN_WALLS: AtomicBool = AtomicBool::new(false);
+
+pub fn set_tan_walls(on: bool) {
+    TAN_WALLS.store(on, Ordering::Relaxed);
+}
+
 /// The frame's paint, chosen by the rider (linear colour).
 static PAINT: std::sync::RwLock<V3> = std::sync::RwLock::new([0.62, 0.015, 0.02]);
 
@@ -139,6 +146,7 @@ pub fn mesh(p: &RiderPose, j: &Joints, far: bool) -> Mesh {
     let bike = j.bike;
     let r = model.crank;
     let paint = paint();
+    let tan = TAN_WALLS.load(Ordering::Relaxed);
     for piece in &model.pieces {
         // Where the piece sits, and how far it is turned.
         let (pivot, angle) = match piece.name.as_str() {
@@ -175,6 +183,8 @@ pub fn mesh(p: &RiderPose, j: &Joints, far: bool) -> Mesh {
                 (paint, v[9])
             } else if wheel && matte_black(v) {
                 ([0.022, 0.022, 0.024], 0.0)
+            } else if tan && wheel && tan_wall(v) {
+                (TAN_WALL, 0.0)
             } else {
                 ([v[6], v[7], v[8]], v[9])
             };
@@ -441,6 +451,17 @@ fn rear_light(m: &mut Mesh, bike: &Frame, far: bool) {
     for w in loop_pts.windows(2) {
         m.tube(w[0], w[1], 0.0035, 0.0035, sides.min(6), black);
     }
+}
+
+/// The tyres' tan sidewalls (gumwall), in the light's terms.
+const TAN_WALL: V3 = [0.5, 0.34, 0.17];
+
+/// Whether a wheel's vertex is on a tyre's sidewall: the black tyre (not
+/// the rim or hub) from just above the rim's edge (0.330 from the axle)
+/// to where the tread rounds over (0.339), which stays black.
+fn tan_wall(v: &[f32; VERTEX_STRIDE]) -> bool {
+    let out = (v[0] * v[0] + v[1] * v[1]).sqrt();
+    (v[6] - 0.02).abs() < 0.005 && v[9] < 0.5 && out > 0.3285 && out < 0.3385
 }
 
 /// Whether a wheel's vertex is part of what turns matte black: the glossy

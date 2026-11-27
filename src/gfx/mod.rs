@@ -10,6 +10,7 @@
 mod bike_model;
 pub use bike_model::{
     available as aero_bike_available, set_aero as use_aero_bike, set_paint as set_bike_paint,
+    set_tan_walls,
 };
 pub use body::set_kit;
 pub use preview::PreviewLook;

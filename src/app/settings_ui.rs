@@ -2237,6 +2237,22 @@ impl App {
                 changed |= swatches(ui, &mut s.bike_colour, &PAINTS, 22.0);
                 changed |= colour_wheel(ui, &mut s.bike_colour, "bike-wheel");
             });
+            ui.push_id("tyres", |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_sized(
+                        Vec2::new(90.0, 24.0),
+                        egui::Label::new(RichText::new("Tyres").size(13.5)),
+                    );
+                    changed |= segmented(
+                        ui,
+                        &mut s.tan_walls,
+                        &[
+                            (false, "Black", "All-black tyres"),
+                            (true, "Tan wall", "Tan sidewalls, as on classic race tyres"),
+                        ],
+                    );
+                });
+            });
         }
         ui.add_space(4.0);
         ui.separator();

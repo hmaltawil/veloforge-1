@@ -98,6 +98,8 @@ pub struct Settings {
     pub classic_bike: bool,
     /// The aero bike's paint (sRGB).
     pub bike_colour: [u8; 3],
+    /// The aero bike's tyres with tan sidewalls rather than all black.
+    pub tan_walls: bool,
     /// White (true) or black kit: helmet, gloves, socks and shoes.
     pub kit_white: [bool; 4],
     pub cassette: Vec<u8>,
@@ -208,6 +210,7 @@ impl Default for Settings {
             click_restart: true,
             classic_bike: false,
             bike_colour: [206, 32, 39],
+            tan_walls: false,
             kit_white: [true, false, true, true],
             cassette: vec![11, 13, 15, 17, 19, 21, 23, 25, 27, 30, 34],
             tyre: crate::gears::TYRES[0].0.to_string(),
