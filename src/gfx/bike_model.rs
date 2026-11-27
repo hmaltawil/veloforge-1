@@ -6,7 +6,7 @@
 //! crankset with the pedals, and the pedals sit under the feet.
 
 use super::math::*;
-use super::mesh::{Joints, Mesh, RiderPose, VERTEX_STRIDE};
+use super::mesh::{Frame, Joints, Mesh, RiderPose, MAT_GLOSS, MAT_LAMP, MAT_MATT, VERTEX_STRIDE};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
@@ -186,7 +186,119 @@ pub fn mesh(p: &RiderPose, j: &Joints, far: bool) -> Mesh {
             );
         }
     }
+    rear_light(&mut m, &bike, far);
     m
+}
+
+/// Where the rear light sits: the back of the seatpost, a hand's width
+/// above the top tube (in the bike's terms), and the post's lean.
+const LIGHT_POST: [f32; 2] = [-0.168, 0.742];
+const LIGHT_LEAN: [f32; 2] = [-0.184, 0.983];
+
+/// A rear light strapped to the seatpost: a slim body, wider at the top
+/// and rounded at both ends, a ribbed red lens round a black panel with a
+/// bright LED window at its top, on a small clamp with a rubber strap.
+/// The lens and LED glow (`MAT_LAMP`), brighter after dark. `far`: a
+/// coarser one for riders further away.
+fn rear_light(m: &mut Mesh, bike: &Frame, far: bool) {
+    let up = LIGHT_LEAN;
+    // Rearward, square to the post.
+    let back = [-up[1], up[0]];
+    // A point `b` behind the post, `h` up it and `z` to the right, relative
+    // to where the light hangs.
+    let at = |b: f32, h: f32, z: f32| {
+        bike.at(
+            LIGHT_POST[0] + back[0] * b + up[0] * h,
+            LIGHT_POST[1] + back[1] * b + up[1] * h,
+            z,
+        )
+    };
+    let dir =
+        |b: f32, h: f32, z: f32| bike.dir(back[0] * b + up[0] * h, back[1] * b + up[1] * h, z);
+    let black = [0.03, 0.03, 0.032];
+
+    // The body: rings up its height, each a rounded square across.
+    const HEIGHT: f32 = 0.074;
+    const DEPTH: f32 = 0.012; // half, front to back
+    let (rings, round) = if far { (12, 12) } else { (40, 32) };
+    let gap = 0.016; // from the post's back to the body's middle
+    let shape = |t: f32, a: f32| -> (f32, f32, f32) {
+        // Half width: 18 mm at the top, 12 at the bottom.
+        let w = 0.012 + 0.006 * t.powf(0.7);
+        // Rounded at both ends: flat sides, soft caps.
+        let e = (1.0 - (2.0 * t - 1.0).abs().powi(6))
+            .max(0.0)
+            .powf(1.0 / 6.0);
+        let (s, c) = a.sin_cos();
+        let sq = |x: f32| x.signum() * x.abs().sqrt();
+        (DEPTH * e * sq(c), (t - 0.5) * HEIGHT, w * e * sq(s))
+    };
+    let point = |i: usize, k: usize| {
+        let t = i as f32 / rings as f32;
+        let a = k as f32 / round as f32 * std::f32::consts::TAU;
+        shape(t, a)
+    };
+    for i in 0..rings {
+        for k in 0..round {
+            let corners = [(i, k), (i + 1, k), (i + 1, k + 1), (i, k + 1)];
+            let p = corners.map(|(i, k)| point(i, k));
+            // What this patch is: the black front and panel, the LED, or the
+            // ribbed lens.
+            let t = (i as f32 + 0.5) / rings as f32;
+            let a = (k as f32 + 0.5) / round as f32 * std::f32::consts::TAU;
+            let (nb, nz) = (a.cos(), a.sin());
+            let (colour, mat) = if nb < -0.2 {
+                (black, MAT_MATT)
+            } else if nb > 0.55 && nz.abs() < 0.62 && t > 0.1 && t < 0.92 {
+                if t > 0.68 && t < 0.86 && nz.abs() < 0.4 {
+                    ([1.0, 0.07, 0.04], MAT_LAMP)
+                } else {
+                    ([0.02, 0.02, 0.022], MAT_GLOSS)
+                }
+            } else if (t * 26.0) as i32 % 2 == 0 {
+                ([0.34, 0.025, 0.02], MAT_LAMP)
+            } else {
+                ([0.2, 0.015, 0.012], MAT_LAMP)
+            };
+            m.mat = mat;
+            let pos = p.map(|(b, h, z)| at(gap + b, h, z));
+            // Normals across the rounded square, leaning up or down at
+            // the caps.
+            let nrm = corners.map(|(i, k)| {
+                let (b0, h0, z0) = point(i, k);
+                let (b1, _, z1) = point((i + 1).min(rings), k);
+                let (bd, _, zd) = point(i.saturating_sub(1), k);
+                let slope = ((b1 - bd).hypot(z1 - zd)) / (2.0 * HEIGHT / rings as f32);
+                let out = (b0.hypot(z0)).max(1e-6);
+                let h = if h0 > 0.0 { slope } else { -slope };
+                norm(dir(b0 / out, h.clamp(-4.0, 4.0) * 0.5, z0 / out))
+            });
+            for j in [0, 1, 2, 0, 2, 3] {
+                m.push(pos[j], nrm[j], colour);
+            }
+        }
+    }
+
+    // The clamp from the post to the body, and the strap round the post.
+    m.mat = MAT_MATT;
+    let sides = if far { 4 } else { 8 };
+    m.tube(
+        at(0.0, 0.012, 0.0),
+        at(gap - 0.006, 0.012, 0.0),
+        0.007,
+        0.006,
+        sides,
+        black,
+    );
+    let loop_pts: Vec<V3> = (0..=10)
+        .map(|i| {
+            let a = i as f32 / 10.0 * std::f32::consts::TAU;
+            at(-0.022 + 0.026 * a.cos(), 0.012, 0.011 * a.sin())
+        })
+        .collect();
+    for w in loop_pts.windows(2) {
+        m.tube(w[0], w[1], 0.0035, 0.0035, sides.min(6), black);
+    }
 }
 
 /// Whether a wheel's vertex is part of what turns matte black: the glossy

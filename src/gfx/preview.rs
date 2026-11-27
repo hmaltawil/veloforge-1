@@ -82,6 +82,8 @@ void main() {
     col += pow(max(dot(n, h), 0.0), shine) * (gloss ? 0.7 : 0.05) * d;
     // Gloss paint reflects a soft studio sky.
     if (gloss) col += mix(vec3(0.05), vec3(0.45, 0.5, 0.58), hemi) * 0.35 * pow(1.0 - facing, 2.0);
+    // Lamps (the rear light) glow.
+    if (abs(v_mat - 2.0) < 0.5) col = col * 0.4 + v_col * 1.6;
     col = col / (1.0 + 0.12 * col);
     frag = vec4(pow(col, vec3(1.0 / 2.2)), 1.0);
 }
