@@ -1,18 +1,152 @@
-//! Your own music while riding: MP3s copied into the data folder, played
-//! one after another (or shuffled) on the computer's speakers.
+//! Your own music while riding: MP3s from your music folder (played from
+//! there) or added one by one (copied into the data folder), played one
+//! after another (or shuffled) on the computer's speakers.
 
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-/// A song you added.
+/// A song in the list.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Song {
-    /// Its file name in the data folder's `music`.
+    /// Its file: for a song from your music folder, its path inside that
+    /// folder (with `/` between folders); otherwise its name in the data
+    /// folder's `music`.
     pub file: String,
     pub title: String,
     pub artist: String,
     /// Length in seconds, 0 when unknown.
     pub secs: f32,
+    /// From your music folder, played from there rather than copied.
+    #[serde(default)]
+    pub folder: bool,
+}
+
+impl Song {
+    /// Tells this song from every other in the list, even one with the same
+    /// file name from the other place.
+    pub fn key(&self) -> String {
+        format!("{}:{}", if self.folder { 'f' } else { 'c' }, self.file)
+    }
+
+    /// Where its file is: in the copied songs (`copied`) or your music
+    /// folder.
+    pub fn path(&self, copied: &Path, folder: Option<&Path>) -> Option<PathBuf> {
+        if self.folder {
+            folder.map(|f| f.join(&self.file))
+        } else {
+            Some(copied.join(&self.file))
+        }
+    }
+}
+
+/// The MP3s in `dir` and its folders, as paths inside it with `/`
+/// between folders, sorted; None when `dir` can't be read (a drive that
+/// isn't plugged in). Hidden files (and the `._` files macOS leaves on
+/// other drives) are left out, and links to folders are not followed.
+pub fn find_mp3s(dir: &Path) -> Option<Vec<String>> {
+    fn walk(dir: &Path, prefix: &str, depth: u32, out: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            let Ok(kind) = e.file_type() else {
+                continue;
+            };
+            let rel = format!("{prefix}{name}");
+            if kind.is_dir() {
+                if depth < 12 {
+                    walk(&e.path(), &format!("{rel}/"), depth + 1, out);
+                }
+            } else if name.to_ascii_lowercase().ends_with(".mp3") {
+                out.push(rel);
+            }
+        }
+    }
+    std::fs::read_dir(dir).ok()?;
+    let mut out = Vec::new();
+    walk(dir, "", 0, &mut out);
+    out.sort_by_key(|a| a.to_lowercase());
+    Some(out)
+}
+
+/// A song from the MP3 at `path`: its length, and its title and artist
+/// from its tags or its name. None when it isn't an MP3 that plays.
+pub fn read_song(path: &Path, file: String, folder: bool) -> Option<Song> {
+    let secs = duration(path)?;
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let (name_title, name_artist) = names_from_file(&stem);
+    let tags = read_tags(path);
+    Some(Song {
+        file,
+        title: tags.title.unwrap_or(name_title),
+        artist: tags.artist.unwrap_or(name_artist),
+        secs,
+        folder,
+    })
+}
+
+/// Copy the MP3 at `src` (or its `bytes`) into `dir`, under a name not
+/// taken yet, and read it.
+pub fn copy_in(src: &Path, bytes: Option<&[u8]>, dir: &Path) -> Result<Song, String> {
+    let base = src
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "song.mp3".into());
+    let data = match bytes {
+        Some(b) => b.to_vec(),
+        None => std::fs::read(src).map_err(|e| format!("Could not read {base}: {e}"))?,
+    };
+    let _ = std::fs::create_dir_all(dir);
+    let mut name = base.clone();
+    let mut n = 2;
+    while dir.join(&name).exists() {
+        name = format!("{n}-{base}");
+        n += 1;
+    }
+    let dest = dir.join(&name);
+    std::fs::write(&dest, &data).map_err(|e| format!("Could not keep {base}: {e}"))?;
+    let Some(secs) = duration(&dest) else {
+        let _ = std::fs::remove_file(&dest);
+        return Err(format!("{base} is not an MP3 VeloForge can play"));
+    };
+    // Named after the file it came from, not its copy's name.
+    let stem = src
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let (title, artist) = names_from_file(&stem);
+    let tags = read_tags(&dest);
+    Ok(Song {
+        file: name,
+        title: tags.title.unwrap_or(title),
+        artist: tags.artist.unwrap_or(artist),
+        secs,
+        folder: false,
+    })
+}
+
+/// Bring the list up to date with what is in the music folder now
+/// (`found`): its songs that are gone leave the list, the others keep
+/// their places, and `new` ones go at the end. Returns whether it changed.
+pub fn merge_folder(songs: &mut Vec<Song>, found: &[String], new: Vec<Song>) -> bool {
+    let here: std::collections::HashSet<&str> = found.iter().map(|s| s.as_str()).collect();
+    let before = songs.len();
+    songs.retain(|s| !s.folder || here.contains(s.file.as_str()));
+    let mut changed = songs.len() != before;
+    for song in new {
+        if !songs.iter().any(|s| s.key() == song.key()) {
+            songs.push(song);
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// What happens at the end of the list (or of a song).
@@ -272,6 +406,67 @@ mod tests {
             ("track 01".into(), String::new())
         );
         assert_eq!(names_from_file(" - x"), ("- x".into(), String::new()));
+    }
+
+    fn song(file: &str, folder: bool) -> Song {
+        Song {
+            file: file.into(),
+            title: file.into(),
+            artist: String::new(),
+            secs: 60.0,
+            folder,
+        }
+    }
+
+    #[test]
+    fn finding_the_songs_in_a_folder() {
+        let dir = std::env::temp_dir().join(format!("vf-music-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for f in [
+            "b.mp3",
+            "A.MP3",
+            "notes.txt",
+            ".hidden.mp3",
+            "Album/._c.mp3",
+            "Album/c.mp3",
+            "Album/Disc 2/d.mp3",
+        ] {
+            let p = dir.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"x").unwrap();
+        }
+        let found = find_mp3s(&dir).unwrap();
+        assert_eq!(
+            found,
+            vec!["A.MP3", "Album/c.mp3", "Album/Disc 2/d.mp3", "b.mp3"]
+        );
+        // A song's path from the folder finds the file on any system.
+        let s = song("Album/Disc 2/d.mp3", true);
+        assert!(s.path(Path::new("/nowhere"), Some(&dir)).unwrap().exists());
+        assert!(s.path(Path::new("/nowhere"), None).is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+        // A folder that isn't there (a drive not plugged in).
+        assert_eq!(find_mp3s(&dir), None);
+    }
+
+    #[test]
+    fn the_list_follows_the_folder() {
+        // Your order, with a song you added among the folder's.
+        let mut songs = vec![
+            song("c.mp3", true),
+            song("x.mp3", false),
+            song("a.mp3", true),
+        ];
+        // a.mp3 was deleted from the folder, b.mp3 is new.
+        let found = vec!["b.mp3".to_string(), "c.mp3".to_string()];
+        assert!(merge_folder(&mut songs, &found, vec![song("b.mp3", true)]));
+        let files: Vec<_> = songs.iter().map(|s| s.key()).collect();
+        assert_eq!(files, ["f:c.mp3", "c:x.mp3", "f:b.mp3"]);
+        // Nothing new: nothing changes, and no song comes twice.
+        assert!(!merge_folder(&mut songs, &found, vec![song("b.mp3", true)]));
+        assert_eq!(songs.len(), 3);
+        // An added song and a folder song may share a name.
+        assert_ne!(song("x.mp3", true).key(), song("x.mp3", false).key());
     }
 
     #[test]

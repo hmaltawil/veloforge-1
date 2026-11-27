@@ -209,6 +209,8 @@ pub struct App {
     music: crate::music::Player,
     /// Songs' covers from their tags, read the first time each is shown.
     song_art: std::collections::HashMap<String, Option<egui::TextureHandle>>,
+    /// The music's work out of sight, and what its Settings card remembers.
+    music_work: music_ui::MusicWork,
     /// Settings: waiting for a Click button to give to this music action.
     music_learn: Option<crate::music::Action>,
     /// The music was paused because the ride was.
@@ -404,6 +406,7 @@ impl App {
             picture_thumbs: Default::default(),
             music: Default::default(),
             song_art: Default::default(),
+            music_work: Default::default(),
             music_learn: None,
             music_auto_paused: false,
             duck_until: None,

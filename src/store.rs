@@ -117,8 +117,13 @@ pub struct Settings {
     pub bold_figures: bool,
     /// A line about cycling under Home's greeting.
     pub home_quote: bool,
-    /// Your music: the songs you added, in their order.
+    /// Your music: the songs, from your music folder and added one by one,
+    /// in your order.
     pub songs: Vec<crate::music::Song>,
+    /// The folder your music is played from, when you chose one.
+    pub music_folder: Option<PathBuf>,
+    /// Songs in the music folder you hid from the list (their paths in it).
+    pub music_hidden: Vec<String>,
     pub music_volume: f32,
     pub music_shuffle: bool,
     pub music_repeat: crate::music::Repeat,
@@ -214,6 +219,8 @@ impl Default for Settings {
             bold_figures: false,
             home_quote: true,
             songs: Vec::new(),
+            music_folder: None,
+            music_hidden: Vec::new(),
             music_volume: 0.7,
             music_shuffle: false,
             music_repeat: Default::default(),

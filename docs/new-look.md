@@ -6,8 +6,14 @@ A tour of everything in the redesign: what each part does, where to find it, and
 
 Play your own music while you ride, without another app open.
 
-- **Adding songs:** in Settings › Sound & music, add MP3s. VeloForge copies them into its data folder, so they're there next time, and shows each song's name and artist.
-- **Playing:** songs play one after another, or shuffled, on the computer's speakers.
+- **Your music folder:** in Settings › Sound & music, choose the folder your MP3s are in.
+  - VeloForge plays them from there, folders inside it too, without copying them.
+  - It looks through the folder in the background each time it opens, or when you press **Check for new songs**. New songs go at the end of the list, and songs deleted from the folder leave it.
+  - If the folder isn't there (a drive not plugged in), its songs are greyed out until it's back.
+  - **Hide** takes a song out of the list without touching the file. **Show hidden** puts them back.
+- **Adding songs one by one:** **+ Add songs…** (or dropping MP3s onto the window) copies them into VeloForge's data folder, in the background. **Remove** deletes that copy.
+- **The list:** each song shows its name and artist, and whether it's from the folder or added. Drag a song by the dots on its left to change the order.
+- **Playing:** songs play one after another, or shuffled, on the computer's speakers. A play bar on the card plays, pauses and skips. While shuffling, Previous goes back to the song you heard before.
 - **While riding:** a small "Now playing" panel on the ride screen shows the song, with play/pause, next and previous.
 - **From the bike:** the Zwift Click's buttons control the music. By default:
   - **Y** plays and pauses.
