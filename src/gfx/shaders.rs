@@ -672,6 +672,120 @@ float band(float x, float lo, float hi, float h) {
 float dashes(float x) {
     return floor(x) * 0.42 + min(fract(x), 0.42);
 }
+// The road's surface (`surface.rs`): stretches along the course, each
+// (start, end, kind: 0 tarmac, 1 gravel, 2 cobbles) in metres, and the
+// course's length and whether it loops.
+uniform vec4 u_surf[24];
+uniform int u_nsurf;
+uniform vec2 u_course;
+// How much of the road at `v` is gravel and cobbles, blending over a few
+// metres where one stretch meets the next.
+void surface_at(float v, out float wg, out float wc) {
+    wg = 0.0;
+    wc = 0.0;
+    if (u_nsurf <= 1 && u_surf[0].z < 0.5) return;
+    float x = u_course.y > 0.5 ? mod(v, u_course.x) : clamp(v, 0.0, u_course.x);
+    for (int i = 0; i < 24; i++) {
+        if (i >= u_nsurf) break;
+        vec4 s = u_surf[i];
+        if (s.z < 0.5) continue;
+        float lo = i == 0 ? -1e9 : s.x;
+        float hi = i == u_nsurf - 1 ? 1e9 : s.y;
+        float w = smoothstep(lo - 2.5, lo + 2.5, x) * (1.0 - smoothstep(hi - 2.5, hi + 2.5, x));
+        if (s.z < 1.5) wg += w; else wc += w;
+    }
+}
+// Old stone setts in staggered rows 11 cm deep, each row its own stone
+// length (17 to 24 cm across the road), rounded and worn at the edges,
+// in sandstone, buff and grey, with dark joints. `fw`: metres a pixel
+// spans, past which the stones fade to their average. `slope`: which way
+// and how much the surface leans there (across, along), for the light.
+vec3 setts(float u, float v, float fw, out vec2 slope) {
+    slope = vec2(0.0);
+    // Far off, where a pixel spans several stones: their average,
+    // mottled stone by stone and row by row.
+    vec3 avg = vec3(0.125, 0.1, 0.072) * (0.82 + 0.36 * vnoise(vec2(u * 5.0, v * 4.5)))
+        * (0.9 + 0.2 * vnoise(vec2(u * 0.6, v * 9.0)));
+    float show = 1.0 - smoothstep(0.02, 0.075, fw);
+    if (show <= 0.0) return avg;
+    // Kept small, so the pattern stays exact far along a long route.
+    float block = floor(v / 110.0);
+    float vv = v - block * 110.0;
+    float row = floor(vv / 0.11);
+    float rid = row + 1000.0 * mod(block, 37.0);
+    float len = 0.17 + 0.07 * hash12(vec2(rid, 3.1));
+    float uu = u + hash12(vec2(rid, 9.2)) * 0.37;
+    float cell = floor(uu / len);
+    vec2 id = vec2(cell, rid);
+    vec2 l = vec2((fract(uu / len) - 0.5) * len, (fract(vv / 0.11) - 0.5) * 0.11);
+    l -= (vec2(hash12(id), hash12(id + 7.0)) - 0.5) * vec2(0.012, 0.008);
+    vec2 hs = vec2(len * 0.5 - 0.01 - 0.008 * hash12(id + 3.0), 0.046 - 0.006 * hash12(id + 5.0));
+    const float r = 0.022;
+    vec2 q = abs(l) - (hs - r);
+    float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+    d += 0.008 * (vnoise(vec2(u, v) * 33.0) - 0.5);
+    float k = hash12(id + 8.0);
+    vec3 stone = k < 0.125 ? vec3(0.196, 0.142, 0.086)
+        : k < 0.25 ? vec3(0.16, 0.107, 0.07)
+        : k < 0.375 ? vec3(0.137, 0.131, 0.117)
+        : k < 0.5 ? vec3(0.107, 0.074, 0.048)
+        : k < 0.625 ? vec3(0.224, 0.171, 0.103)
+        : k < 0.75 ? vec3(0.148, 0.089, 0.066)
+        : k < 0.875 ? vec3(0.171, 0.16, 0.131)
+        : vec3(0.117, 0.094, 0.074);
+    stone *= 0.82 + 0.32 * hash12(id + 9.0);
+    stone *= 0.93 + 0.14 * (vnoise(vec2(u, v) * 28.0) - 0.5);
+    vec3 joint = vec3(0.012, 0.011, 0.01);
+    // Rounded down into the joint at the stone's edge.
+    float bevel = clamp(-d / 0.016, 0.0, 1.0);
+    vec2 dir = (q.x > 0.0 || q.y > 0.0) ? normalize(max(q, 0.0) + 1e-6) * sign(l)
+        : (q.x > q.y ? vec2(sign(l.x), 0.0) : vec2(0.0, sign(l.y)));
+    slope = d < 0.0 ? dir * (1.0 - bevel) * 1.3 * show : vec2(0.0);
+    // Joints a pixel or less wide still darken it by their share.
+    float aa = max(fw, 0.002);
+    vec3 c = mix(stone, joint, smoothstep(-aa, aa, d));
+    return mix(avg, c, show);
+}
+// A loose gravel road: small pebbles of grey, white, dark and a few
+// terracotta and blue-grey stones on dusty ground, fewer where tyres
+// have packed it down. Pebbles show where a pixel is smaller than them;
+// further off it is their average, mottled.
+vec3 gravel_road(float u, float v, float fw, float a, out vec2 slope) {
+    slope = vec2(0.0);
+    float track = exp(-pow((a - 1.6) / 0.35, 2.0));
+    vec2 w = vec2(u, mod(v, 400.0));
+    vec3 col = vec3(0.094, 0.086, 0.074) * (0.9 + 0.3 * (vnoise(w * 1.4) - 0.5));
+    vec3 avg = vec3(0.14, 0.13, 0.115) * (0.88 + 0.24 * (vnoise(w * 6.0) - 0.5) + 0.12 * (vnoise(w * 0.8) - 0.5));
+    avg *= 1.0 - 0.06 * track;
+    float show = 1.0 - smoothstep(0.008, 0.03, fw);
+    if (show <= 0.0) return avg;
+    float density = 0.97 - 0.32 * track + 0.1 * (vnoise(w * 0.8) - 0.5);
+    // Three layers of pebbles, each turned and shifted so no grid lines up.
+    for (int i = 0; i < 3; i++) {
+        float sz = i == 0 ? 0.03 : (i == 1 ? 0.021 : 0.014);
+        float ang = i == 0 ? 0.41 : (i == 1 ? 1.27 : 2.13);
+        vec2 p = mat2(cos(ang), sin(ang), -sin(ang), cos(ang)) * (w + float(i) * 3.7);
+        vec2 cell = floor(p / sz);
+        if (hash12(cell + float(i) * 13.0) > density) continue;
+        float rr = sz * (0.26 + 0.2 * hash12(cell + 2.0));
+        vec2 o = (cell + 0.5) * sz + (vec2(hash12(cell + 3.0), hash12(cell + 4.0)) - 0.5) * (sz - 2.0 * rr);
+        vec2 dd = (p - o) / rr * vec2(1.0, 1.25);
+        float d2 = dot(dd, dd);
+        if (d2 >= 1.0) continue;
+        float k = hash12(cell + 5.0);
+        vec3 pc = k < 0.32 ? vec3(0.24, 0.22, 0.2)
+            : k < 0.56 ? vec3(0.137, 0.13, 0.12)
+            : k < 0.68 ? vec3(0.35, 0.33, 0.3)
+            : k < 0.82 ? vec3(0.037, 0.034, 0.032)
+            : k < 0.88 ? vec3(0.29, 0.077, 0.035)
+            : k < 0.94 ? vec3(0.107, 0.137, 0.16)
+            : vec3(0.18, 0.16, 0.117);
+        col = pc * (0.85 + 0.3 * hash12(cell + 6.0));
+        slope = dd * 0.32 / (sqrt(1.0 - d2) + 0.2);
+    }
+    slope *= show;
+    return mix(avg, col, show);
+}
 void main() {
     float u = v_uv.x;
     float a = abs(u);
@@ -701,6 +815,24 @@ void main() {
         }
     }
     vec3 col = asphalt;
+    // Gravel or cobbles instead of tarmac, where the road is made of them.
+    float wg, wc;
+    surface_at(v, wg, wc);
+    float offroad = clamp(wg + wc, 0.0, 1.0);
+    vec2 slope = vec2(0.0);
+    if (offroad > 0.0) {
+        float fw = max(fwidth(u), fwidth(v));
+        if (wc > 0.0) {
+            vec2 sl;
+            col = mix(col, setts(u, v, fw, sl), wc);
+            slope += sl * wc;
+        }
+        if (wg > 0.0) {
+            vec2 sl;
+            col = mix(col, gravel_road(u, v, fw, a, sl), wg);
+            slope += sl * wg;
+        }
+    }
     // The lines, as the share of each pixel they cover: far ahead a pixel
     // spans metres of road, and a line or dash that is simply on or off
     // there flickers as you ride. Across the road, over the pixel's width;
@@ -712,7 +844,7 @@ void main() {
     float dash = (dashes(v / 12.0 + hv) - dashes(v / 12.0 - hv)) / (2.0 * hv);
     float centre = band(u, -0.065, 0.065, hu) * dash;
     // Paint wears thin where tyres run over it.
-    float painted = max(edge, centre);
+    float painted = max(edge, centre) * (1.0 - offroad);
     if (painted > 0.0) painted *= 0.75 + 0.25 * smoothstep(0.3, 0.6, fbm3(vec2(u * 3.0, v * 0.5) + 2.0));
     vec3 paint = vec3(0.66, 0.66, 0.63) * (0.85 + 0.2 * fine);
     col = mix(col, paint, painted);
@@ -736,15 +868,29 @@ void main() {
 
     vec3 up = vec3(0.0, 1.0, 0.0);
     vec3 n = normalize(vec3((g - 0.5) * 0.1 * tarmac, 1.0, (fine - 0.5) * 0.06 * tarmac));
+    vec3 sn = up;
+    if (offroad > 0.0 && dot(slope, slope) > 0.0) {
+        // The road's directions across and along it, from how u and v
+        // change over the screen, to lean the stones' faces to the light.
+        vec3 dpx = dFdx(v_pos), dpy = dFdy(v_pos);
+        vec2 dux = dFdx(v_uv), duy = dFdy(v_uv);
+        float det = dux.x * duy.y - dux.y * duy.x;
+        if (abs(det) > 1e-12) {
+            vec3 tu = normalize((dpx * duy.y - dpy * dux.y) / det);
+            vec3 tv = normalize((dpy * dux.x - dpx * duy.x) / det);
+            sn = normalize(up - tu * slope.x - tv * slope.y);
+            n = normalize(mix(n, sn, offroad));
+        }
+    }
     float vis = sun_vis(v_pos, up);
-    vec3 lit = shade(col, up, 1.0, vis) + col * lamp_light(v_pos, up);
+    vec3 lit = shade(col, sn, 1.0, vis) + col * lamp_light(v_pos, up);
     vec3 view = normalize(u_cam - v_pos);
     // Low sun glares off the road surface.
     vec3 h = normalize(view + u_sun);
     float fres = 0.04 + 0.96 * pow(1.0 - max(dot(view, up), 0.0), 5.0);
     float rough = mix(60.0, 600.0, u_wet);
     float spec = pow(max(dot(n, h), 0.0), rough);
-    lit += u_sun_col * vis * spec * fres * (1.1 + 7.0 * u_wet) * (tarmac * (1.0 - 0.5 * painted) + 0.1);
+    lit += u_sun_col * vis * spec * fres * (1.1 + 7.0 * u_wet) * (tarmac * (1.0 - 0.5 * painted) * (1.0 - 0.8 * wg) + 0.1);
     // The headlight catches the paint.
     lit += paint * lamp_light(v_pos, up) * painted * 1.5;
     if (u_wet > 0.0) {

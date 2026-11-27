@@ -94,6 +94,13 @@ With two rings, the gears follow the order a rider shifts in: the small ring up 
   - Clicking **Finish** asks too.
   - Either way, "Finish the ride?" appears: **Y** (or the button) finishes, **B** carries on.
 
+### Road surface
+
+- **Choosing it:** in the ride bar on Home, next to the route: **Tarmac**, **Gravel**, **Cobbles** or **Mixed**.
+- **How it looks:** tarmac is the road as before. Gravel is a loose road of small mixed pebbles with packed-down tyre tracks; cobbles are old stone setts in staggered rows with dark joints. Neither has painted lines.
+- **How it rides:** the rolling resistance follows the surface under you, from your own setting on tarmac (Settings › Riding): about 0.002 more on gravel and 0.004 more on cobbles. At 30 km/h that's roughly 13 W and 26 W more, which your trainer pushes back with.
+- **Mixed:** stretches of each, laid out by the route so every ride of it is the same, starting and ending on tarmac. While riding, a pill under the speed says what you're on, and what's next once it's within 2 km.
+
 ## 5. The glass look
 
 - **Panels:** frosted glass panels over a picture.

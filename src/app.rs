@@ -1065,6 +1065,17 @@ impl App {
         let mut dt = self.last_frame.elapsed().as_secs_f64().min(5.0);
         self.last_frame = Instant::now();
         let s = &self.store.settings;
+        // The road's surface where you are: how hard it rolls, and how the
+        // road ahead is drawn.
+        let route = &self.routes[self.route_idx];
+        let stretches = crate::surface::stretches(s.road_surface, route.length, route.seed);
+        let (here, _) = crate::surface::at(
+            &stretches,
+            self.ride.route_pos(),
+            route.length,
+            route.is_loop(),
+        );
+        crate::gfx::set_road_surface(&stretches, route.length, route.is_loop());
         let live = Live {
             power: fresh(&self.metrics.power).unwrap_or(0.0),
             cadence: fresh(&self.metrics.cadence),
@@ -1074,7 +1085,7 @@ impl App {
         let phys = Physics {
             mass: s.rider_kg + s.bike_kg,
             cda: s.cda,
-            crr: s.crr,
+            crr: here.crr(s.crr),
             trainer_speed: s.trainer_speed,
             drafting: s.drafting,
             flat_workouts: s.flat_workouts,

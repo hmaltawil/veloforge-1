@@ -404,6 +404,26 @@ impl App {
                         base
                     });
                 }
+                // What the road is made of.
+                ui.add_space(6.0);
+                ui.label(RichText::new("Surface").color(Color32::from_white_alpha(190)));
+                use crate::surface::Surface;
+                if segmented(
+                    ui,
+                    &mut self.store.settings.road_surface,
+                    &[
+                        (Surface::Tarmac, "Tarmac", "Smooth tarmac, rolling as you set it"),
+                        (Surface::Gravel, "Gravel", "Loose gravel: rolls about half as hard again"),
+                        (Surface::Cobbles, "Cobbles", "Old stone setts: roll about twice as hard"),
+                        (
+                            Surface::Mixed,
+                            "Mixed",
+                            "Stretches of each, laid out by the route: the same every time you ride it",
+                        ),
+                    ],
+                ) {
+                    self.mark_dirty();
+                }
             }
         });
     }

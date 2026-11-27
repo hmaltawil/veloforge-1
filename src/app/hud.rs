@@ -820,6 +820,25 @@ impl App {
             52.0,
             Color32::WHITE,
         );
+        // Off tarmac: what you're on, and what's coming.
+        if let Some((now, next)) = self.surface_note() {
+            theme::pill(
+                painter,
+                Pos2::new(x1, y - 30.0),
+                Align2::RIGHT_TOP,
+                &now,
+                Color32::WHITE,
+            );
+            if let Some(next) = next {
+                theme::caption(
+                    painter,
+                    Pos2::new(x1, y - 4.0),
+                    Align2::RIGHT_TOP,
+                    &next,
+                    theme::TEXT_DIM,
+                );
+            }
+        }
         y += 10.0;
         let half = (x1 - x0) / 2.0;
         let cell = |col: usize, y: f32, label: &str, text: String, unit: &str, c: Color32| {
@@ -868,6 +887,24 @@ impl App {
             units.height_unit(),
             Color32::WHITE,
         );
+    }
+
+    /// The road's surface where you are, and the next different one with
+    /// how far ahead (within 2 km); none when it's all tarmac.
+    fn surface_note(&self) -> Option<(String, Option<String>)> {
+        let s = &self.store.settings;
+        if s.road_surface == crate::surface::Surface::Tarmac {
+            return None;
+        }
+        let route = &self.routes[self.route_idx];
+        let st = crate::surface::stretches(s.road_surface, route.length, route.seed);
+        let (here, next) =
+            crate::surface::at(&st, self.ride.route_pos(), route.length, route.is_loop());
+        let next = next.filter(|(_, d)| *d < 2000.0).map(|(k, d)| {
+            let u = s.units;
+            format!("{} in {:.1} {}", k.name(), u.distance(d), u.distance_unit())
+        });
+        Some((here.name().to_string(), next))
     }
 
     /// The route seen from above, with what you have ridden and where you are.

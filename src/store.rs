@@ -98,6 +98,8 @@ pub struct Settings {
     pub classic_bike: bool,
     /// The aero bike's paint (sRGB).
     pub bike_colour: [u8; 3],
+    /// The road's surface: tarmac, gravel, cobbles or a mix.
+    pub road_surface: crate::surface::Surface,
     /// Your jersey in polka dots: white, with dots in the jersey colour.
     pub jersey_dots: bool,
     /// The aero bike's tyres with tan sidewalls rather than all black.
@@ -212,6 +214,7 @@ impl Default for Settings {
             click_restart: true,
             classic_bike: false,
             bike_colour: [206, 32, 39],
+            road_surface: Default::default(),
             jersey_dots: false,
             tan_walls: false,
             kit_white: [true, false, true, true],

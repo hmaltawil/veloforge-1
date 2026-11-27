@@ -29,6 +29,7 @@ mod segment;
 mod sound;
 mod store;
 mod strava;
+mod surface;
 mod theme;
 mod units;
 mod update;

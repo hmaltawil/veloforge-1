@@ -13,6 +13,23 @@ pub use bike_model::{
     set_tan_walls,
 };
 pub use body::{set_jersey_dots, set_kit};
+
+/// The road's surface for the road shader: each stretch (start, end,
+/// kind code, 0) in metres, and the course's length and whether it loops.
+static ROAD_SURFACE: std::sync::RwLock<(Vec<[f32; 4]>, [f32; 2])> =
+    std::sync::RwLock::new((Vec::new(), [1.0, 0.0]));
+
+/// Lay the road's surface along the course (see `surface.rs`).
+pub fn set_road_surface(stretches: &[crate::surface::Stretch], length: f64, looped: bool) {
+    let s: Vec<[f32; 4]> = stretches
+        .iter()
+        .take(crate::surface::MAX_STRETCHES)
+        .map(|s| [s.start as f32, s.end as f32, s.kind.code(), 0.0])
+        .collect();
+    if let Ok(mut r) = ROAD_SURFACE.write() {
+        *r = (s, [length as f32, if looped { 1.0 } else { 0.0 }]);
+    }
+}
 pub use preview::PreviewLook;
 mod body;
 mod buildings;
@@ -4167,6 +4184,16 @@ impl GlState {
             self.common(gl, "road", f);
             let p = self.programs.get_mut("road").unwrap();
             p.f1(gl, "u_snow", f.snow);
+            if let Ok(r) = ROAD_SURFACE.read() {
+                let (stretches, course) = (&r.0, r.1);
+                let mut flat: Vec<f32> = stretches.iter().flatten().copied().collect();
+                if flat.is_empty() {
+                    flat = vec![0.0, course[0], 0.0, 0.0];
+                }
+                gl.uniform_4_f32_slice(p.loc(gl, "u_surf"), &flat);
+                p.i1(gl, "u_nsurf", (flat.len() / 4) as i32);
+                p.f2(gl, "u_course", course[0].max(1.0), course[1]);
+            }
             gl.bind_vertex_array(Some(rvao));
             gl.draw_arrays(glow::TRIANGLES, 0, rcount);
             gl.disable(glow::POLYGON_OFFSET_FILL);
