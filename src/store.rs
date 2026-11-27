@@ -18,7 +18,11 @@ pub struct Settings {
     /// Fraction of the route grade sent to the trainer.
     pub difficulty: f32,
     pub auto_pause: bool,
+    /// Start the ride by pedalling: a 10 s countdown, then it starts.
+    pub start_by_pedalling: bool,
     pub jersey: [u8; 3],
+    /// Your rider's skin tone in the 3D world.
+    pub skin: [u8; 3],
     pub cda: f32,
     pub crr: f32,
     pub route_id: String,
@@ -77,9 +81,67 @@ pub struct Settings {
     /// Virtual shifting, for a bike with one fixed cog on the trainer (a
     /// Zwift Cog): the gears are the app's, and set the trainer's power.
     pub virtual_shifting: bool,
-    /// The virtual gear you are in (an index into `gears::GEARS`), kept
-    /// from ride to ride.
+    /// The virtual gear you are in (an index into the gears your gearing
+    /// gives), kept from ride to ride.
     pub gear: usize,
+    /// Your bike's gearing for virtual shifting: chainring teeth (one or
+    /// two rings), cassette cogs smallest first, and the wheel and tyre
+    /// (a name from `gears::TYRES`).
+    pub chainrings: Vec<u8>,
+    /// A Click with a working left pad has been seen: Home is steered with
+    /// the pad, and Y, Z and A stay with the music.
+    pub click_pad: bool,
+    /// Keep a Click v2's left half going without Zwift, by restarting it
+    /// about once a minute.
+    pub click_restart: bool,
+    /// Ride the classic bike rather than the aero road bike.
+    pub classic_bike: bool,
+    /// The aero bike's paint (sRGB).
+    pub bike_colour: [u8; 3],
+    /// The road's surface: tarmac, gravel, cobbles or a mix.
+    pub road_surface: crate::surface::Surface,
+    /// Your jersey in polka dots: white, with dots in the jersey colour.
+    pub jersey_dots: bool,
+    /// The aero bike's tyres with tan sidewalls rather than all black.
+    pub tan_walls: bool,
+    /// White (true) or black kit: helmet, gloves, socks and shoes.
+    pub kit_white: [bool; 4],
+    pub cassette: Vec<u8>,
+    pub tyre: String,
+    /// The picture behind the screens: empty for Waves (a colour for each
+    /// part of the app), or the file name of one of `pictures`.
+    pub wallpaper: String,
+    /// Pictures you added, copied into the data folder's `pictures`.
+    pub pictures: Vec<String>,
+    /// How dark the glass panels are, in percent.
+    pub panel_darkness: u8,
+    /// How much the picture is dimmed, in percent.
+    pub dim_picture: u8,
+    /// Text and controls larger than standard (1.0) for reading from the bike.
+    pub text_size: f32,
+    /// Figures while riding in bold rather than light.
+    pub bold_figures: bool,
+    /// A line about cycling under Home's greeting.
+    pub home_quote: bool,
+    /// Your music: the songs, from your music folder and added one by one,
+    /// in your order.
+    pub songs: Vec<crate::music::Song>,
+    /// The folder your music is played from, when you chose one.
+    pub music_folder: Option<PathBuf>,
+    /// Songs in the music folder you hid from the list (their paths in it).
+    pub music_hidden: Vec<String>,
+    pub music_volume: f32,
+    pub music_shuffle: bool,
+    pub music_repeat: crate::music::Repeat,
+    /// Pause the music while the ride is paused.
+    pub music_with_ride: bool,
+    /// Lower the music while a workout beep plays.
+    pub music_duck: bool,
+    /// The Click v2 buttons (their bits) for play/pause, next and
+    /// previous; 0 for none. Y, A and Z unless you assign others.
+    pub click_play: u64,
+    pub click_next: u64,
+    pub click_previous: u64,
 }
 
 /// What heart rate zones are worked out from.
@@ -111,7 +173,9 @@ impl Default for Settings {
             bike_kg: 9.0,
             difficulty: 0.5,
             auto_pause: true,
+            start_by_pedalling: true,
             jersey: [230, 90, 40],
+            skin: crate::world::SKIN_TONES[2].1,
             cda: 0.32,
             crr: 0.004,
             route_id: "valley-loop".into(),
@@ -145,6 +209,35 @@ impl Default for Settings {
             random_route: Default::default(),
             virtual_shifting: false,
             gear: crate::gears::START_GEAR,
+            chainrings: vec![34, 50],
+            click_pad: false,
+            click_restart: true,
+            classic_bike: false,
+            bike_colour: [206, 32, 39],
+            road_surface: Default::default(),
+            jersey_dots: false,
+            tan_walls: false,
+            kit_white: [true, false, true, true],
+            cassette: vec![11, 13, 15, 17, 19, 21, 23, 25, 27, 30, 34],
+            tyre: crate::gears::TYRES[0].0.to_string(),
+            wallpaper: String::new(),
+            pictures: Vec::new(),
+            panel_darkness: 56,
+            dim_picture: 22,
+            text_size: 1.0,
+            bold_figures: false,
+            home_quote: true,
+            songs: Vec::new(),
+            music_folder: None,
+            music_hidden: Vec::new(),
+            music_volume: 0.7,
+            music_shuffle: false,
+            music_repeat: Default::default(),
+            music_with_ride: true,
+            music_duck: true,
+            click_play: crate::zwift::Y,
+            click_next: crate::zwift::A,
+            click_previous: crate::zwift::Z,
         }
     }
 }
@@ -185,6 +278,16 @@ impl Paths {
 
     pub fn state_file(&self) -> PathBuf {
         self.data.join("state.json")
+    }
+
+    /// Where the songs you add are kept.
+    pub fn music(&self) -> PathBuf {
+        self.data.join("music")
+    }
+
+    /// Where pictures added for the background are kept.
+    pub fn pictures(&self) -> PathBuf {
+        self.data.join("pictures")
     }
 
     pub fn log_file(&self) -> PathBuf {

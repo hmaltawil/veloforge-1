@@ -4,6 +4,7 @@
 mod activity;
 mod app;
 mod awake;
+mod backdrop;
 mod builder;
 mod charts;
 #[cfg(test)]
@@ -13,10 +14,12 @@ mod fit;
 mod gears;
 mod gfx;
 mod icu;
+mod music;
 mod plan;
 mod platform;
 mod progress;
 mod protocol;
+mod quotes;
 mod remote;
 mod ride;
 mod route;
@@ -26,6 +29,7 @@ mod segment;
 mod sound;
 mod store;
 mod strava;
+mod surface;
 mod theme;
 mod units;
 mod update;

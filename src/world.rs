@@ -425,9 +425,21 @@ pub struct Figure {
     pub effort: f32,
     pub pedalling: bool,
     pub jersey: Color32,
+    pub skin: Color32,
     /// Name tag shown above the rider (companions only).
     pub tag: Option<String>,
 }
+
+/// The skin tones a rider can choose (Settings › Profile), lightest to
+/// darkest, as sRGB.
+pub const SKIN_TONES: [(&str, [u8; 3]); 6] = [
+    ("Light", [244, 208, 177]),
+    ("Fair", [228, 185, 150]),
+    ("Medium", [196, 156, 131]),
+    ("Tan", [176, 126, 88]),
+    ("Brown", [136, 90, 58]),
+    ("Dark", [88, 57, 37]),
+];
 
 /// What to draw: the route and the riders on it. The camera follows the
 /// first rider.
@@ -795,7 +807,7 @@ impl World {
                 if c[2] > NEAR {
                     let g = cam.proj(c);
                     let s = (f / c[2]) as f32;
-                    draw_rider(&mut cv, g, s, r.crank, r.jersey);
+                    draw_rider(&mut cv, g, s, r.crank, r.jersey, r.skin);
                     if let Some(tag) = &r.tag {
                         cv.flush();
                         name_tag(cv.painter, Pos2::new(g.x, g.y - 1.75 * s), tag, c[2]);
@@ -986,11 +998,10 @@ pub fn name_tag(painter: &Painter, at: Pos2, text: &str, dist: f64) {
 }
 
 /// Rear view of a cyclist standing on the ground point `g`, `s` px per metre.
-fn draw_rider(cv: &mut Canvas, g: Pos2, s: f32, crank: f32, jersey: Color32) {
+fn draw_rider(cv: &mut Canvas, g: Pos2, s: f32, crank: f32, jersey: Color32, skin: Color32) {
     let p = |x: f32, y: f32| Pos2::new(g.x + x * s, g.y - y * s);
     let sway = crank.sin() * 0.012;
     let dark = Color32::from_rgb(28, 28, 32);
-    let skin = Color32::from_rgb(222, 178, 142);
     let shorts = Color32::from_rgb(24, 24, 30);
 
     cv.ellipse(

@@ -24,6 +24,13 @@ getrandom = "0.3"
 epaint_default_fonts = "0.37"
 # The system's own file dialog (on Linux through the desktop portal).
 rfd = "0.18"
+# The picture behind the screens (already built for the clipboard: arboard
+# uses it), JPEG and PNG only.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+# Your own music while riding: MP3s only.
+rodio = { version = "0.20", default-features = false, features = ["symphonia-mp3"] }
+# Reading songs' covers, titles and artists (already built for rodio).
+symphonia = { version = "0.5", default-features = false, features = ["mp3"] }
 
 # Keeping the screen awake while riding, over the session bus (already
 # built for Bluetooth: btleplug uses it).

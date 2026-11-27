@@ -14,6 +14,9 @@ if [ -f "$here/../../src/gfx/fields.rs" ]; then now_cfg="$now_cfg --cfg lab_fiel
 if [ -f "$here/../../src/gfx/mountains.rs" ]; then now_cfg="$now_cfg --cfg lab_mountains"; fi
 if [ -f "$here/../../src/gfx/japanese.rs" ]; then now_cfg="$now_cfg --cfg lab_japanese"; fi
 if grep -q "volcano" "$here/../../src/gfx/mountains.rs" 2>/dev/null; then now_cfg="$now_cfg --cfg lab_volcano"; fi
+if [ -f "$here/../../src/gfx/bike_model.rs" ]; then now_cfg="$now_cfg --cfg lab_aero"; fi
+if [ -f "$here/../../assets/models/bike-aero.vfb" ] && [ -f "$here/../../assets/models/bike-aero-far.vfb" ]; then now_cfg="$now_cfg --cfg aero_model"; fi
+if grep -q "KIT_MARK" "$here/../../src/gfx/body.rs"; then now_cfg="$now_cfg --cfg lab_kit"; fi
 RUSTFLAGS="$now_cfg" cargo build --release --target wasm32-unknown-unknown --quiet
 wasm="$here/target/wasm32-unknown-unknown/release/model_lab.wasm"
 # The released models too (main's model code with this page's exports), so
@@ -39,6 +42,7 @@ if grep -q "pub fn oak" "$base_dir/src/gfx/mesh.rs"; then base_cfg="$base_cfg --
 if git -C "$here" cat-file -e main:src/gfx/fields.rs 2>/dev/null; then base_cfg="$base_cfg --cfg lab_fields"; fi
 if [ -f "$base_dir/src/gfx/mountains.rs" ]; then base_cfg="$base_cfg --cfg lab_mountains"; fi
 if grep -q "volcano" "$base_dir/src/gfx/mountains.rs" 2>/dev/null; then base_cfg="$base_cfg --cfg lab_volcano"; fi
+if grep -q "KIT_MARK" "$base_dir/src/gfx/body.rs"; then base_cfg="$base_cfg --cfg lab_kit"; fi
 (cd "$base_dir/tools/model-lab" && CARGO_TARGET_DIR="$here/target-base" RUSTFLAGS="$base_cfg" \
     cargo build --release --target wasm32-unknown-unknown --quiet)
 wasm_base="$here/target-base/wasm32-unknown-unknown/release/model_lab.wasm"

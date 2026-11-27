@@ -475,7 +475,7 @@ async function boot() {
   setupVersions();
   await new Promise((r) => setTimeout(r, 30));
   const t0 = performance.now();
-  const nIdx = wasm.build_body(0.01);
+  const nIdx = wasm.build_body(0.008);
   const nVert = wasm.body_vertex_count();
   const idx = new Uint32Array(mem.buffer, wasm.body_indices(), nIdx).slice();
   posePose();

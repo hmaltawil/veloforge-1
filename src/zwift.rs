@@ -41,6 +41,16 @@ pub const MANUFACTURER_ID: u16 = 0x094A;
 /// "RideOn": the handshake, and the start of the reply.
 pub const RIDE_ON: &[u8] = b"RideOn";
 
+/// Sent to a Click v2's left half after the handshake: a half that Zwift
+/// has unlocked recently stays unlocked across reconnects (found by
+/// OpenBikeControl, used by qdomyos-zwift and Torqa). It does nothing to a
+/// locked half: no key, no answer to Zwift's challenge.
+pub const UNLOCK_ACK: &[u8] = &[0xFF, 0x04, 0x00];
+
+/// The handshake is sent again this often, so a Click v2 never dozes off
+/// (it drops its link after about a minute without traffic).
+pub const KEEPALIVE_SECS: u64 = 3;
+
 /// Which Zwift device an advertisement is from: the first byte of its
 /// manufacturer data (after the company id).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,6 +133,9 @@ pub struct Buttons {
     pub up: bool,
     /// Shift to an easier gear: − .
     pub down: bool,
+    /// The other buttons held (a Click v2's or Ride's Y, Z, A and the
+    /// rest), one bit each, for the music; 0 on a Click (v1).
+    pub other: u64,
 }
 
 /// One message from the device, decoded.
@@ -140,6 +153,9 @@ pub enum Message {
     /// A Click v2 saying it has stopped (FF 05 00 EA 05 or FF 05 00 FA 05):
     /// seen when Zwift has it locked.
     Stopped,
+    /// A Click v2 half that Zwift has locked, answering the handshake with
+    /// Zwift's challenge (FF 03 …) instead of RideOn.
+    Locked,
     /// The device is leaving (0xFE).
     Goodbye,
     /// A message we do not use, by its type byte.
@@ -166,6 +182,20 @@ const SHIFT_DOWN_LEFT: u64 = 0x0200;
 /// B on the right half: shifts down too, so a Click v2 whose left half is
 /// locked can still shift both ways.
 const B: u64 = 0x0020;
+/// The Click v2's other face buttons, as the Ride numbers them: A (right),
+/// Y (top) and Z (left). Not used for shifting: free for the music.
+/// The pad on a Click v2's left half (and a Ride's left hood): left, up,
+/// right and down, for finding your way round the app.
+pub const PAD_LEFT: u64 = 0x0001;
+pub const PAD_UP: u64 = 0x0002;
+pub const PAD_RIGHT: u64 = 0x0004;
+pub const PAD_DOWN: u64 = 0x0008;
+pub const PAD: u64 = PAD_LEFT | PAD_UP | PAD_RIGHT | PAD_DOWN;
+pub const A: u64 = 0x0010;
+pub const Y: u64 = 0x0040;
+pub const Z: u64 = 0x0080;
+/// Every button bit the keypad message can carry.
+const ALL_BUTTONS: u64 = 0xFFFF;
 
 /// Decode one notification or indication.
 pub fn decode(bytes: &[u8]) -> Message {
@@ -186,7 +216,8 @@ pub fn decode(bytes: &[u8]) -> Message {
         },
         IDLE => Message::Idle,
         BATTERY => match fields(body) {
-            Ok(f) => match f.iter().find(|(n, _)| *n == 1) {
+            // Field 1 on a Click; field 2 on a Click v2 (19 10 50: 80%).
+            Ok(f) => match f.iter().find(|(n, _)| *n == 1 || *n == 2) {
                 Some(&(_, level)) => Message::Battery(level.min(100) as u8),
                 None => Message::Malformed("battery message without a level"),
             },
@@ -194,6 +225,7 @@ pub fn decode(bytes: &[u8]) -> Message {
         },
         GOODBYE if body.is_empty() => Message::Goodbye,
         0xFF if matches!(body, [0x05, 0x00, 0xEA | 0xFA, 0x05]) => Message::Stopped,
+        0xFF if body.first() == Some(&0x03) => Message::Locked,
         k => Message::Other(k),
     }
 }
@@ -226,9 +258,11 @@ fn keypad_buttons(body: &[u8]) -> Result<Buttons, &'static str> {
         return Err("keypad message without its buttons");
     };
     let down = |mask: u64| map & mask == 0;
+    let shifting = SHIFT_UP_RIGHT | SHIFT_DOWN_RIGHT | SHIFT_UP_LEFT | SHIFT_DOWN_LEFT | B;
     Ok(Buttons {
         up: down(SHIFT_UP_RIGHT) || down(SHIFT_DOWN_RIGHT),
         down: down(SHIFT_UP_LEFT) || down(SHIFT_DOWN_LEFT) || down(B),
+        other: !map & ALL_BUTTONS & !shifting,
     })
 }
 
@@ -271,6 +305,8 @@ fn varint(b: &mut &[u8]) -> Result<u64, &'static str> {
 #[derive(Debug, Default)]
 pub struct Presses {
     last: Buttons,
+    pressed_other: u64,
+    released_other: u64,
 }
 
 impl Presses {
@@ -278,8 +314,21 @@ impl Presses {
     pub fn update(&mut self, now: Buttons) -> (bool, bool) {
         let up = now.up && !self.last.up;
         let down = now.down && !self.last.down;
+        self.pressed_other = now.other & !self.last.other;
+        self.released_other = self.last.other & !now.other;
         self.last = now;
         (up, down)
+    }
+
+    /// The other buttons (not shifting) that went down with the last
+    /// message, one bit each.
+    pub fn other_pressed(&self) -> u64 {
+        self.pressed_other
+    }
+
+    /// The other buttons that came back up with the last message.
+    pub fn other_released(&self) -> u64 {
+        self.released_other
     }
 }
 
@@ -312,14 +361,17 @@ mod tests {
     const NONE: Buttons = Buttons {
         up: false,
         down: false,
+        other: 0,
     };
     const UP: Buttons = Buttons {
         up: true,
         down: false,
+        other: 0,
     };
     const DOWN: Buttons = Buttons {
         up: false,
         down: true,
+        other: 0,
     };
 
     #[test]
@@ -332,7 +384,8 @@ mod tests {
             buttons("37 08 00 10 00"),
             Buttons {
                 up: true,
-                down: true
+                down: true,
+                other: 0,
             }
         );
         // A field left out is not a press; an unknown one is ignored.
@@ -351,13 +404,34 @@ mod tests {
             buttons("23 08 ff dd ff ff 0f"),
             Buttons {
                 up: true,
-                down: true
+                down: true,
+                other: 0,
             }
         );
         // B on the right half shifts down as well.
         assert_eq!(buttons("23 08 df ff ff ff 0f"), DOWN);
-        // Left on the pad (makinolo's example, FFFFFFFE) is not a shift.
-        assert_eq!(buttons("23 08 fe ff ff ff 0f"), NONE);
+        // Left on the pad (makinolo's example, FFFFFFFE) is not a shift,
+        // but one of the other buttons.
+        assert_eq!(
+            buttons("23 08 fe ff ff ff 0f"),
+            Buttons {
+                up: false,
+                down: false,
+                other: 0x1,
+            }
+        );
+        // Y, A and Z on the right half: for the music, not shifting.
+        // (Seven bits a byte: Z's bit is the second byte's first.)
+        for (map, bit) in [("bf ff", Y), ("ef ff", A), ("ff fe", Z)] {
+            assert_eq!(
+                buttons(&format!("23 08 {map} ff ff 0f")),
+                Buttons {
+                    up: false,
+                    down: false,
+                    other: bit,
+                }
+            );
+        }
         // A Ride also sends its paddles in another field: stepped over.
         assert_eq!(buttons("23 08 ff df ff ff 0f 1a 04 08 00 10 32"), UP);
     }
@@ -416,6 +490,50 @@ mod tests {
         for (hex, want) in seq {
             assert_eq!(p.update(buttons(hex)), want, "{hex}");
         }
+    }
+
+    #[test]
+    fn a_click_v2_battery() {
+        assert_eq!(decode(&bytes("19 10 50")), Message::Battery(80));
+    }
+
+    #[test]
+    fn the_left_pad() {
+        for (map, bit) in [
+            ("fe ff", PAD_LEFT),
+            ("fd ff", PAD_UP),
+            ("fb ff", PAD_RIGHT),
+            ("f7 ff", PAD_DOWN),
+        ] {
+            assert_eq!(
+                buttons(&format!("23 08 {map} ff ff 0f")).other,
+                bit,
+                "{map}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_locked_half_is_recognised() {
+        assert_eq!(decode(&bytes("ff 03 12 34 56")), Message::Locked);
+        assert_eq!(decode(&bytes("ff 05 00 ea 05")), Message::Stopped);
+        assert_eq!(decode(&bytes("ff 04 00")), Message::Other(0xff));
+        assert_eq!(UNLOCK_ACK, &[0xff, 0x04, 0x00]);
+    }
+
+    #[test]
+    fn y_held_then_let_go() {
+        let mut p = Presses::default();
+        let up = "23 08 ff ff ff ff 0f";
+        let y = "23 08 bf ff ff ff 0f";
+        p.update(buttons(up));
+        p.update(buttons(y));
+        assert_eq!((p.other_pressed(), p.other_released()), (Y, 0));
+        // Held: reported again, neither pressed nor let go.
+        p.update(buttons(y));
+        assert_eq!((p.other_pressed(), p.other_released()), (0, 0));
+        p.update(buttons(up));
+        assert_eq!((p.other_pressed(), p.other_released()), (0, Y));
     }
 
     #[test]

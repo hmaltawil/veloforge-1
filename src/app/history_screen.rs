@@ -4,6 +4,9 @@ use super::*;
 
 impl App {
     pub(super) fn history_tab(&mut self, ui: &mut egui::Ui) {
+        if ui.link("← Back to the rides").clicked() {
+            self.activity_view = ActivityView::Rides;
+        }
         let mut open: Option<usize> = None;
         let mut upload: Option<(String, String)> = None;
         ui.horizontal(|ui| {
@@ -30,10 +33,10 @@ impl App {
 
         if !self.store.history.is_empty()
             && ui
-                .link("Trends, power curve and totals are in Progress")
+                .link("Trends, power curve and totals are under Trends")
                 .clicked()
         {
-            self.tab = Tab::Progress;
+            self.activity_view = ActivityView::Trends;
         }
         ui.add_space(8.0);
         let mut delete = None;

@@ -11,25 +11,20 @@ pub(super) enum SettingsPage {
     #[default]
     Profile,
     Riding,
-    Display,
+    Appearance,
     Sound,
-    Remote,
-    Icu,
-    Strava,
-    Routes,
+    /// Strava, intervals.icu and the phone remote.
+    Connections,
     Data,
 }
 
 impl SettingsPage {
-    const ALL: [SettingsPage; 9] = [
+    const ALL: [SettingsPage; 6] = [
         SettingsPage::Profile,
         SettingsPage::Riding,
-        SettingsPage::Display,
+        SettingsPage::Appearance,
         SettingsPage::Sound,
-        SettingsPage::Remote,
-        SettingsPage::Icu,
-        SettingsPage::Strava,
-        SettingsPage::Routes,
+        SettingsPage::Connections,
         SettingsPage::Data,
     ];
 
@@ -37,13 +32,22 @@ impl SettingsPage {
         match self {
             SettingsPage::Profile => "Profile",
             SettingsPage::Riding => "Riding",
-            SettingsPage::Display => "Display",
-            SettingsPage::Sound => "Sound",
-            SettingsPage::Remote => "Phone remote",
-            SettingsPage::Icu => "intervals.icu",
-            SettingsPage::Strava => "Strava",
-            SettingsPage::Routes => "Routes",
+            SettingsPage::Appearance => "Appearance",
+            SettingsPage::Sound => "Sound & music",
+            SettingsPage::Connections => "Connections",
             SettingsPage::Data => "Data & about",
+        }
+    }
+
+    fn glyph(self) -> super::glass::Glyph {
+        use super::glass::Glyph;
+        match self {
+            SettingsPage::Profile => Glyph::People,
+            SettingsPage::Riding => Glyph::Menu(Tab::Ride),
+            SettingsPage::Appearance => Glyph::Image,
+            SettingsPage::Sound => Glyph::Bolt,
+            SettingsPage::Connections => Glyph::Route,
+            SettingsPage::Data => Glyph::Folder,
         }
     }
 
@@ -53,18 +57,16 @@ impl SettingsPage {
                 "Your numbers. Workout targets, zones and virtual speed are based on them."
             }
             SettingsPage::Riding => "How the trainer and the ride clock behave.",
-            SettingsPage::Display => "Graphics, the ride screen, and the sky in the 3D world.",
-            SettingsPage::Sound => "Beeps that tell you an interval is about to change.",
-            SettingsPage::Remote => {
-                "See your numbers on your phone and start, pause, skip steps or change the \
-                 intensity without reaching for the keyboard."
+            SettingsPage::Appearance => {
+                "The picture behind every screen, how see-through the panels are, the text \
+                 size and the 3D world's quality."
             }
-            SettingsPage::Strava => "Upload your rides to Strava by themselves.",
-            SettingsPage::Icu => {
-                "Bring the rides you plan on intervals.icu into your calendar, and upload your \
-                 rides there automatically."
+            SettingsPage::Sound => {
+                "Your own music while you ride, and the beeps before an interval changes."
             }
-            SettingsPage::Routes => "Random routes, and routes you imported from GPX files.",
+            SettingsPage::Connections => {
+                "Strava and intervals.icu for your rides and plans, and the phone remote."
+            }
             SettingsPage::Data => "Where your rides and settings are kept.",
         }
     }
@@ -120,12 +122,14 @@ pub(super) fn weight_value(
 }
 
 fn row<R>(ui: &mut egui::Ui, label: &str, hint: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    // On a narrow page the labels' column gives way to the controls.
+    let label_w = LABEL_WIDTH.min(ui.available_width() * 0.4);
     ui.horizontal_top(|ui| {
         ui.allocate_ui_with_layout(
-            Vec2::new(LABEL_WIDTH, 0.0),
+            Vec2::new(label_w, 0.0),
             egui::Layout::top_down(egui::Align::LEFT),
             |ui| {
-                ui.set_width(LABEL_WIDTH);
+                ui.set_width(label_w);
                 ui.label(label);
                 if !hint.is_empty() {
                     ui.label(RichText::new(hint).weak().size(12.5));
@@ -150,60 +154,431 @@ fn zone_list(ui: &mut egui::Ui, rows: impl Iterator<Item = (Color32, String)>) {
 
 impl App {
     pub(super) fn settings_tab(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::left("settings-nav")
-            .resizable(false)
-            .exact_size(190.0)
-            .frame(egui::Frame::new().inner_margin(egui::Margin {
-                left: 0,
-                right: 14,
-                top: 6,
-                bottom: 0,
-            }))
-            .show(ui, |ui| {
-                ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
-                    ui.spacing_mut().button_padding = Vec2::new(12.0, 8.0);
+        use super::glass::{self, Lead};
+        let pane = ui.max_rect().expand2(Vec2::new(28.0, 26.0));
+        glass::area(ui, pane, "settings", |ui| {
+            let (side, main) = glass::split(ui);
+            if let Some(side) = side {
+                glass::area(ui, side, "settings-side", |ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    let st = &self.store.settings;
+                    let meta = format!(
+                        "FTP {:.0} W · {:.0} kg · {:.1} W/kg",
+                        st.ftp,
+                        st.rider_kg,
+                        st.ftp / st.rider_kg.max(1.0)
+                    );
+                    if glass::side_row(ui, false, Lead::Tile("YOU", "R"), "Profile", &meta)
+                        .clicked()
+                    {
+                        self.settings_page = SettingsPage::Profile;
+                    }
+                    ui.add_space(8.0);
                     for p in SettingsPage::ALL {
-                        let selected = self.settings_page == p;
-                        if ui
-                            .selectable_label(selected, RichText::new(p.title()).size(15.0))
-                            .clicked()
+                        if glass::side_row(
+                            ui,
+                            self.settings_page == p,
+                            Lead::Icon(p.glyph()),
+                            p.title(),
+                            "",
+                        )
+                        .clicked()
                         {
                             self.settings_page = p;
                         }
                     }
                 });
-            });
-
-        let page = self.settings_page;
-        egui::ScrollArea::vertical()
-            .id_salt(("settings-page", page as u8))
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.set_max_width(820.0);
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new(page.title())
-                        .size(22.0)
-                        .strong()
-                        .color(Color32::from_gray(235)),
-                );
-                ui.label(RichText::new(page.blurb()).color(Color32::from_gray(160)));
-                ui.add_space(12.0);
-                match page {
-                    SettingsPage::Profile => self.settings_profile(ui),
-                    SettingsPage::Riding => self.settings_riding(ui),
-                    SettingsPage::Display => self.settings_display(ui),
-                    SettingsPage::Sound => self.settings_sound(ui),
-                    SettingsPage::Remote => self.settings_remote(ui),
-                    SettingsPage::Icu => self.settings_icu(ui),
-                    SettingsPage::Strava => self.settings_strava(ui),
-                    SettingsPage::Routes => self.settings_routes(ui),
-                    SettingsPage::Data => self.settings_data(ui),
+            }
+            glass::area(ui, main, "settings-main", |ui| {
+                let page = self.settings_page;
+                if side.is_none() {
+                    ui.horizontal_wrapped(|ui| {
+                        for p in SettingsPage::ALL {
+                            if glass::pill(ui, p.title(), self.settings_page == p).clicked() {
+                                self.settings_page = p;
+                            }
+                        }
+                    });
                 }
+                glass::title(ui, page.title());
+                ui.label(RichText::new(page.blurb()).color(glass::QUIET));
+                ui.add_space(12.0);
+                // The page is as wide as the pane (at most 860 points): rows
+                // wrap rather than push the cards past its edge.
+                let width = ui.max_rect().width().min(860.0);
+                egui::ScrollArea::vertical()
+                    .id_salt(("settings-page", page as u8))
+                    .auto_shrink([false, false])
+                    .max_width(width + 12.0)
+                    .show(ui, |ui| {
+                        ui.set_width(width);
+                        match page {
+                            SettingsPage::Profile => self.settings_profile(ui),
+                            SettingsPage::Riding => self.settings_riding(ui),
+                            SettingsPage::Appearance => {
+                                self.settings_appearance(ui);
+                                ui.add_space(14.0);
+                                self.settings_display(ui);
+                            }
+                            SettingsPage::Sound => {
+                                self.settings_music(ui);
+                                ui.add_space(14.0);
+                                glass::heading(ui, "Workout beeps");
+                                self.settings_sound(ui);
+                            }
+                            SettingsPage::Connections => {
+                                glass::heading(ui, "Strava");
+                                self.settings_strava(ui);
+                                ui.add_space(14.0);
+                                glass::heading(ui, "intervals.icu");
+                                self.settings_icu(ui);
+                                ui.add_space(14.0);
+                                glass::heading(ui, "Phone remote");
+                                self.settings_remote(ui);
+                            }
+                            SettingsPage::Data => self.settings_data(ui),
+                        }
+                    });
             });
+        });
+    }
+
+    /// The picture behind the screens (Waves, or pictures you add), how
+    /// dark the glass is, how much the picture is dimmed, and text size.
+    fn settings_appearance(&mut self, ui: &mut egui::Ui) {
+        use super::glass;
+        glass::heading(ui, "Background");
+        ui.add_space(6.0);
+        let mut choose = None;
+        let mut remove = None;
+        let mut add = false;
+        let mut tiles: Vec<(String, String)> =
+            vec![(String::new(), "Waves · a colour per section".into())];
+        tiles.extend(self.store.settings.pictures.iter().map(|p| {
+            (
+                p.clone(),
+                p.rsplit_once('.').map(|x| x.0).unwrap_or(p).to_string(),
+            )
+        }));
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(14.0, 14.0);
+            let size = Vec2::new(168.0, 105.0);
+            for (file, name) in &tiles {
+                let tex = self.picture_thumb(ui.ctx(), file);
+                let chosen = &self.store.settings.wallpaper == file;
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 6.0;
+                    let (r, resp) = ui.allocate_exact_size(size, Sense::click());
+                    if let Some(t) = tex {
+                        ui.painter().add(
+                            egui::epaint::RectShape::filled(
+                                r,
+                                CornerRadius::same(16),
+                                Color32::WHITE,
+                            )
+                            .with_texture(t, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0))),
+                        );
+                    } else {
+                        ui.painter().rect_filled(
+                            r,
+                            CornerRadius::same(16),
+                            Color32::from_white_alpha(20),
+                        );
+                    }
+                    if chosen {
+                        ui.painter().rect_stroke(
+                            r.expand(3.0),
+                            CornerRadius::same(19),
+                            Stroke::new(2.0, Color32::WHITE),
+                            egui::StrokeKind::Inside,
+                        );
+                        let c = Pos2::new(r.right() - 18.0, r.top() + 18.0);
+                        ui.painter()
+                            .circle_filled(c, 11.0, Color32::from_white_alpha(235));
+                        glass::glyph(
+                            ui.painter(),
+                            c,
+                            glass::Glyph::Check,
+                            Color32::from_rgb(28, 29, 33),
+                        );
+                    }
+                    if resp
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        choose = Some(file.clone());
+                    }
+                    ui.allocate_ui(Vec2::new(size.x, 18.0), |ui| {
+                        ui.set_width(size.x);
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(name)
+                                    .font(if chosen {
+                                        theme::medium(13.0)
+                                    } else {
+                                        theme::regular(13.0)
+                                    })
+                                    .color(Color32::WHITE),
+                            )
+                            .truncate(),
+                        );
+                    });
+                    if !file.is_empty()
+                        && ui
+                            .add(
+                                egui::Label::new(
+                                    RichText::new("Remove")
+                                        .font(theme::regular(12.5))
+                                        .color(glass::ALERT),
+                                )
+                                .sense(Sense::click()),
+                            )
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                    {
+                        remove = Some(file.clone());
+                    }
+                });
+            }
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 6.0;
+                let (r, resp) = ui.allocate_exact_size(size, Sense::click());
+                ui.painter()
+                    .rect_filled(r, CornerRadius::same(16), Color32::from_white_alpha(15));
+                ui.painter().rect_stroke(
+                    r,
+                    CornerRadius::same(16),
+                    Stroke::new(1.5, Color32::from_white_alpha(128)),
+                    egui::StrokeKind::Inside,
+                );
+                glass::glyph(
+                    ui.painter(),
+                    r.center() - Vec2::new(0.0, 8.0),
+                    glass::Glyph::Plus,
+                    Color32::WHITE,
+                );
+                ui.painter().text(
+                    r.center() + Vec2::new(0.0, 16.0),
+                    Align2::CENTER_CENTER,
+                    "JPG or PNG",
+                    theme::regular(12.0),
+                    glass::SOFT,
+                );
+                if resp
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    add = true;
+                }
+                ui.label(RichText::new("Your own picture…").color(Color32::WHITE));
+            });
+        });
+        if let Some(f) = choose {
+            self.store.settings.wallpaper = f;
+            self.mark_dirty();
+        }
+        if let Some(f) = remove {
+            let _ = std::fs::remove_file(self.paths.pictures().join(&f));
+            self.store.settings.pictures.retain(|p| p != &f);
+            if self.store.settings.wallpaper == f {
+                self.store.settings.wallpaper.clear();
+            }
+            self.picture_thumbs.remove(&f);
+            self.mark_dirty();
+        }
+        if add {
+            self.add_picture();
+        }
+
+        ui.add_space(16.0);
+        glass::heading(ui, "Glass");
+        ui.add_space(4.0);
+        let s = &mut self.store.settings;
+        let mut changed = false;
+        changed |= row(
+            ui,
+            "Panel darkness",
+            "Darker panels read better over bright pictures.",
+            |ui| {
+                ui.add(egui::Slider::new(&mut s.panel_darkness, 30..=85).suffix("%"))
+                    .changed()
+            },
+        );
+        changed |= row(ui, "Dim the picture", "", |ui| {
+            ui.add(egui::Slider::new(&mut s.dim_picture, 0..=60).suffix("%"))
+                .changed()
+        });
+        changed |= row(
+            ui,
+            "Text size",
+            "For reading from the bike, or on a TV across the room.",
+            |ui| {
+                // The nearest of the four sizes, in tenths so they compare.
+                let mut size = [10, 12, 14, 17]
+                    .into_iter()
+                    .min_by_key(|t| (s.text_size * 10.0 - *t as f32).abs() as i32)
+                    .unwrap_or(10);
+                let c = segmented(
+                    ui,
+                    &mut size,
+                    &[
+                        (10, "Default", "Standard size"),
+                        (12, "Large", "Everything 20% larger"),
+                        (14, "Larger", "Everything 40% larger"),
+                        (17, "TV", "Everything 70% larger, for a TV across the room"),
+                    ],
+                );
+                if c {
+                    s.text_size = size as f32 / 10.0;
+                }
+                c
+            },
+        );
+        changed |= row(
+            ui,
+            "Numbers",
+            "How heavy the figures are while riding.",
+            |ui| {
+                segmented(
+                    ui,
+                    &mut s.bold_figures,
+                    &[
+                        (false, "Light", "Thin figures, as in the mock-ups"),
+                        (true, "Bold", "Heavy figures, easier to read from far away"),
+                    ],
+                )
+            },
+        );
+        changed |= row(
+            ui,
+            "Quote on Home",
+            "A line about cycling under the greeting, a new one each day.",
+            |ui| {
+                segmented(
+                    ui,
+                    &mut s.home_quote,
+                    &[
+                        (true, "Show", "A quote that suits the day's plan"),
+                        (false, "Hide", "Just the greeting"),
+                    ],
+                )
+            },
+        );
+        if changed {
+            self.mark_dirty();
+        }
+    }
+
+    /// Your bike's gearing for virtual shifting: one or two chainrings, the
+    /// wheel, the cassette (a common one or your own), and the gears they
+    /// give.
+    fn settings_gearing(&mut self, ui: &mut egui::Ui) {
+        use super::glass;
+        use crate::gears;
+        let before = gears::get(self.store.settings.gear).ratio();
+        let mut changed = false;
+        let units = self.store.settings.units;
+        card(ui, "Your gearing", |ui| {
+            ui.add(
+                egui::Label::new(
+                    RichText::new(
+                        "For virtual shifting: set it up like your own bike and the gears feel the same.",
+                    )
+                    .color(glass::QUIET),
+                )
+                .wrap(),
+            );
+            ui.add_space(4.0);
+            let s = &mut self.store.settings;
+            let text = &mut self.cassette_text;
+            if ui.available_width() > 640.0 {
+                ui.columns(2, |cols| {
+                    changed |= gearing_front(&mut cols[0], s);
+                    changed |= gearing_cassette(&mut cols[1], s, text);
+                });
+            } else {
+                changed |= gearing_front(ui, s);
+                ui.add_space(6.0);
+                changed |= gearing_cassette(ui, s, text);
+            }
+            if changed {
+                super::apply_gearing(s);
+                s.gear = gears::nearest(&gears::all(), before);
+            }
+            ui.add_space(4.0);
+            ui.separator();
+            gearing_result(ui, s.gear, units, &s.chainrings, &s.cassette);
+        });
+        if changed {
+            self.mark_dirty();
+        }
+    }
+
+    /// Ask for a picture, copy it into the data folder and show it.
+    fn add_picture(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Choose a picture for the background")
+            .add_filter("Picture", &["jpg", "jpeg", "png"])
+            .pick_file()
+        else {
+            return;
+        };
+        let Ok(bytes) = std::fs::read(&path) else {
+            self.notify("Could not read that picture");
+            return;
+        };
+        if crate::backdrop::decode(&bytes).is_none() {
+            self.notify("That file is not a JPEG or PNG picture VeloForge can read");
+            return;
+        }
+        let dir = self.paths.pictures();
+        let _ = std::fs::create_dir_all(&dir);
+        let base = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "picture.jpg".into());
+        let mut name = base.clone();
+        let mut n = 2;
+        while dir.join(&name).exists() {
+            name = format!("{n}-{base}");
+            n += 1;
+        }
+        if let Err(e) = std::fs::write(dir.join(&name), &bytes) {
+            self.notify(format!("Could not keep the picture: {e}"));
+            return;
+        }
+        self.store.settings.pictures.push(name.clone());
+        self.store.settings.wallpaper = name;
+        self.mark_dirty();
+    }
+
+    /// A small copy of a background picture for its tile ("" is Waves).
+    fn picture_thumb(&mut self, ctx: &egui::Context, file: &str) -> Option<egui::TextureId> {
+        if !self.picture_thumbs.contains_key(file) {
+            let bytes = if file.is_empty() {
+                Some(crate::backdrop::WAVES.to_vec())
+            } else {
+                std::fs::read(self.paths.pictures().join(file)).ok()
+            };
+            let thumb = bytes
+                .and_then(|b| crate::backdrop::decode(&b))
+                .map(|p| crate::backdrop::shrink(&p, 340))
+                .map(|p| {
+                    ctx.load_texture(
+                        format!("thumb-{file}"),
+                        egui::ColorImage::from_rgba_unmultiplied(p.size, &p.rgba),
+                        egui::TextureOptions::LINEAR,
+                    )
+                });
+            self.picture_thumbs.insert(file.to_string(), thumb);
+        }
+        self.picture_thumbs
+            .get(file)
+            .and_then(|t| t.as_ref().map(|t| t.id()))
     }
 
     fn settings_profile(&mut self, ui: &mut egui::Ui) {
+        self.rider_card(ui);
         let s = &mut self.store.settings;
         let mut changed = false;
         let mut mass_changed = false;
@@ -294,9 +669,6 @@ impl App {
             mass_changed |= row(ui, "Bike weight", "", |ui| {
                 weight_value(ui, &mut s.bike_kg, 3.0..=30.0, units)
             });
-            changed |= row(ui, "Jersey colour", "Your rider in the 3D world.", |ui| {
-                ui.color_edit_button_srgb(&mut s.jersey).changed()
-            });
         });
         if mass_changed {
             self.dev.send(Cmd::SetMass(s.rider_kg + s.bike_kg));
@@ -354,6 +726,7 @@ impl App {
     }
 
     fn settings_riding(&mut self, ui: &mut egui::Ui) {
+        self.settings_gearing(ui);
         let s = &mut self.store.settings;
         let mut changed = false;
         card(ui, "Free ride", |ui| {
@@ -410,6 +783,13 @@ impl App {
             changed |= row(ui, "Auto-pause", "", |ui| {
                 ui.checkbox(&mut s.auto_pause, "Pause the clock when you stop pedalling")
                     .changed()
+            });
+            changed |= row(ui, "Auto-start", "", |ui| {
+                ui.checkbox(
+                    &mut s.start_by_pedalling,
+                    "Start the ride 10 s after you start pedalling",
+                )
+                .changed()
             });
             changed |= row(
                 ui,
@@ -995,7 +1375,7 @@ impl App {
         }
     }
 
-    fn settings_routes(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn settings_routes(&mut self, ui: &mut egui::Ui) {
         let mut make = false;
         let mut forget = None;
         let mut changed = false;
@@ -1355,4 +1735,822 @@ impl App {
             self.mark_dirty();
         }
     }
+}
+
+/// The chainrings (one or two, with their teeth) and the wheel.
+fn gearing_front(ui: &mut egui::Ui, s: &mut crate::store::Settings) -> bool {
+    use super::glass;
+    let mut changed = false;
+    ui.label(RichText::new("Chainrings").color(glass::SOFT));
+    let mut two = s.chainrings.len() > 1;
+    if segmented(
+        ui,
+        &mut two,
+        &[
+            (
+                false,
+                "1× one ring",
+                "One chainring, as on most gravel bikes",
+            ),
+            (true, "2× two rings", "A small and a big chainring"),
+        ],
+    ) {
+        s.chainrings = if two { vec![34, 50] } else { vec![40] };
+        changed = true;
+    }
+    ui.add_space(4.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 18.0;
+        let names: &[&str] = if s.chainrings.len() > 1 {
+            &["Small ring", "Big ring"]
+        } else {
+            &["Ring"]
+        };
+        for (i, name) in names.iter().enumerate() {
+            let Some(teeth) = s.chainrings.get_mut(i) else {
+                continue;
+            };
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 4.0;
+                ui.label(RichText::new(*name).color(glass::QUIET).size(12.5));
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    if glass::round(ui, 30.0, glass::Glyph::Minus, false, "Fewer teeth").clicked()
+                        && *teeth > 20
+                    {
+                        *teeth -= 1;
+                        changed = true;
+                    }
+                    changed |= ui
+                        .add(
+                            egui::DragValue::new(teeth)
+                                .range(20..=60)
+                                .suffix(" T")
+                                .speed(0.2),
+                        )
+                        .changed();
+                    if glass::round(ui, 30.0, glass::Glyph::Plus, false, "More teeth").clicked()
+                        && *teeth < 60
+                    {
+                        *teeth += 1;
+                        changed = true;
+                    }
+                });
+            });
+        }
+    });
+    ui.add_space(8.0);
+    ui.label(RichText::new("Wheel and tyre").color(glass::SOFT));
+    egui::ComboBox::from_id_salt("tyre")
+        .selected_text(s.tyre.as_str())
+        .show_ui(ui, |ui| {
+            for (name, _) in crate::gears::TYRES {
+                if ui.selectable_label(s.tyre == name, name).clicked() && s.tyre != name {
+                    s.tyre = name.to_string();
+                    changed = true;
+                }
+            }
+        });
+    ui.add(
+        egui::Label::new(
+            RichText::new(
+                "Bigger tyres roll further each turn: the same gear goes a little faster.",
+            )
+            .size(12.0)
+            .color(glass::QUIET),
+        )
+        .wrap(),
+    );
+    changed
+}
+
+/// The cassette: a common one from the list, or your own typed in.
+fn gearing_cassette(
+    ui: &mut egui::Ui,
+    s: &mut crate::store::Settings,
+    text: &mut Option<String>,
+) -> bool {
+    use super::glass;
+    let mut changed = false;
+    ui.label(RichText::new("Cassette").color(glass::SOFT));
+    egui::ScrollArea::vertical()
+        .id_salt("cassettes")
+        .max_height(262.0)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            for (name, cogs) in crate::gears::CASSETTES {
+                let on = s.cassette == cogs;
+                let (rect, resp) =
+                    ui.allocate_exact_size(Vec2::new(ui.available_width(), 42.0), Sense::click());
+                let p = ui.painter();
+                if on {
+                    p.rect_filled(rect, CornerRadius::same(12), Color32::from_white_alpha(36));
+                } else if resp.hovered() {
+                    p.rect_filled(rect, CornerRadius::same(12), Color32::from_white_alpha(26));
+                }
+                let dot = Pos2::new(rect.left() + 20.0, rect.center().y);
+                if on {
+                    p.circle_stroke(dot, 6.0, Stroke::new(4.0, Color32::WHITE));
+                } else {
+                    p.circle_stroke(dot, 7.0, Stroke::new(1.5, Color32::from_white_alpha(128)));
+                }
+                let count = format!("{} cogs", cogs.len());
+                let right = p.text(
+                    Pos2::new(rect.right() - 12.0, rect.center().y),
+                    Align2::RIGHT_CENTER,
+                    &count,
+                    theme::regular(12.0),
+                    glass::QUIET,
+                );
+                let clip = p.with_clip_rect(Rect::from_min_max(
+                    Pos2::new(rect.left() + 36.0, rect.top()),
+                    Pos2::new(right.left() - 8.0, rect.bottom()),
+                ));
+                clip.text(
+                    Pos2::new(rect.left() + 36.0, rect.center().y - 8.0),
+                    Align2::LEFT_CENTER,
+                    name,
+                    if on {
+                        theme::semibold(13.5)
+                    } else {
+                        theme::regular(13.5)
+                    },
+                    Color32::WHITE,
+                );
+                clip.text(
+                    Pos2::new(rect.left() + 36.0, rect.center().y + 9.0),
+                    Align2::LEFT_CENTER,
+                    cogs.iter()
+                        .map(|c| c.to_string())
+                        .collect::<Vec<_>>()
+                        .join("-"),
+                    theme::regular(11.5),
+                    glass::QUIET,
+                );
+                if resp
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                    && !on
+                {
+                    s.cassette = cogs.to_vec();
+                    *text = None;
+                    changed = true;
+                }
+            }
+        });
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new("Or type your own, smallest to biggest")
+            .size(12.5)
+            .color(glass::QUIET),
+    );
+    let preset = crate::gears::CASSETTES.iter().any(|c| s.cassette == c.1);
+    let t = text.get_or_insert_with(|| {
+        if preset {
+            String::new()
+        } else {
+            s.cassette
+                .iter()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>()
+                .join("-")
+        }
+    });
+    if ui
+        .add(
+            egui::TextEdit::singleline(t)
+                .hint_text("e.g. 10-11-12-13-15-17-19-21-24-28-32-38-46")
+                .desired_width(f32::INFINITY),
+        )
+        .changed()
+    {
+        let mut cogs: Vec<u8> = t
+            .split(|c: char| !c.is_ascii_digit())
+            .filter_map(|x| x.parse().ok())
+            .filter(|&c| (8..=60).contains(&c))
+            .collect();
+        cogs.sort_unstable();
+        cogs.dedup();
+        if cogs.len() >= 2 && cogs != s.cassette {
+            s.cassette = cogs;
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// What the gearing gives: how many gears, the easiest and hardest, and
+/// every gear as a bar.
+fn gearing_result(ui: &mut egui::Ui, gear: usize, units: Units, rings: &[u8], cogs: &[u8]) {
+    use super::glass;
+    use crate::gears;
+    let all = gears::all();
+    let n = all.len();
+    let kmh = |i: usize| units.speed(gears::speed(90.0, i) * 3.6);
+    let name = |g: gears::Gear| format!("{}×{}", g.ring, g.cog);
+    ui.horizontal_wrapped(|ui| {
+        ui.label(
+            RichText::new(format!("{n} gears · {}", gears::describe(rings, cogs)))
+                .font(theme::semibold(15.0))
+                .color(Color32::WHITE),
+        );
+        ui.label(
+            RichText::new(format!(
+                "Easiest {} ≈ {:.0} {u} · hardest {} ≈ {:.0} {u}, at 90 rpm",
+                name(all[0]),
+                kmh(0),
+                name(all[n - 1]),
+                kmh(n - 1),
+                u = units.speed_unit()
+            ))
+            .color(glass::SOFT),
+        );
+    });
+    let labels = ui.available_width() / n as f32 > 34.0;
+    let (rect, _) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), if labels { 92.0 } else { 72.0 }),
+        Sense::hover(),
+    );
+    let gap = 4.0;
+    let w = (rect.width() - gap * (n - 1) as f32) / n as f32;
+    let max = all[n - 1].ratio() as f32;
+    let big = all.iter().map(|g| g.ring).max().unwrap_or(0);
+    let two = all.iter().any(|g| g.ring != big);
+    let gear = gear.min(n - 1);
+    let p = ui.painter();
+    for (i, g) in all.iter().enumerate() {
+        let x = rect.left() + i as f32 * (w + gap);
+        let h = 12.0 + g.ratio() as f32 / max * 58.0;
+        let bottom = rect.top() + 70.0;
+        let fill = if i == gear {
+            Color32::from_white_alpha(235)
+        } else if two && g.ring == big {
+            Color32::from_white_alpha(82)
+        } else {
+            Color32::from_white_alpha(51)
+        };
+        p.rect_filled(
+            Rect::from_min_max(Pos2::new(x, bottom - h), Pos2::new(x + w, bottom)),
+            CornerRadius::same(4),
+            fill,
+        );
+        if labels {
+            p.text(
+                Pos2::new(x + w / 2.0, bottom + 14.0),
+                Align2::CENTER_CENTER,
+                name(*g),
+                theme::regular(10.5),
+                if i == gear {
+                    Color32::WHITE
+                } else {
+                    glass::QUIET
+                },
+            );
+        }
+    }
+    ui.add(
+        egui::Label::new(
+            RichText::new(if two {
+                "Two rings are shifted as a rider does: the small ring on the bigger cogs, then the big ring, \
+                 leaving out crossed and near-duplicate gears. The highlighted gear is the one you are in."
+            } else {
+                "One ring: every cog is a gear, in order. The highlighted gear is the one you are in; \
+                 changing the gearing moves you to the nearest one."
+            })
+            .size(12.5)
+            .color(glass::QUIET),
+        )
+        .wrap(),
+    );
+}
+
+/// Jersey swatches (sRGB), in order; any other colour is on the wheel.
+/// The polka-dot one is white with dots in its colour (`jersey_dots`).
+const JERSEYS: [(&str, [u8; 3], bool); 8] = [
+    ("White", [237, 237, 239], false),
+    ("Grey", [128, 131, 138], false),
+    ("Black", [27, 28, 32], false),
+    ("Yellow", [242, 194, 48], false),
+    ("Green", [60, 154, 62], false),
+    ("Polka dot", [201, 37, 44], true),
+    ("Pink", [226, 85, 154], false),
+    ("Red", [201, 37, 44], false),
+];
+
+/// The jersey swatches: the chosen one ringed, the polka-dot one drawn
+/// white with red dots. True if one was clicked.
+fn jersey_swatches(ui: &mut egui::Ui, colour: &mut [u8; 3], dots: &mut bool, size: f32) -> bool {
+    let mut picked = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 9.0;
+        for (name, rgb, polka) in JERSEYS {
+            let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size + 6.0), Sense::click());
+            let p = ui.painter();
+            let (c, r) = (rect.center(), size / 2.0);
+            let fill = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+            if polka {
+                p.circle_filled(c, r, Color32::from_rgb(237, 237, 239));
+                for (dx, dy) in [
+                    (0.0, 0.0),
+                    (-0.5, -0.45),
+                    (0.5, -0.45),
+                    (-0.5, 0.45),
+                    (0.5, 0.45),
+                    (0.0, -0.9),
+                    (0.0, 0.9),
+                    (-0.95, 0.0),
+                    (0.95, 0.0),
+                ] {
+                    let at = c + Vec2::new(dx, dy) * r * 0.62;
+                    p.circle_filled(at, r * 0.17, fill);
+                }
+            } else {
+                p.circle_filled(c, r, fill);
+            }
+            p.circle_stroke(c, r, Stroke::new(1.0, Color32::from_white_alpha(60)));
+            if *colour == rgb && *dots == polka {
+                p.circle_stroke(c, r + 2.5, Stroke::new(2.0, Color32::WHITE));
+            } else if resp.hovered() {
+                p.circle_stroke(c, r + 2.5, Stroke::new(1.5, Color32::from_white_alpha(120)));
+            }
+            if resp
+                .on_hover_text(name)
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
+                *colour = rgb;
+                *dots = polka;
+                picked = true;
+            }
+        }
+    });
+    picked
+}
+
+/// Paints offered for the aero bike (sRGB).
+const PAINTS: [(&str, [u8; 3]); 7] = [
+    ("Red", [206, 32, 39]),
+    ("Black", [22, 23, 26]),
+    ("White", [237, 237, 239]),
+    ("Blue", [30, 79, 168]),
+    ("Sage", [124, 148, 115]),
+    ("Sand", [200, 180, 142]),
+    ("Orange", [232, 102, 42]),
+];
+
+/// The views the preview's buttons turn to: from the side, three
+/// quarters from the front, and head on.
+const VIEWS: [(&str, f32); 3] = [
+    ("Side", 0.0),
+    ("¾", 0.62),
+    ("Front", std::f32::consts::FRAC_PI_2),
+];
+
+/// A row of round colour swatches; the chosen one ringed. True if one was
+/// clicked.
+fn swatches(
+    ui: &mut egui::Ui,
+    value: &mut [u8; 3],
+    options: &[(&str, [u8; 3])],
+    size: f32,
+) -> bool {
+    let mut picked = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 9.0;
+        for (name, rgb) in options {
+            let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size + 6.0), Sense::click());
+            let p = ui.painter();
+            let r = size / 2.0;
+            p.circle_filled(rect.center(), r, Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
+            p.circle_stroke(
+                rect.center(),
+                r,
+                Stroke::new(1.0, Color32::from_white_alpha(60)),
+            );
+            if *value == *rgb {
+                p.circle_stroke(rect.center(), r + 2.5, Stroke::new(2.0, Color32::WHITE));
+            } else if resp.hovered() {
+                p.circle_stroke(
+                    rect.center(),
+                    r + 2.5,
+                    Stroke::new(1.5, Color32::from_white_alpha(120)),
+                );
+            }
+            if resp
+                .on_hover_text(*name)
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
+                *value = *rgb;
+                picked = true;
+            }
+        }
+    });
+    picked
+}
+
+impl App {
+    /// Settings › Profile's first card: the rider on the bike in 3D,
+    /// turning when dragged, beside the jersey, bike, kit and skin choices.
+    fn rider_card(&mut self, ui: &mut egui::Ui) {
+        let mut changed = false;
+        card(ui, "Your rider", |ui| {
+            let wide = ui.available_width() > 620.0;
+            let preview_w = if wide {
+                (ui.available_width() * 0.5).min(460.0)
+            } else {
+                ui.available_width()
+            };
+            let layout = if wide {
+                egui::Layout::left_to_right(egui::Align::TOP)
+            } else {
+                egui::Layout::top_down(egui::Align::LEFT)
+            };
+            ui.with_layout(layout, |ui| {
+                ui.spacing_mut().item_spacing.x = 22.0;
+                ui.allocate_ui_with_layout(
+                    Vec2::new(preview_w, 0.0),
+                    egui::Layout::top_down(egui::Align::LEFT),
+                    |ui| self.rider_preview(ui, preview_w),
+                );
+                ui.allocate_ui_with_layout(
+                    Vec2::new(ui.available_width(), 0.0),
+                    egui::Layout::top_down(egui::Align::LEFT),
+                    |ui| changed |= self.rider_choices(ui),
+                );
+            });
+        });
+        if changed {
+            self.mark_dirty();
+        }
+    }
+
+    /// The preview: a stage with the rider drawn on it, the view buttons
+    /// above, and a hint to drag.
+    fn rider_preview(&mut self, ui: &mut egui::Ui, w: f32) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for (name, yaw) in VIEWS {
+                let on = (wrap_pi(self.preview_yaw_to - yaw)).abs() < 0.05;
+                let text = RichText::new(name).size(12.5).color(if on {
+                    Color32::WHITE
+                } else {
+                    Color32::from_white_alpha(200)
+                });
+                let b = egui::Button::new(text)
+                    .fill(if on {
+                        Color32::from_white_alpha(50)
+                    } else {
+                        Color32::TRANSPARENT
+                    })
+                    .corner_radius(99);
+                if ui.add(b).clicked() {
+                    self.preview_yaw_to = yaw;
+                }
+            }
+        });
+        let h = (w * 0.86).max(200.0);
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, h), Sense::drag());
+        let p = ui.painter_at(rect);
+        if resp.dragged() {
+            let dx = resp.drag_delta().x * 0.012;
+            self.preview_yaw -= dx;
+            self.preview_yaw_to = self.preview_yaw;
+        }
+        // Ease to the view picked, the short way round.
+        let gap = wrap_pi(self.preview_yaw_to - self.preview_yaw);
+        self.preview_yaw += gap * 0.18;
+        let s = &self.store.settings;
+        if self.gpu_capable {
+            let look = crate::gfx::PreviewLook {
+                jersey: s.jersey,
+                skin: s.skin,
+                yaw: self.preview_yaw,
+                time: ui.input(|i| i.time),
+            };
+            self.gpu.paint_preview(&p, rect, &look);
+            ui.ctx().request_repaint();
+        } else {
+            p.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "The 3D preview needs 3D graphics,\nwhich are off on this computer.",
+                theme::regular(13.0),
+                Color32::from_white_alpha(190),
+            );
+        }
+        let resp = resp.on_hover_cursor(egui::CursorIcon::Grab);
+        let _ = resp;
+        p.text(
+            rect.center_bottom() + Vec2::new(0.0, -4.0),
+            egui::Align2::CENTER_BOTTOM,
+            "Drag to turn",
+            theme::regular(12.0),
+            Color32::from_white_alpha(200),
+        );
+    }
+
+    /// Jersey, bike, kit and skin. True if any changed.
+    fn rider_choices(&mut self, ui: &mut egui::Ui) -> bool {
+        let s = &mut self.store.settings;
+        let mut changed = false;
+        let label = |ui: &mut egui::Ui, t: &str| {
+            ui.label(
+                RichText::new(t)
+                    .size(13.0)
+                    .color(Color32::from_white_alpha(200)),
+            );
+        };
+        ui.spacing_mut().item_spacing.y = 8.0;
+        label(ui, "Jersey colour");
+        ui.horizontal_wrapped(|ui| {
+            changed |= jersey_swatches(ui, &mut s.jersey, &mut s.jersey_dots, 26.0);
+            // A colour of your own: a plain jersey in it.
+            if colour_wheel(ui, &mut s.jersey, "jersey-wheel") {
+                s.jersey_dots = false;
+                changed = true;
+            }
+        });
+        ui.add_space(4.0);
+        // The aero bike, where this build has it (see tools/bike-model).
+        let aero = crate::gfx::aero_bike_available();
+        if aero {
+            label(ui, "Bike");
+            changed |= segmented(
+                ui,
+                &mut s.classic_bike,
+                &[
+                    (false, "Aero road", "A red aero road bike with disc brakes"),
+                    (true, "Classic", "The simpler bike VeloForge started with"),
+                ],
+            );
+        }
+        if aero && !s.classic_bike {
+            ui.horizontal_wrapped(|ui| {
+                changed |= swatches(ui, &mut s.bike_colour, &PAINTS, 22.0);
+                changed |= colour_wheel(ui, &mut s.bike_colour, "bike-wheel");
+            });
+            ui.push_id("tyres", |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_sized(
+                        Vec2::new(90.0, 24.0),
+                        egui::Label::new(RichText::new("Tyres").size(13.5)),
+                    );
+                    changed |= segmented(
+                        ui,
+                        &mut s.tan_walls,
+                        &[
+                            (false, "Black", "All-black tyres"),
+                            (true, "Tan wall", "Tan sidewalls, as on classic race tyres"),
+                        ],
+                    );
+                });
+            });
+        }
+        ui.add_space(4.0);
+        ui.separator();
+        ui.label(RichText::new("Kit").strong().size(14.0));
+        ui.label(
+            RichText::new("Black or white, each on its own.")
+                .size(12.5)
+                .color(Color32::from_white_alpha(170)),
+        );
+        for (i, name) in ["Helmet", "Gloves", "Socks", "Shoes"]
+            .into_iter()
+            .enumerate()
+        {
+            // Each row its own id: the switches' labels are the same.
+            ui.push_id(name, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_sized(
+                        Vec2::new(90.0, 24.0),
+                        egui::Label::new(RichText::new(name).size(13.5)),
+                    );
+                    changed |= segmented(
+                        ui,
+                        &mut s.kit_white[i],
+                        &[(false, "Black", ""), (true, "White", "")],
+                    );
+                });
+            });
+        }
+        ui.add_space(4.0);
+        ui.separator();
+        label(ui, "Skin tone");
+        changed |= swatches(ui, &mut s.skin, &crate::world::SKIN_TONES, 26.0);
+        changed
+    }
+}
+
+/// An angle wrapped to -π..π.
+fn wrap_pi(a: f32) -> f32 {
+    let t = std::f32::consts::TAU;
+    (a + std::f32::consts::PI).rem_euclid(t) - std::f32::consts::PI
+}
+
+/// sRGB (0..1) from hue (0..1, red at 0), saturation and brightness.
+fn hsv_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
+    let h6 = h.rem_euclid(1.0) * 6.0;
+    let i = h6.floor();
+    let f = h6 - i;
+    let (p, q, t) = (v * (1.0 - s), v * (1.0 - s * f), v * (1.0 - s * (1.0 - f)));
+    match i as i32 {
+        0 => [v, t, p],
+        1 => [q, v, p],
+        2 => [p, v, t],
+        3 => [p, q, v],
+        4 => [t, p, v],
+        _ => [v, p, q],
+    }
+}
+
+/// Hue, saturation and brightness (0..1) of an sRGB colour.
+fn rgb_hsv(c: [u8; 3]) -> [f32; 3] {
+    let [r, g, b] = c.map(|x| x as f32 / 255.0);
+    let max = r.max(g).max(b);
+    let d = max - r.min(g).min(b);
+    let h = if d <= 0.0 {
+        0.0
+    } else if max == r {
+        ((g - b) / d).rem_euclid(6.0) / 6.0
+    } else if max == g {
+        ((b - r) / d + 2.0) / 6.0
+    } else {
+        ((r - g) / d + 4.0) / 6.0
+    };
+    let s = if max <= 0.0 { 0.0 } else { d / max };
+    [h, s, max]
+}
+
+fn to_u8(c: [f32; 3]) -> [u8; 3] {
+    c.map(|x| (x.clamp(0.0, 1.0) * 255.0).round() as u8)
+}
+
+fn colour32(c: [f32; 3]) -> Color32 {
+    let [r, g, b] = to_u8(c);
+    Color32::from_rgb(r, g, b)
+}
+
+/// The colour in a hex code: "#1e4fa8", "1E4FA8" or the short "#14a".
+fn parse_hex(t: &str) -> Option<[u8; 3]> {
+    let t = t.trim().trim_start_matches('#');
+    let t: String = match t.len() {
+        3 => t.chars().flat_map(|c| [c, c]).collect(),
+        6 => t.to_string(),
+        _ => return None,
+    };
+    let byte = |i: usize| u8::from_str_radix(&t[i..i + 2], 16).ok();
+    Some([byte(0)?, byte(2)?, byte(4)?])
+}
+
+/// Any colour: a rainbow-ringed chip that opens a colour wheel (hue round
+/// it, strength out from the middle), a brightness slider and a hex code
+/// box. True if the colour changed.
+fn colour_wheel(ui: &mut egui::Ui, value: &mut [u8; 3], salt: &str) -> bool {
+    let id = ui.make_persistent_id(salt);
+    let ctx = ui.ctx().clone();
+    let mut open = ctx.data(|d| d.get_temp::<bool>(id).unwrap_or(false));
+    let (chip, resp) = ui.allocate_exact_size(Vec2::new(32.0, 32.0), Sense::click());
+    let p = ui.painter();
+    let c = chip.center();
+    // A rainbow ring round the chosen colour says "any colour".
+    for i in 0..36 {
+        let a0 = i as f32 / 36.0 * std::f32::consts::TAU;
+        let a1 = (i + 1) as f32 / 36.0 * std::f32::consts::TAU;
+        p.line_segment(
+            [c + 13.0 * Vec2::angled(a0), c + 13.0 * Vec2::angled(a1)],
+            Stroke::new(
+                3.0,
+                colour32(hsv_rgb(-(a0 / std::f32::consts::TAU), 0.85, 1.0)),
+            ),
+        );
+    }
+    p.circle_filled(c, 9.0, Color32::from_rgb(value[0], value[1], value[2]));
+    let resp = resp
+        .on_hover_text("Any colour: a wheel, or a hex code")
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    if resp.clicked() {
+        open = !open;
+    }
+    let mut changed = false;
+    if open {
+        // Hue kept while the colour is grey or black, where it is lost.
+        let hsv_id = id.with("hsv");
+        let mut hsv = ctx
+            .data(|d| d.get_temp::<[f32; 3]>(hsv_id))
+            .unwrap_or(rgb_hsv(*value));
+        if to_u8(hsv_rgb(hsv[0], hsv[1], hsv[2])) != *value {
+            hsv = rgb_hsv(*value);
+        }
+        let hex_id = id.with("hex");
+        let area = egui::Area::new(id.with("pop"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(chip.left_bottom() + Vec2::new(-80.0, 8.0))
+            .show(&ctx, |ui| {
+                egui::Frame::popup(ui.style())
+                    .corner_radius(16)
+                    .inner_margin(14)
+                    .show(ui, |ui| {
+                        ui.set_width(196.0);
+                        ui.spacing_mut().item_spacing.y = 10.0;
+                        let size = 196.0;
+                        let (rect, wr) =
+                            ui.allocate_exact_size(Vec2::splat(size), Sense::click_and_drag());
+                        let centre = rect.center();
+                        let r = size / 2.0 - 4.0;
+                        let mut mesh = egui::Mesh::default();
+                        mesh.colored_vertex(centre, colour32(hsv_rgb(0.0, 0.0, hsv[2])));
+                        let n = 72;
+                        for i in 0..=n {
+                            let h = i as f32 / n as f32;
+                            let a = -h * std::f32::consts::TAU;
+                            mesh.colored_vertex(
+                                centre + r * Vec2::angled(a),
+                                colour32(hsv_rgb(h, 1.0, hsv[2])),
+                            );
+                        }
+                        for i in 0..n as u32 {
+                            mesh.add_triangle(0, i + 1, i + 2);
+                        }
+                        ui.painter().add(egui::Shape::mesh(mesh));
+                        if let (true, Some(at)) =
+                            (wr.is_pointer_button_down_on(), wr.interact_pointer_pos())
+                        {
+                            let d = at - centre;
+                            hsv[0] = (-d.y.atan2(d.x) / std::f32::consts::TAU).rem_euclid(1.0);
+                            hsv[1] = (d.length() / r).min(1.0);
+                            if hsv[2] < 0.05 {
+                                hsv[2] = 1.0;
+                            }
+                            changed = true;
+                        }
+                        let mark =
+                            centre + hsv[1] * r * Vec2::angled(-hsv[0] * std::f32::consts::TAU);
+                        ui.painter().circle(
+                            mark,
+                            7.0,
+                            colour32(hsv_rgb(hsv[0], hsv[1], hsv[2])),
+                            Stroke::new(2.5, Color32::WHITE),
+                        );
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Brightness").size(12.5));
+                            ui.spacing_mut().slider_width = 110.0;
+                            if ui
+                                .add(egui::Slider::new(&mut hsv[2], 0.0..=1.0).show_value(false))
+                                .changed()
+                            {
+                                changed = true;
+                            }
+                        });
+                        if changed {
+                            *value = to_u8(hsv_rgb(hsv[0], hsv[1], hsv[2]));
+                        }
+                        ui.horizontal(|ui| {
+                            let (sw, _) = ui.allocate_exact_size(Vec2::splat(26.0), Sense::hover());
+                            ui.painter().rect_filled(
+                                sw,
+                                6.0,
+                                Color32::from_rgb(value[0], value[1], value[2]),
+                            );
+                            let current =
+                                format!("#{:02X}{:02X}{:02X}", value[0], value[1], value[2]);
+                            let mut text = ctx
+                                .data(|d| d.get_temp::<String>(hex_id))
+                                .unwrap_or(current.clone());
+                            let edit = ui.add(
+                                egui::TextEdit::singleline(&mut text)
+                                    .desired_width(110.0)
+                                    .hint_text("#1E4FA8")
+                                    .font(egui::TextStyle::Monospace),
+                            );
+                            if edit.changed() {
+                                if let Some(c) = parse_hex(&text) {
+                                    *value = c;
+                                    hsv = rgb_hsv(c);
+                                    changed = true;
+                                }
+                            }
+                            if edit.has_focus() {
+                                ctx.data_mut(|d| d.insert_temp(hex_id, text));
+                            } else {
+                                ctx.data_mut(|d| d.remove::<String>(hex_id));
+                            }
+                        });
+                    });
+            });
+        ctx.data_mut(|d| d.insert_temp(hsv_id, hsv));
+        // Clicking away, or Escape, closes it.
+        let away = ctx.input(|i| {
+            i.pointer.any_pressed()
+                && i.pointer
+                    .interact_pos()
+                    .is_some_and(|at| !area.response.rect.contains(at) && !chip.contains(at))
+        });
+        if away || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            open = false;
+        }
+    }
+    ctx.data_mut(|d| d.insert_temp(id, open));
+    changed
 }

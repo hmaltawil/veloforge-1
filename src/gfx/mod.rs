@@ -7,6 +7,30 @@
 //! Falls back to the software view in `world.rs` if anything goes wrong
 //! (see [`GpuWorld::error`]).
 
+mod bike_model;
+pub use bike_model::{
+    available as aero_bike_available, set_aero as use_aero_bike, set_paint as set_bike_paint,
+    set_tan_walls,
+};
+pub use body::{set_jersey_dots, set_kit};
+
+/// The road's surface for the road shader: each stretch (start, end,
+/// kind code, 0) in metres, and the course's length and whether it loops.
+static ROAD_SURFACE: std::sync::RwLock<(Vec<[f32; 4]>, [f32; 2])> =
+    std::sync::RwLock::new((Vec::new(), [1.0, 0.0]));
+
+/// Lay the road's surface along the course (see `surface.rs`).
+pub fn set_road_surface(stretches: &[crate::surface::Stretch], length: f64, looped: bool) {
+    let s: Vec<[f32; 4]> = stretches
+        .iter()
+        .take(crate::surface::MAX_STRETCHES)
+        .map(|s| [s.start as f32, s.end as f32, s.kind.code(), 0.0])
+        .collect();
+    if let Ok(mut r) = ROAD_SURFACE.write() {
+        *r = (s, [length as f32, if looped { 1.0 } else { 0.0 }]);
+    }
+}
+pub use preview::PreviewLook;
 mod body;
 mod buildings;
 mod fields;
@@ -17,6 +41,7 @@ mod lettering;
 mod math;
 mod mesh;
 pub(crate) mod mountains;
+mod preview;
 mod shaders;
 mod terrain;
 
@@ -394,7 +419,9 @@ struct FrameData {
     road: Vec<f32>,
     rider: Vec<f32>,
     /// Each rider's bone matrices and jersey colour.
-    skins: Vec<([M4; body::BONES], V3)>,
+    /// Each rider's bones, jersey and skin, and whether the jersey is in
+    /// polka dots (only yours).
+    skins: Vec<([M4; body::BONES], V3, V3, bool)>,
     posts: Vec<f32>,
     reflectors: Vec<f32>,
     planks: Vec<f32>,
@@ -527,7 +554,7 @@ fn start_sculpting() {
         let _ = std::thread::Builder::new()
             .name("sculpt-rider".into())
             .spawn(|| {
-                let _ = SKIN.set(body::build(0.01));
+                let _ = SKIN.set(body::build(0.008));
             });
         let _ = std::thread::Builder::new()
             .name("bake-trees".into())
@@ -943,8 +970,19 @@ impl GpuWorld {
                 time: (self.time % 3600.0) as f32,
             };
             let joints = mesh::joints(&pose);
-            rider.extend(mesh::bike(&pose, &joints).v);
-            skins.push((body::skinning(&self.rest_inverse, &joints), pose.jersey));
+            if bike_model::aero() {
+                // You in full; others (usually further off) lighter.
+                rider.extend(bike_model::mesh(&pose, &joints, i > 0).v);
+            } else {
+                rider.extend(mesh::bike(&pose, &joints).v);
+            }
+            let k = fig.skin;
+            skins.push((
+                body::skinning(&self.rest_inverse, &joints),
+                pose.jersey,
+                srgb(k.r(), k.g(), k.b()),
+                i == 0 && body::jersey_dots(),
+            ));
             rider_shadow.extend_from_slice(&[pos[0], pos[1] + 0.02, pos[2], 0.9]);
             if i == 0 {
                 lamp_pos = add(add(pos, scale(up_r, 1.0)), scale(fwd_r, 0.7));
@@ -1459,6 +1497,12 @@ struct GlState {
     /// The rider's sculpted body, made on the first frame.
     skin: Option<Buffers>,
     skin_tried: bool,
+    /// The rider preview (`preview.rs`): its programs are made, and the
+    /// bike's buffer, refilled each frame.
+    preview_ready: bool,
+    preview_bike: Option<Buffers>,
+    /// Where it's drawn smooth before going on the screen.
+    preview_target: Option<preview::PreviewTarget>,
     pub error: Option<String>,
     programs: HashMap<&'static str, Program>,
     sky_vao: Option<glow::VertexArray>,
@@ -2185,7 +2229,7 @@ impl GlState {
                 gl,
                 "skinned",
                 &[SKINNED_VS],
-                &[NOISE, LIGHT, FOLIAGE, OBJECT_FS],
+                &[NOISE, LIGHT, FOLIAGE, JERSEY_DOTS, OBJECT_FS],
                 &skinned_attribs,
             )?;
             self.compile(
@@ -3435,10 +3479,14 @@ impl GlState {
         };
         unsafe {
             let p = self.programs.get_mut(program).unwrap();
-            for (bones, tint) in &f.skins {
+            let kit: Vec<f32> = body::kit().iter().flatten().copied().collect();
+            gl.uniform_3_f32_slice(p.loc(gl, "u_kit"), &kit);
+            for (bones, tint, skin, dots) in &f.skins {
                 let flat: Vec<f32> = bones.iter().flatten().copied().collect();
                 gl.uniform_matrix_4_f32_slice(p.loc(gl, "u_bones"), false, &flat);
                 p.v3(gl, "u_tint", *tint);
+                p.v3(gl, "u_skin", *skin);
+                p.f1(gl, "u_dots", if *dots { 1.0 } else { 0.0 });
                 gl.bind_vertex_array(Some(vao));
                 gl.draw_elements(glow::TRIANGLES, count, glow::UNSIGNED_INT, 0);
             }
@@ -4136,6 +4184,16 @@ impl GlState {
             self.common(gl, "road", f);
             let p = self.programs.get_mut("road").unwrap();
             p.f1(gl, "u_snow", f.snow);
+            if let Ok(r) = ROAD_SURFACE.read() {
+                let (stretches, course) = (&r.0, r.1);
+                let mut flat: Vec<f32> = stretches.iter().flatten().copied().collect();
+                if flat.is_empty() {
+                    flat = vec![0.0, course[0], 0.0, 0.0];
+                }
+                gl.uniform_4_f32_slice(p.loc(gl, "u_surf"), &flat);
+                p.i1(gl, "u_nsurf", (flat.len() / 4) as i32);
+                p.f2(gl, "u_course", course[0].max(1.0), course[1]);
+            }
             gl.bind_vertex_array(Some(rvao));
             gl.draw_arrays(glow::TRIANGLES, 0, rcount);
             gl.disable(glow::POLYGON_OFFSET_FILL);
