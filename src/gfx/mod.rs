@@ -1480,6 +1480,8 @@ struct GlState {
     /// bike's buffer, refilled each frame.
     preview_ready: bool,
     preview_bike: Option<Buffers>,
+    /// Where it's drawn smooth before going on the screen.
+    preview_target: Option<preview::PreviewTarget>,
     pub error: Option<String>,
     programs: HashMap<&'static str, Program>,
     sky_vao: Option<glow::VertexArray>,

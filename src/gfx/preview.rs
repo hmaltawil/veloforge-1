@@ -87,6 +87,103 @@ void main() {
 }
 "#;
 
+/// Copies the smooth preview onto the screen, keeping its soft edges.
+const PREVIEW_COPY_VS: &str = r#"
+out vec2 v_uv;
+void main() {
+    vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+    v_uv = p;
+    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}
+"#;
+
+const PREVIEW_COPY_FS: &str = r#"
+in vec2 v_uv;
+uniform sampler2D u_tex;
+out vec4 frag;
+void main() {
+    frag = texture(u_tex, v_uv);
+}
+"#;
+
+/// Where the preview is drawn first: multisampled, as the 3D view is, so
+/// thin spokes and edges come out smooth rather than crawling as the
+/// wheels turn (the window itself isn't multisampled). Then resolved into
+/// a texture that goes on the screen.
+pub(super) struct PreviewTarget {
+    w: i32,
+    h: i32,
+    fbo: glow::Framebuffer,
+    color: glow::Renderbuffer,
+    depth: glow::Renderbuffer,
+    resolved: Target,
+}
+
+impl PreviewTarget {
+    unsafe fn new(gl: &glow::Context, w: i32, h: i32) -> Result<PreviewTarget, String> {
+        unsafe {
+            let samples = gl.get_parameter_i32(glow::MAX_SAMPLES).clamp(1, 8);
+            let color = gl.create_renderbuffer()?;
+            gl.bind_renderbuffer(glow::RENDERBUFFER, Some(color));
+            gl.renderbuffer_storage_multisample(glow::RENDERBUFFER, samples, glow::RGBA8, w, h);
+            let depth = gl.create_renderbuffer()?;
+            gl.bind_renderbuffer(glow::RENDERBUFFER, Some(depth));
+            gl.renderbuffer_storage_multisample(
+                glow::RENDERBUFFER,
+                samples,
+                glow::DEPTH_COMPONENT24,
+                w,
+                h,
+            );
+            let fbo = gl.create_framebuffer()?;
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+            gl.framebuffer_renderbuffer(
+                glow::FRAMEBUFFER,
+                glow::COLOR_ATTACHMENT0,
+                glow::RENDERBUFFER,
+                Some(color),
+            );
+            gl.framebuffer_renderbuffer(
+                glow::FRAMEBUFFER,
+                glow::DEPTH_ATTACHMENT,
+                glow::RENDERBUFFER,
+                Some(depth),
+            );
+            let complete =
+                gl.check_framebuffer_status(glow::FRAMEBUFFER) == glow::FRAMEBUFFER_COMPLETE;
+            let resolved = if complete {
+                GlState::target(gl, w, h, false).ok()
+            } else {
+                None
+            };
+            let Some(resolved) = resolved else {
+                gl.delete_framebuffer(fbo);
+                gl.delete_renderbuffer(color);
+                gl.delete_renderbuffer(depth);
+                return Err("multisampled preview not supported".into());
+            };
+            Ok(PreviewTarget {
+                w,
+                h,
+                fbo,
+                color,
+                depth,
+                resolved,
+            })
+        }
+    }
+
+    unsafe fn free(self, gl: &glow::Context) {
+        unsafe {
+            gl.delete_framebuffer(self.fbo);
+            gl.delete_renderbuffer(self.color);
+            gl.delete_renderbuffer(self.depth);
+            gl.delete_framebuffer(self.resolved.fbo);
+            gl.delete_texture(self.resolved.tex);
+        }
+    }
+}
+
 impl GpuWorld {
     /// Draw the rider on the bike in `rect`, over whatever is painted
     /// there already (the stage behind it).
@@ -217,6 +314,15 @@ impl GlState {
                         )
                     })
                     .and_then(|_| {
+                        self.compile(
+                            gl,
+                            "preview_copy",
+                            &[PREVIEW_COPY_VS],
+                            &[PREVIEW_COPY_FS],
+                            &[],
+                        )
+                    })
+                    .and_then(|_| {
                         Self::buffers(
                             gl,
                             &[(3, 0), (3, 3), (3, 6), (1, 9)],
@@ -233,9 +339,6 @@ impl GlState {
                     }
                 }
             }
-            let Some(bike) = self.preview_bike.as_mut() else {
-                return;
-            };
             if !self.skin_tried {
                 if let Some(skin) = SKIN.get() {
                     self.skin_tried = true;
@@ -245,27 +348,62 @@ impl GlState {
 
             let vp = info.viewport_in_pixels();
             let clip = info.clip_rect_in_pixels();
-            gl.viewport(vp.left_px, vp.from_bottom_px, vp.width_px, vp.height_px);
-            gl.enable(glow::SCISSOR_TEST);
-            gl.scissor(
-                clip.left_px,
-                clip.from_bottom_px,
-                clip.width_px,
-                clip.height_px,
-            );
-            gl.depth_mask(true);
-            gl.clear_depth_f32(1.0);
-            gl.clear(glow::DEPTH_BUFFER_BIT);
+            let (w, h) = (vp.width_px.max(1), vp.height_px.max(1));
+            let screen = gl.get_parameter_framebuffer(glow::DRAW_FRAMEBUFFER_BINDING);
+            // The smooth buffer, made again when the preview changes size. A
+            // driver that can't make one gets the preview drawn straight on
+            // the screen.
+            if self
+                .preview_target
+                .as_ref()
+                .is_none_or(|t| t.w != w || t.h != h)
+            {
+                if let Some(old) = self.preview_target.take() {
+                    old.free(gl);
+                }
+                self.preview_target = PreviewTarget::new(gl, w, h).ok();
+            }
+            let smooth = self
+                .preview_target
+                .as_ref()
+                .map(|t| (t.fbo, t.resolved.fbo, t.resolved.tex));
+            if let Some((fbo, _, _)) = smooth {
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+                gl.disable(glow::SCISSOR_TEST);
+                gl.viewport(0, 0, w, h);
+                gl.color_mask(true, true, true, true);
+                gl.clear_color(0.0, 0.0, 0.0, 0.0);
+                gl.depth_mask(true);
+                gl.clear_depth_f32(1.0);
+                gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
+            } else {
+                gl.bind_framebuffer(glow::FRAMEBUFFER, screen);
+                gl.viewport(vp.left_px, vp.from_bottom_px, vp.width_px, vp.height_px);
+                gl.enable(glow::SCISSOR_TEST);
+                gl.scissor(
+                    clip.left_px,
+                    clip.from_bottom_px,
+                    clip.width_px,
+                    clip.height_px,
+                );
+                gl.depth_mask(true);
+                gl.clear_depth_f32(1.0);
+                gl.clear(glow::DEPTH_BUFFER_BIT);
+            }
             gl.enable(glow::DEPTH_TEST);
             gl.depth_func(glow::LEQUAL);
             gl.disable(glow::CULL_FACE);
             gl.disable(glow::BLEND);
 
+            let Some(bike) = self.preview_bike.as_mut() else {
+                return;
+            };
             // The bike.
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(bike.vbo));
             gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes(&f.bike), glow::DYNAMIC_DRAW);
             bike.count = (f.bike.len() / mesh::VERTEX_STRIDE) as i32;
             let (vao, count) = (bike.vao, bike.count);
+            let bike_vao = vao;
             let p = self.programs.get_mut("preview_obj").unwrap();
             gl.use_program(Some(p.id));
             p.m4(gl, "u_vp", &f.vp);
@@ -287,6 +425,44 @@ impl GlState {
                 gl.uniform_3_f32_slice(p.loc(gl, "u_kit"), &kit);
                 gl.bind_vertex_array(Some(vao));
                 gl.draw_elements(glow::TRIANGLES, count, glow::UNSIGNED_INT, 0);
+            }
+
+            // The smooth picture onto the screen, its soft edges blended
+            // over what's behind it.
+            if let Some((fbo, resolved, tex)) = smooth {
+                gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(fbo));
+                gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(resolved));
+                gl.blit_framebuffer(
+                    0,
+                    0,
+                    w,
+                    h,
+                    0,
+                    0,
+                    w,
+                    h,
+                    glow::COLOR_BUFFER_BIT,
+                    glow::NEAREST,
+                );
+                gl.bind_framebuffer(glow::FRAMEBUFFER, screen);
+                gl.viewport(vp.left_px, vp.from_bottom_px, vp.width_px, vp.height_px);
+                gl.enable(glow::SCISSOR_TEST);
+                gl.scissor(
+                    clip.left_px,
+                    clip.from_bottom_px,
+                    clip.width_px,
+                    clip.height_px,
+                );
+                gl.disable(glow::DEPTH_TEST);
+                gl.enable(glow::BLEND);
+                gl.blend_func(glow::ONE, glow::ONE_MINUS_SRC_ALPHA);
+                let p = self.programs.get_mut("preview_copy").unwrap();
+                gl.use_program(Some(p.id));
+                gl.active_texture(glow::TEXTURE0);
+                gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+                p.i1(gl, "u_tex", 0);
+                gl.bind_vertex_array(Some(bike_vao));
+                gl.draw_arrays(glow::TRIANGLES, 0, 3);
             }
 
             gl.bind_vertex_array(None);
