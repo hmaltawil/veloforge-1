@@ -1084,6 +1084,7 @@ impl App {
         crate::gfx::use_aero_bike(!s.classic_bike);
         crate::gfx::set_kit(s.kit_white);
         crate::gfx::set_tan_walls(s.tan_walls);
+        crate::gfx::set_jersey_dots(s.jersey_dots);
         let lin = |c: u8| {
             let c = c as f32 / 255.0;
             if c <= 0.04045 {

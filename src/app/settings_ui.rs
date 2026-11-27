@@ -2025,18 +2025,68 @@ fn gearing_result(ui: &mut egui::Ui, gear: usize, units: Units, rings: &[u8], co
     );
 }
 
-/// Jersey colours offered as swatches (sRGB); any other is a click away.
-const JERSEYS: [(&str, [u8; 3]); 9] = [
-    ("Orange", [230, 90, 40]),
-    ("Red", [201, 37, 44]),
-    ("Blue", [37, 99, 201]),
-    ("Teal", [20, 163, 160]),
-    ("Green", [60, 154, 62]),
-    ("Yellow", [242, 194, 48]),
-    ("Pink", [226, 85, 154]),
-    ("Black", [27, 28, 32]),
-    ("White", [237, 237, 239]),
+/// Jersey swatches (sRGB), in order; any other colour is on the wheel.
+/// The polka-dot one is white with dots in its colour (`jersey_dots`).
+const JERSEYS: [(&str, [u8; 3], bool); 8] = [
+    ("White", [237, 237, 239], false),
+    ("Grey", [128, 131, 138], false),
+    ("Black", [27, 28, 32], false),
+    ("Yellow", [242, 194, 48], false),
+    ("Green", [60, 154, 62], false),
+    ("Polka dot", [201, 37, 44], true),
+    ("Pink", [226, 85, 154], false),
+    ("Red", [201, 37, 44], false),
 ];
+
+/// The jersey swatches: the chosen one ringed, the polka-dot one drawn
+/// white with red dots. True if one was clicked.
+fn jersey_swatches(ui: &mut egui::Ui, colour: &mut [u8; 3], dots: &mut bool, size: f32) -> bool {
+    let mut picked = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 9.0;
+        for (name, rgb, polka) in JERSEYS {
+            let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size + 6.0), Sense::click());
+            let p = ui.painter();
+            let (c, r) = (rect.center(), size / 2.0);
+            let fill = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+            if polka {
+                p.circle_filled(c, r, Color32::from_rgb(237, 237, 239));
+                for (dx, dy) in [
+                    (0.0, 0.0),
+                    (-0.5, -0.45),
+                    (0.5, -0.45),
+                    (-0.5, 0.45),
+                    (0.5, 0.45),
+                    (0.0, -0.9),
+                    (0.0, 0.9),
+                    (-0.95, 0.0),
+                    (0.95, 0.0),
+                ] {
+                    let at = c + Vec2::new(dx, dy) * r * 0.62;
+                    p.circle_filled(at, r * 0.17, fill);
+                }
+            } else {
+                p.circle_filled(c, r, fill);
+            }
+            p.circle_stroke(c, r, Stroke::new(1.0, Color32::from_white_alpha(60)));
+            if *colour == rgb && *dots == polka {
+                p.circle_stroke(c, r + 2.5, Stroke::new(2.0, Color32::WHITE));
+            } else if resp.hovered() {
+                p.circle_stroke(c, r + 2.5, Stroke::new(1.5, Color32::from_white_alpha(120)));
+            }
+            if resp
+                .on_hover_text(name)
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
+                *colour = rgb;
+                *dots = polka;
+                picked = true;
+            }
+        }
+    });
+    picked
+}
 
 /// Paints offered for the aero bike (sRGB).
 const PAINTS: [(&str, [u8; 3]); 7] = [
@@ -2215,8 +2265,12 @@ impl App {
         ui.spacing_mut().item_spacing.y = 8.0;
         label(ui, "Jersey colour");
         ui.horizontal_wrapped(|ui| {
-            changed |= swatches(ui, &mut s.jersey, &JERSEYS, 26.0);
-            changed |= colour_wheel(ui, &mut s.jersey, "jersey-wheel");
+            changed |= jersey_swatches(ui, &mut s.jersey, &mut s.jersey_dots, 26.0);
+            // A colour of your own: a plain jersey in it.
+            if colour_wheel(ui, &mut s.jersey, "jersey-wheel") {
+                s.jersey_dots = false;
+                changed = true;
+            }
         });
         ui.add_space(4.0);
         // The aero bike, where this build has it (see tools/bike-model).

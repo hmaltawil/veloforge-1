@@ -40,6 +40,17 @@ pub const MAT_FABRIC: f32 = 7.0;
 pub const KIT_MARK: f32 = 4.0;
 
 /// The kit's colours drawn now (see [`set_kit`]).
+/// Your jersey in polka dots: white, with dots in its colour.
+static JERSEY_DOTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_jersey_dots(on: bool) {
+    JERSEY_DOTS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn jersey_dots() -> bool {
+    JERSEY_DOTS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 static KIT: std::sync::RwLock<[V3; 5]> =
     std::sync::RwLock::new(kit_colours([true, false, true, true]));
 

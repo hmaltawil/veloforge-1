@@ -59,6 +59,10 @@ in float v_h;
 uniform vec3 u_cam;
 out vec4 frag;
 void main() {
+    vec3 albedo = v_col;
+#ifdef DOTS
+    albedo = jersey_dots(albedo);
+#endif
     vec3 n = normalize(v_nrm);
     vec3 v = normalize(u_cam - v_pos);
     if (dot(n, v) < 0.0) n = -n;
@@ -72,9 +76,9 @@ void main() {
     vec3 light = vec3(1.0, 0.96, 0.9) * d * 1.7
         + vec3(0.55, 0.62, 0.78) * f * 0.5
         + mix(vec3(0.14, 0.13, 0.12), vec3(0.4, 0.44, 0.52), hemi);
-    vec3 col = v_col * light;
+    vec3 col = albedo * light;
     // Light scattered under the skin softens its shadow side.
-    if (skin) col += v_col * vec3(0.18, 0.06, 0.03) * (1.0 - d);
+    if (skin) col += albedo * vec3(0.18, 0.06, 0.03) * (1.0 - d);
     float facing = max(dot(n, v), 0.0);
     col += pow(1.0 - facing, 3.0) * 0.16 * vec3(0.8, 0.86, 1.0);
     vec3 h = normalize(key + v);
@@ -83,7 +87,7 @@ void main() {
     // Gloss paint reflects a soft studio sky.
     if (gloss) col += mix(vec3(0.05), vec3(0.45, 0.5, 0.58), hemi) * 0.35 * pow(1.0 - facing, 2.0);
     // Lamps (the rear light) glow.
-    if (abs(v_mat - 2.0) < 0.5) col = col * 0.4 + v_col * 1.6;
+    if (abs(v_mat - 2.0) < 0.5) col = col * 0.4 + albedo * 1.6;
     col = col / (1.0 + 0.12 * col);
     frag = vec4(pow(col, vec3(1.0 / 2.2)), 1.0);
 }
@@ -311,7 +315,7 @@ impl GlState {
                             gl,
                             "preview_skin",
                             &[shaders::SKINNED_VS],
-                            &[PREVIEW_FS],
+                            &[shaders::JERSEY_DOTS, PREVIEW_FS],
                             &skinned,
                         )
                     })
@@ -423,6 +427,7 @@ impl GlState {
                 gl.uniform_matrix_4_f32_slice(p.loc(gl, "u_bones"), false, &flat);
                 p.v3(gl, "u_tint", f.tint);
                 p.v3(gl, "u_skin", f.skin);
+                p.f1(gl, "u_dots", if body::jersey_dots() { 1.0 } else { 0.0 });
                 let kit: Vec<f32> = body::kit().iter().flatten().copied().collect();
                 gl.uniform_3_f32_slice(p.loc(gl, "u_kit"), &kit);
                 gl.bind_vertex_array(Some(vao));

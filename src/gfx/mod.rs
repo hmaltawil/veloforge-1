@@ -12,7 +12,7 @@ pub use bike_model::{
     available as aero_bike_available, set_aero as use_aero_bike, set_paint as set_bike_paint,
     set_tan_walls,
 };
-pub use body::set_kit;
+pub use body::{set_jersey_dots, set_kit};
 pub use preview::PreviewLook;
 mod body;
 mod buildings;
@@ -402,7 +402,9 @@ struct FrameData {
     road: Vec<f32>,
     rider: Vec<f32>,
     /// Each rider's bone matrices and jersey colour.
-    skins: Vec<([M4; body::BONES], V3, V3)>,
+    /// Each rider's bones, jersey and skin, and whether the jersey is in
+    /// polka dots (only yours).
+    skins: Vec<([M4; body::BONES], V3, V3, bool)>,
     posts: Vec<f32>,
     reflectors: Vec<f32>,
     planks: Vec<f32>,
@@ -962,6 +964,7 @@ impl GpuWorld {
                 body::skinning(&self.rest_inverse, &joints),
                 pose.jersey,
                 srgb(k.r(), k.g(), k.b()),
+                i == 0 && body::jersey_dots(),
             ));
             rider_shadow.extend_from_slice(&[pos[0], pos[1] + 0.02, pos[2], 0.9]);
             if i == 0 {
@@ -2209,7 +2212,7 @@ impl GlState {
                 gl,
                 "skinned",
                 &[SKINNED_VS],
-                &[NOISE, LIGHT, FOLIAGE, OBJECT_FS],
+                &[NOISE, LIGHT, FOLIAGE, JERSEY_DOTS, OBJECT_FS],
                 &skinned_attribs,
             )?;
             self.compile(
@@ -3461,11 +3464,12 @@ impl GlState {
             let p = self.programs.get_mut(program).unwrap();
             let kit: Vec<f32> = body::kit().iter().flatten().copied().collect();
             gl.uniform_3_f32_slice(p.loc(gl, "u_kit"), &kit);
-            for (bones, tint, skin) in &f.skins {
+            for (bones, tint, skin, dots) in &f.skins {
                 let flat: Vec<f32> = bones.iter().flatten().copied().collect();
                 gl.uniform_matrix_4_f32_slice(p.loc(gl, "u_bones"), false, &flat);
                 p.v3(gl, "u_tint", *tint);
                 p.v3(gl, "u_skin", *skin);
+                p.f1(gl, "u_dots", if *dots { 1.0 } else { 0.0 });
                 gl.bind_vertex_array(Some(vao));
                 gl.draw_elements(glow::TRIANGLES, count, glow::UNSIGNED_INT, 0);
             }

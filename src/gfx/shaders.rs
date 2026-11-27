@@ -1024,6 +1024,10 @@ void main() {
 #ifdef LOD_FADE
     if (!lod_keep(v_lod)) discard;
 #endif
+    vec3 albedo = v_col;
+#ifdef DOTS
+    albedo = jersey_dots(albedo);
+#endif
     vec3 n = normalize(v_nrm);
     vec3 view = normalize(u_cam - v_pos);
     float vis = sun_vis(v_pos, n);
@@ -1031,7 +1035,7 @@ void main() {
     vec3 lit;
     if (v_mat > 7.5) {
         // Smoke: soft, lit mostly by the sky, a little by the sun.
-        lit = v_col * (ambient(n) * 1.15 + u_sun_col * vis * max(dot(n, u_sun) * 0.5 + 0.5, 0.0) * 0.55);
+        lit = albedo * (ambient(n) * 1.15 + u_sun_col * vis * max(dot(n, u_sun) * 0.5 + 0.5, 0.0) * 0.55);
     } else if (v_mat > 5.5 && v_mat < 6.5) {
         // Skin: light wraps softly round it, warm where it fades into
         // shadow (light scattered under the skin), with a faint sheen.
@@ -1039,21 +1043,21 @@ void main() {
         float wrap = max((ndl + 0.3) / 1.3, 0.0);
         float edge = max(0.0, 1.0 - abs(ndl + 0.1) * 2.2);
         vec3 scatter = vec3(0.55, 0.16, 0.07) * edge * vis;
-        lit = v_col * (u_sun_col * (wrap * vis * 1.35 + scatter) + ambient(n)) + v_col * lamp;
+        lit = albedo * (u_sun_col * (wrap * vis * 1.35 + scatter) + ambient(n)) + albedo * lamp;
         vec3 h = normalize(view + u_sun);
         lit += u_sun_col * vis * 0.05 * pow(max(dot(n, h), 0.0), 24.0);
         float rim = pow(1.0 - max(dot(view, n), 0.0), 3.0);
-        lit += v_col * ambient(n) * rim * 0.6;
+        lit += albedo * ambient(n) * rim * 0.6;
     } else if (v_mat > 6.5) {
         // Fabric: matt, with a soft sheen as it turns away from you.
-        lit = shade(v_col, n, 1.0, vis) + v_col * lamp;
+        lit = shade(albedo, n, 1.0, vis) + albedo * lamp;
         float rim = pow(1.0 - max(dot(view, n), 0.0), 2.5);
-        lit += (u_sun_col * vis * max(dot(n, u_sun), 0.0) * 0.5 + ambient(n)) * rim * (0.08 + v_col * 0.5);
+        lit += (u_sun_col * vis * max(dot(n, u_sun), 0.0) * 0.5 + ambient(n)) * rim * (0.08 + albedo * 0.5);
     } else if (v_mat > 4.5) {
         // Leaves (see `FOLIAGE`).
-        lit = foliage(v_col, n, view, vis, ambient(n), lamp);
+        lit = foliage(albedo, n, view, vis, ambient(n), lamp);
     } else {
-        lit = shade(v_col, n, 1.0, vis) + v_col * lamp;
+        lit = shade(albedo, n, 1.0, vis) + albedo * lamp;
         vec3 h = normalize(view + u_sun);
         float gloss = v_mat > 2.5 && v_mat < 3.5 ? 1.0 : 0.0;
         float fres = 0.04 + 0.96 * pow(1.0 - max(dot(view, n), 0.0), 5.0);
@@ -1064,10 +1068,10 @@ void main() {
             lit = mix(lit, sky_color(reflect(-view, n)), 0.35 * (1.0 - u_night));
             lit += vec3(1.0, 0.62, 0.25) * u_night * 0.9;
         } else if (v_mat > 1.5 && v_mat < 2.5) {
-            lit += v_col * (1.5 + 10.0 * u_night);
+            lit += albedo * (1.5 + 10.0 * u_night);
         } else if (v_mat > 3.5) {
             // Reflectors throw the headlight straight back.
-            lit += v_col * lamp * 14.0;
+            lit += albedo * lamp * 14.0;
         }
     }
     frag = out_col(apply_fog(lit, v_pos));
@@ -1095,7 +1099,15 @@ out vec3 v_nrm;
 out vec3 v_col;
 out float v_mat;
 out float v_h;
+// For the polka dots (`JERSEY_DOTS`): where on the body, as sculpted, and
+// how much of the jersey colour this is (0 where it isn't the jersey).
+out vec3 v_rest;
+out vec3 v_rnrm;
+out float v_jersey;
 void main() {
+    v_rest = a_pos;
+    v_rnrm = a_nrm;
+    v_jersey = a_col.r < 0.0 ? -a_col.r : 0.0;
     mat4 m = u_bones[int(a_bones.x)] * a_weights.x
            + u_bones[int(a_bones.y)] * a_weights.y
            + u_bones[int(a_bones.z)] * a_weights.z
@@ -1117,6 +1129,32 @@ void main() {
     v_mat = a_mat;
     v_h = 0.5;
     gl_Position = u_vp * p;
+}
+"#;
+
+/// Polka dots on the jersey, for fragment shaders drawing the body (put
+/// before them): with `u_dots` on, the jersey turns white with dots in its
+/// colour. The dots sit on the body as sculpted, so they stay put on the
+/// fabric as it moves: on the plane the surface faces most, in staggered
+/// rows 5.5 cm apart, each 3 cm across, their edges smoothed to the pixel.
+pub const JERSEY_DOTS: &str = r#"
+#define DOTS
+in vec3 v_rest;
+in vec3 v_rnrm;
+in float v_jersey;
+uniform float u_dots;
+float dot_grid(vec2 uv) {
+    uv /= 0.055;
+    uv.x += 0.5 * mod(floor(uv.y), 2.0);
+    float d = length(fract(uv) - 0.5);
+    float w = max(fwidth(d), 1e-4);
+    return 1.0 - smoothstep(0.27 - w, 0.27 + w, d);
+}
+vec3 jersey_dots(vec3 col) {
+    if (u_dots < 0.5 || v_jersey <= 0.0) return col;
+    vec3 a = abs(v_rnrm);
+    vec2 uv = a.x > a.y && a.x > a.z ? v_rest.yz : (a.y > a.z ? v_rest.xz : v_rest.xy);
+    return mix(vec3(0.8) * v_jersey, col, dot_grid(uv));
 }
 "#;
 
