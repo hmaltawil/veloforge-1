@@ -36,6 +36,14 @@ fn steer(y: f32) -> [f32; 2] {
     [FRONT_X - 0.047 - (y - HUB_Y) * 0.306, y]
 }
 
+/// Where the fork's crown is, up the steering axis: high enough to clear
+/// the front tyre.
+const CROWN_Y: f32 = 0.685;
+
+/// The tyres: the radius of the middle of their cross-section, and its
+/// radius (a 28 mm tyre).
+const TYRE: (f32, f32) = (0.3275, 0.0142);
+
 const CARBON: V3 = [0.022, 0.022, 0.026];
 const RUBBER: V3 = [0.016, 0.016, 0.018];
 const TAPE: V3 = [0.032, 0.032, 0.036];
@@ -183,17 +191,35 @@ impl Builder {
         let (lead, side) = (self.dir(lead), self.dir(side));
         let n = pts.len();
         let mut rings = Vec::with_capacity(n);
+        // The section's width and leading axes: set by `side` and `lead` at
+        // the first point, then carried along the tube without twisting
+        // (however it bends), as a ribbon would be.
+        let mut axes: Option<(V3, V3)> = None;
         for i in 0..n {
             let t = norm(sub(pts[(i + 1).min(n - 1)], pts[i.saturating_sub(1)]));
-            let mut w = sub(side, scale(t, dot(side, t)));
-            if len(w) < 1e-4 {
-                w = cross(t, lead);
-            }
-            let w = norm(w);
-            let mut d = cross(w, t);
-            if dot(d, lead) < 0.0 {
-                d = scale(d, -1.0);
-            }
+            let (w, d) = match axes {
+                None => {
+                    let mut w = sub(side, scale(t, dot(side, t)));
+                    if len(w) < 1e-4 {
+                        w = cross(t, lead);
+                    }
+                    let w = norm(w);
+                    let mut d = cross(w, t);
+                    if dot(d, lead) < 0.0 {
+                        d = scale(d, -1.0);
+                    }
+                    (w, d)
+                }
+                Some((w0, d0)) => {
+                    let w = norm(sub(w0, scale(t, dot(w0, t))));
+                    let mut d = cross(w, t);
+                    if dot(d, d0) < 0.0 {
+                        d = scale(d, -1.0);
+                    }
+                    (w, d)
+                }
+            };
+            axes = Some((w, d));
             let (_, half_d, half_w) = stations[i];
             let ring = (0..sides)
                 .map(|j| {
@@ -351,10 +377,10 @@ fn wheels(b: &mut Builder, wheel: f32) {
         let tyre: Vec<(f32, f32)> = (0..6)
             .map(|k| {
                 let a = k as f32 / 6.0 * TAU;
-                (0.3275 + 0.0142 * a.cos(), 0.0142 * a.sin())
+                (TYRE.0 + TYRE.1 * a.cos(), TYRE.1 * a.sin())
             })
             .collect();
-        b.lathe(hub, &tyre, 32, (0.0, TAU), 0.0, RUBBER, true);
+        b.lathe(hub, &tyre, 56, (0.0, TAU), 0.0, RUBBER, true);
         // A 50 mm deep carbon rim: wide at the tyre, rounded at the spokes.
         b.m.mat = MAT_GLOSS;
         let half = [
@@ -366,7 +392,16 @@ fn wheels(b: &mut Builder, wheel: f32) {
         let mut rim: Vec<(f32, f32)> = half.to_vec();
         rim.push((0.2628, 0.0));
         rim.extend(half.iter().rev().map(|&(r, z)| (r, -z)));
-        b.lathe(hub, &rim, 32, (0.0, TAU), 0.0, CARBON, true);
+        if b.far {
+            rim = vec![
+                (0.3135, 0.0122),
+                (0.285, 0.0136),
+                (0.2628, 0.0),
+                (0.285, -0.0136),
+                (0.3135, -0.0122),
+            ];
+        }
+        b.lathe(hub, &rim, 40, (0.0, TAU), 0.0, CARBON, true);
         // Its graphics: two grey bands on each side, turning with it.
         if !b.far {
             b.m.mat = MAT_MATT;
@@ -443,14 +478,19 @@ fn frame(b: &mut Builder, paint: V3) {
         let s = steer(y);
         [s[0], s[1], z]
     };
-    // Head tube: deep at the bottom, where it meets the fork's crown.
+    // Head tube, widening at the bottom into the fork's crown, clear of
+    // the tyre.
     b.tube(
-        &[
-            (at(0.628, 0.0), 0.036, 0.024),
-            (at(0.66, 0.0), 0.034, 0.022),
-            (at(0.76, 0.0), 0.03, 0.019),
-            (at(0.848, 0.0), 0.028, 0.018),
-        ],
+        &curve(
+            &[
+                (at(CROWN_Y, 0.0), 0.034, 0.036),
+                (at(CROWN_Y + 0.014, 0.0), 0.035, 0.034),
+                (at(0.73, 0.0), 0.034, 0.027),
+                (at(0.78, 0.0), 0.031, 0.021),
+                (at(0.848, 0.0), 0.028, 0.018),
+            ],
+            3,
+        ),
         Shape::Aero,
         FWD,
         RIGHT,
@@ -579,15 +619,22 @@ fn frame(b: &mut Builder, paint: V3) {
             paint,
             false,
         );
-        // Fork blades, sweeping forward to the front hub.
-        let crown = steer(0.64);
+        // Fork blades, growing out of the crown either side of the tyre
+        // and sweeping forward to the front hub.
+        let root = steer(CROWN_Y + 0.008);
+        let mid = steer(0.6);
         b.tube(
             &curve(
                 &[
-                    ([crown[0] + 0.004, 0.64, side * 0.03], 0.026, 0.014),
-                    ([crown[0] + 0.022, 0.55, side * 0.048], 0.021, 0.012),
-                    ([FRONT_X - 0.042, 0.44, side * 0.052], 0.016, 0.01),
-                    ([FRONT_X, HUB_Y, side * 0.052], 0.011, 0.008),
+                    ([root[0], root[1], side * 0.02], 0.027, 0.012),
+                    (
+                        [root[0] + 0.006, root[1] - 0.03, side * 0.036],
+                        0.026,
+                        0.012,
+                    ),
+                    ([mid[0] + 0.024, 0.6, side * 0.048], 0.022, 0.011),
+                    ([FRONT_X - 0.036, 0.46, side * 0.053], 0.017, 0.0095),
+                    ([FRONT_X, HUB_Y, side * 0.054], 0.011, 0.008),
                 ],
                 4,
             ),
@@ -599,23 +646,6 @@ fn frame(b: &mut Builder, paint: V3) {
             (false, true),
         );
     }
-    // The fork's crown, across the tyre.
-    let crown = steer(0.645);
-    b.tube(
-        &[
-            ([crown[0], 0.643, -0.054], 0.03, 0.02),
-            ([crown[0], 0.643, -0.03], 0.035, 0.022),
-            ([crown[0], 0.643, 0.0], 0.036, 0.023),
-            ([crown[0], 0.643, 0.03], 0.035, 0.022),
-            ([crown[0], 0.643, 0.054], 0.03, 0.02),
-        ],
-        Shape::Aero,
-        FWD,
-        UP,
-        14,
-        paint,
-        (true, true),
-    );
 }
 
 fn seat(b: &mut Builder) {
@@ -724,13 +754,15 @@ fn cockpit(b: &mut Builder) {
         CARBON,
         (true, false),
     );
-    // ...the flat aero tops, sweeping forward to the hoods...
+    // ...the flat aero tops, narrowing at each end into the round bar...
     let tops: Vec<Station> = [
-        ([0.505, 0.864, -0.18], 0.024, 0.0065),
-        ([0.497, 0.864, -0.09], 0.025, 0.0068),
-        ([0.495, 0.864, 0.0], 0.025, 0.007),
-        ([0.497, 0.864, 0.09], 0.025, 0.0068),
-        ([0.505, 0.864, 0.18], 0.024, 0.0065),
+        ([0.503, 0.8635, -0.165], 0.0135, 0.0108),
+        ([0.498, 0.864, -0.13], 0.021, 0.0094),
+        ([0.495, 0.864, -0.07], 0.024, 0.0089),
+        ([0.494, 0.864, 0.0], 0.025, 0.0088),
+        ([0.495, 0.864, 0.07], 0.024, 0.0089),
+        ([0.498, 0.864, 0.13], 0.021, 0.0094),
+        ([0.503, 0.8635, 0.165], 0.0135, 0.0108),
     ]
     .to_vec();
     b.tube(
@@ -749,15 +781,17 @@ fn cockpit(b: &mut Builder) {
         b.tube(
             &curve(
                 &[
-                    ([0.51, 0.862, z(0.186)], 0.0118, 0.0118),
+                    ([0.4985, 0.8638, z(0.135)], 0.0112, 0.0112),
+                    ([0.51, 0.862, z(0.182)], 0.0118, 0.0118),
                     ([0.548, 0.86, z(0.197)], 0.0118, 0.0118),
                     ([0.585, 0.856, z(0.2)], 0.0118, 0.0118),
+                    ([0.603, 0.844, z(0.2015)], 0.0118, 0.0118),
                     ([0.612, 0.824, z(0.203)], 0.0118, 0.0118),
                     ([0.608, 0.775, z(0.207)], 0.0118, 0.0118),
                     ([0.58, 0.742, z(0.21)], 0.0118, 0.0118),
                     ([0.535, 0.736, z(0.21)], 0.0118, 0.0118),
                 ],
-                2,
+                3,
             ),
             Shape::Round,
             UP,
@@ -789,10 +823,10 @@ fn cockpit(b: &mut Builder) {
         b.tube(
             &curve(
                 &[
-                    ([0.626, 0.9, z(0.2)], 0.008, 0.007),
-                    ([0.636, 0.858, z(0.202)], 0.0075, 0.006),
-                    ([0.633, 0.8, z(0.205)], 0.0065, 0.0055),
-                    ([0.616, 0.768, z(0.207)], 0.006, 0.005),
+                    ([0.627, 0.902, z(0.2)], 0.008, 0.007),
+                    ([0.645, 0.86, z(0.202)], 0.0075, 0.006),
+                    ([0.647, 0.802, z(0.205)], 0.0065, 0.0055),
+                    ([0.634, 0.764, z(0.207)], 0.006, 0.005),
                 ],
                 2,
             ),
@@ -1096,7 +1130,7 @@ fn drivetrain(b: &mut Builder, p: &RiderPose, j: &Joints) {
     b.lathe(
         [REAR_X, HUB_Y, 0.0],
         &cass,
-        16,
+        12,
         (0.0, TAU),
         0.0,
         SILVER,
@@ -1352,13 +1386,49 @@ mod tests {
         }
     }
 
+    /// How far `q` is outside the tyres (less than 0 inside one): each tyre
+    /// a ring round its hub.
+    fn outside_tyres(q: V3) -> f32 {
+        [REAR_X, FRONT_X]
+            .iter()
+            .map(|&x| {
+                let rho = (q[0] - x).hypot(q[1] - HUB_Y);
+                (rho - TYRE.0).hypot(q[2]) - TYRE.1
+            })
+            .fold(f32::MAX, f32::min)
+    }
+
+    #[test]
+    fn nothing_rubs_on_the_tyres() {
+        let p = pose(1.0, 0.0);
+        let j = joints(&p);
+        let mut b = Builder {
+            m: Mesh::default(),
+            f: j.bike,
+            far: false,
+        };
+        frame(&mut b, [0.8; 3]);
+        seat(&mut b);
+        cockpit(&mut b);
+        drivetrain(&mut b, &p, &j);
+        bottle(&mut b, [0.8; 3]);
+        let (gap, at) = verts(&b.m)
+            .iter()
+            .map(|&(q, _)| (outside_tyres(q), q))
+            .fold((f32::MAX, [0.0; 3]), |a, c| if c.0 < a.0 { c } else { a });
+        assert!(gap > 0.003, "{:.1} mm from a tyre at {at:?}", gap * 1000.0);
+    }
+
+    /// Cheap for the graphics card. Building it is the cost: about 0.7 ms
+    /// (0.3 far off) here, against the classic bike's 0.04, so the app
+    /// should build the parts that do not turn once, not every frame.
     #[test]
     fn the_aero_bike_stays_cheap_to_draw() {
         let p = pose(1.0, 0.0);
         let j = joints(&p);
         let tris = |far| aero_bike(&p, &j, [0.85, 0.86, 0.88], far).vertex_count() / 3;
         let (near, far) = (tris(false), tris(true));
-        assert!(near < 12_000, "{near} triangles");
-        assert!(far < 4_500, "{far} triangles far off");
+        assert!(near < 14_000, "{near} triangles");
+        assert!(far < 5_000, "{far} triangles far off");
     }
 }

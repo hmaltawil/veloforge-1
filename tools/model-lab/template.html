@@ -1387,6 +1387,8 @@ window.lab = {
   step(dt, still) { if (!still) time += dt; windU.uT.value = time; if (mode === "ride") rideTick(dt); else controls.update(); updateMeshes(); sceneryTick(); renderer.render(scene, camera); },
   hideRider: () => { rig.visible = false; }, skipToMove: () => skipToMove(),
   ride: () => ride, pickShaders: (v) => pickShaders(v), setMode: (m) => setMode(m), setCam: (c) => setCam(c),
+  // Look from `eye` at `target` (metres, the rider's frame), for close checks.
+  view: (eye, target) => { camera.position.set(...eye); controls.target.set(...target); controls.update(); },
   walkTo: (d) => walkTo(d), scene: () => scene, rig: () => rig, camera: () => camera,
 };
 
