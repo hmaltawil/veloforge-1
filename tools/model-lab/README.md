@@ -3,7 +3,9 @@
 A web page for looking at VeloForge's rider, bike and scenery models before
 a change goes into the app: turn the view, set the pose (pedalling, standing,
 tucking, leaning into a corner, gradient, effort) and switch between the
-trees, bushes, rocks and houses.
+trees, bushes, rocks and houses. The Rider tab can show the classic bike
+or the aero bike (`src/gfx/aero_bike.rs`, also as seen far off) in any
+frame colour, and hide the rider to see the bike on its own.
 
 It runs the app's own model code: `src/gfx/math.rs`, `mesh.rs` and `body.rs`
 are compiled as they are to WebAssembly, so the page shows exactly the

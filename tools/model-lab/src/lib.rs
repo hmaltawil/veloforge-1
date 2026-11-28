@@ -4,6 +4,10 @@
 
 #![allow(dead_code)]
 
+// The aero road bike (build.sh sets lab_aero when the code has it).
+#[cfg(lab_aero)]
+#[path = "../../../src/gfx/aero_bike.rs"]
+mod aero_bike;
 #[path = "../../../src/gfx/body.rs"]
 mod body;
 // Farm buildings (build.sh sets lab_buildings when the code has them).
@@ -91,6 +95,21 @@ pub extern "C" fn body_vertex_count() -> u32 {
     })
 }
 
+thread_local! {
+    /// Which bike `pose` builds (0 the classic, 1 the aero bike, 2 the
+    /// aero bike as seen far off), and the aero bike's paint.
+    static BIKE: std::cell::Cell<(u32, V3)> = const { std::cell::Cell::new((0, [0.85, 0.86, 0.88])) };
+}
+
+/// Choose the bike `pose` builds: 0 the classic bike, 1 the aero bike, 2
+/// the aero bike's lighter model for riders far off; its frame painted
+/// `r`, `g`, `b` (linear). Returns whether this build has that bike.
+#[no_mangle]
+pub extern "C" fn set_bike(kind: u32, r: f32, g: f32, b: f32) -> u32 {
+    BIKE.with(|c| c.set((kind, [r, g, b])));
+    u32::from(kind == 0 || cfg!(lab_aero))
+}
+
 /// Pose the rider and the bike. `lean` and `grade` are in degrees.
 /// Afterwards `body_ptr` holds the bent body (10 floats a vertex, in the
 /// same order as the indices refer to) and `bike_ptr`/`bike_len` the bike
@@ -133,7 +152,11 @@ pub extern "C" fn pose(
             time,
         };
         let j = mesh::joints(&p);
-        l.bike = mesh::bike(&p, &j).v;
+        l.bike = match BIKE.with(|b| b.get()) {
+            #[cfg(lab_aero)]
+            (kind @ 1..=2, paint) => aero_bike::aero_bike(&p, &j, paint, kind == 2).v,
+            _ => mesh::bike(&p, &j).v,
+        };
         l.joints.clear();
         for v in [j.hips, j.shoulders, j.head]
             .iter()

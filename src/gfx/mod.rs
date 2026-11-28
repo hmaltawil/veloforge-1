@@ -7,6 +7,9 @@
 //! Falls back to the software view in `world.rs` if anything goes wrong
 //! (see [`GpuWorld::error`]).
 
+// The aero road bike: in the Model Lab first, not yet ridden in the app.
+#[allow(dead_code)]
+mod aero_bike;
 mod body;
 mod buildings;
 mod fields;

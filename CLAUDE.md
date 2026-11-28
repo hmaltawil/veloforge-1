@@ -141,5 +141,7 @@ the Release workflow run and look again a few minutes later.
 - `src/gfx/shaders.rs`, `mesh.rs`, `flora.rs`, `fields.rs`, `buildings.rs`,
   `lettering.rs`, `japanese.rs`: shaders and models (`japanese.rs`: the
   Japan scenery's trees, farmhouse, shrine gate, lantern and pagoda)
+- `src/gfx/aero_bike.rs`: the aero road bike, our own model (frame, deep
+  wheels, cockpit, drivetrain); in the Model Lab, not yet ridden in the app
 - `src/store.rs`: saved settings and data
 - `packaging/`: installers and the release notes' Download section
