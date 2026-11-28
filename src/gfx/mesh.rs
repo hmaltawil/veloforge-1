@@ -1457,39 +1457,46 @@ impl Joints {
 }
 
 /// A way of holding the bar, in the bike's terms for the right hand: the
-/// middle of the bar inside the fist, the way the bar runs through the
-/// hand (from the index finger towards the little finger), and the way the
-/// back of the hand faces.
+/// middle of the bar inside the fist, and the way the bar runs through the
+/// hand (from the index finger towards the little finger). The hand rolls
+/// round the bar to follow the forearm, as a rider's does.
 #[derive(Clone, Copy)]
 struct Grip {
     at: V3,
     bar: V3,
-    back: V3,
 }
 
 /// On the brake hoods: the hood runs up and forward through the hand,
-/// index finger in front, the back of the hand up, turned out a little.
+/// index finger in front.
 const GRIP_HOODS: Grip = Grip {
     at: [0.598, 0.876, 0.2],
     bar: [-0.75, -0.66, 0.0],
-    back: [0.0, 0.88, 0.47],
 };
 /// On the tops, either side of the stem: the bar runs across the hand,
-/// index finger towards the stem, the back of the hand up.
+/// index finger towards the stem.
 const GRIP_TOPS: Grip = Grip {
     at: [0.497, 0.864, 0.11],
     bar: [0.0, 0.0, 1.0],
-    back: [0.35, 0.94, 0.0],
 };
-/// In the drops: along the bottom of the drop, index finger in front, the
-/// back of the hand outward.
+/// In the drops, tucked: round the hook of the drop, where it curves down
+/// and back across the hand, index finger at the top (the forearms lie
+/// low, and stay in line with the hands).
+const GRIP_HOOK: Grip = Grip {
+    at: [0.598, 0.764, 0.208],
+    bar: [-0.62, -0.78, 0.0],
+};
+/// In the drops, sprinting out of the saddle: along the bottom of the
+/// drop, index finger in front (the arms come down to it from above).
 const GRIP_DROPS: Grip = Grip {
     at: [0.565, 0.744, 0.21],
     bar: [-1.0, -0.1, 0.0],
-    back: [-0.1, 0.25, 0.96],
 };
 /// From the wrist to the middle of the bar in the fist.
 pub const HAND_REACH: f32 = 0.058;
+/// How far the bar runs diagonally across the palm (radians off square to
+/// the hand): from the base of the index finger to the heel of the hand,
+/// as in any firm grip.
+pub const GRIP_SLANT: f32 = 0.35;
 
 /// The rider's pose for `p`.
 pub fn joints(p: &RiderPose) -> Joints {
@@ -1559,13 +1566,20 @@ pub fn joints(p: &RiderPose) -> Joints {
     // sprinting out of the saddle, the tops when climbing seated at an easy
     // effort, the hoods otherwise; blended, so they move between them.
     let grade = p.fwd[1] * 100.0;
-    let drops = tuck.max(stand * smoothstep(1.3, 1.6, p.effort));
+    // (`tuck` is none when standing, so the two kinds of drops never mix.)
+    let sprint = stand * smoothstep(1.3, 1.6, p.effort);
+    let drops = tuck + sprint;
     let tops = (1.0 - stand)
         * (1.0 - drops)
         * smoothstep(4.0, 6.5, grade)
         * (1.0 - smoothstep(0.75, 0.95, p.effort));
     let hoods = (1.0 - drops - tops).max(0.0);
-    let held = [(hoods, GRIP_HOODS), (tops, GRIP_TOPS), (drops, GRIP_DROPS)];
+    let held = [
+        (hoods, GRIP_HOODS),
+        (tops, GRIP_TOPS),
+        (tuck, GRIP_HOOK),
+        (sprint, GRIP_DROPS),
+    ];
 
     // Arms, to the hands on the bar.
     let mut shoulder = [[0.0; 3]; 2];
@@ -1578,29 +1592,35 @@ pub fn joints(p: &RiderPose) -> Joints {
         // The grip blended between the places, in the bike's terms (the
         // right hand's; the left's mirrored).
         let mut at = [0.0f32; 3];
-        let (mut bar, mut back) = ([0.0f32; 3], [0.0f32; 3]);
+        let mut bar = [0.0f32; 3];
         for (w, g) in held {
             at = add(at, scale(g.at, w));
             bar = add(bar, scale(g.bar, w));
-            back = add(back, scale(g.back, w));
         }
         let mirror = |v: V3| bike.dir(v[0], v[1], side * v[2]);
         grip[k] = add(bike.pos, mirror(at));
-        // The hand's frame: its back facing `back`, the bar across its
-        // palm along `bar`, and from the wrist to the bar square to both.
         let bar = norm(mirror(bar));
-        let back = norm(sub(mirror(back), scale(bar, dot(mirror(back), bar))));
-        let across = scale(bar, side);
-        let reach = cross(back, across);
-        hand_side[k] = across;
-        wrist[k] = sub(grip[k], scale(reach, HAND_REACH));
-        elbow[k] = ik(
-            shoulder[k],
-            wrist[k],
-            UPPER_ARM,
-            FOREARM,
-            body.dir(-0.4 + 0.25 * tuck, -0.6, side * 0.25),
-        );
+        // The hand rolls round the bar to line up with the forearm as
+        // closely as the grip lets it (a rider keeps the wrist straight):
+        // its reach from the wrist is square to nothing but the slant of
+        // the bar across the palm. The arm then follows the wrist, and the
+        // hand the arm, until they agree.
+        let (sin, cos) = GRIP_SLANT.sin_cos();
+        let mut forearm = norm(sub(grip[k], shoulder[k]));
+        for _ in 0..4 {
+            let along = norm(sub(forearm, scale(bar, dot(forearm, bar))));
+            let reach = add(scale(bar, -sin), scale(along, cos));
+            hand_side[k] = scale(add(bar, scale(reach, sin)), side / cos);
+            wrist[k] = sub(grip[k], scale(reach, HAND_REACH));
+            elbow[k] = ik(
+                shoulder[k],
+                wrist[k],
+                UPPER_ARM,
+                FOREARM,
+                body.dir(-0.4 + 0.25 * tuck, -0.6, side * 0.25),
+            );
+            forearm = norm(sub(wrist[k], elbow[k]));
+        }
     }
 
     // The head, held level to look up the road.
@@ -2005,6 +2025,48 @@ mod tests {
         assert!((extent(2) - 0.3).abs() < 0.01);
         assert!((extent(1) - 0.1).abs() < 0.01);
         assert!((extent(0) - 0.05).abs() < 0.01);
+    }
+
+    /// Riders keep their wrists near straight: the hand rolls round the
+    /// bar to follow the forearm, wherever it holds it (hoods, tops, drops)
+    /// and in between.
+    #[test]
+    fn wrists_stay_near_straight() {
+        let mut worst = (0.0f32, String::new());
+        for grade in [-6.0f32, 0.0, 4.0, 5.5, 8.0, 12.0] {
+            for effort in [0.3f32, 0.8, 0.9, 1.2, 1.45, 1.8] {
+                for (tuck, stand) in [(0.0, 0.0), (0.5, 0.0), (1.0, 0.0), (0.0, 0.5), (0.0, 1.0)] {
+                    for crank in [0.4f32, 2.0] {
+                        let slope = (grade / 100.0).atan();
+                        let mut p = pose(crank, stand, tuck);
+                        p.fwd = [slope.cos(), slope.sin(), 0.0];
+                        p.right = [0.0, 0.0, 1.0];
+                        p.up = cross(p.right, p.fwd);
+                        p.effort = effort;
+                        let j = joints(&p);
+                        for k in 0..2 {
+                            let fa = norm(sub(j.wrist[k], j.elbow[k]));
+                            let hand = norm(sub(j.grip[k], j.wrist[k]));
+                            let bend = dot(fa, hand).clamp(-1.0, 1.0).acos().to_degrees();
+                            if bend > worst.0 {
+                                worst = (
+                                    bend,
+                                    format!(
+                                        "{grade} %, effort {effort}, tuck {tuck}, stand {stand}"
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            worst.0 < 40.0,
+            "a wrist bent {:.0} degrees at {}",
+            worst.0,
+            worst.1
+        );
     }
 
     #[test]

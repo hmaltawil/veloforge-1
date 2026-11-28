@@ -897,36 +897,47 @@ pub fn sculpt(j: &Joints) -> Sculpt {
     for k in 0..2 {
         let s = if k == 0 { 1.0f32 } else { -1.0 };
         // The hand's own frame, as its bone has it: `reach` from the wrist
-        // to the bar, `back` out of the back of the hand, `across` along
-        // the bar (index finger towards little finger on the right hand).
+        // towards the bar, `back` out of the back of the hand, `side`
+        // across it (index finger towards little finger on the right hand).
         let g = j.grip[k];
         let reach = norm(sub(g, j.wrist[k]));
         let side = j.hand_side[k];
-        let across = norm(sub(side, scale(reach, dot(side, reach))));
-        let back = cross(across, reach);
-        let ax = [reach, back, across];
-        // A point of the hand: `r` towards the bar's far side, `b` out of
-        // the back of the hand, `a` along the bar (mirrored for the left
-        // hand, so its index finger is at the same end).
-        let at = |r: f32, b: f32, a: f32| {
+        let side = norm(sub(side, scale(reach, dot(side, reach))));
+        let back = cross(side, reach);
+        // The bar runs slantwise across the palm (`mesh::GRIP_SLANT`), from
+        // the index finger towards the heel of the hand; the fist closes
+        // round it. `along` is the bar, `over` the way the fingers go over
+        // it from the back of the hand.
+        let (sin, cos) = super::mesh::GRIP_SLANT.sin_cos();
+        let along = norm(sub(scale(side, s * cos), scale(reach, sin)));
+        let over = norm(sub(reach, scale(along, dot(reach, along))));
+        let ax = [reach, back, side];
+        // A point of the fist: `o` over the bar, `b` out of the back of the
+        // hand, `a` along the bar (mirrored for the left hand, so its index
+        // finger is at the same end).
+        let at = |o: f32, b: f32, a: f32| {
             add(
                 g,
-                add(add(scale(reach, r), scale(back, b)), scale(across, a * s)),
+                add(add(scale(over, o), scale(back, b)), scale(along, a * s)),
             )
         };
         // The radius of the bar it closes round (the hood's, or the bar's
         // with its tape), glove included.
         let bar = 0.0165;
-        // The back of the gloved hand, over the bar.
+        // The back of the gloved hand, over the bar and back to the wrist.
         hands.parts.push(rigid(
-            ell(at(-0.024, bar + 0.01, 0.0), ax, [0.042, 0.0135, 0.031]),
+            ell(
+                add(g, add(scale(back, bar + 0.01), scale(reach, -0.022))),
+                ax,
+                [0.042, 0.0135, 0.031],
+            ),
             0.012,
             solid(Paint::Glove),
             HAND[k],
         ));
         // The heel of the hand, round the near side of the bar.
         hands.parts.push(rigid(
-            ell(at(-bar - 0.006, 0.002, 0.008), ax, [0.014, 0.016, 0.022]),
+            ell(at(-bar - 0.006, 0.002, 0.012), ax, [0.014, 0.016, 0.022]),
             0.01,
             solid(Paint::Glove),
             HAND[k],
@@ -978,7 +989,12 @@ pub fn sculpt(j: &Joints) -> Sculpt {
         ));
         // The wrist, joining the forearm.
         hands.parts.push(part(
-            cone(j.wrist[k], at(-0.05, bar + 0.006, 0.0), 0.024, 0.021),
+            cone(
+                j.wrist[k],
+                add(g, add(scale(back, bar + 0.006), scale(reach, -0.048))),
+                0.024,
+                0.021,
+            ),
             0.02,
             solid(Paint::Glove),
             ARM[k],
