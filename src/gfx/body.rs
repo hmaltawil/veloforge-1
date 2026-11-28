@@ -412,7 +412,7 @@ fn segments(j: &Joints) -> [(V3, V3, V3); BONES] {
         s[FOOT[k]] = (j.ankle[k], toe(k), bike_side);
         s[UPPER_ARM[k]] = (j.shoulder[k], j.elbow[k], side);
         s[FOREARM[k]] = (j.elbow[k], j.wrist[k], side);
-        s[HAND[k]] = (j.wrist[k], j.grip[k], bike_side);
+        s[HAND[k]] = (j.wrist[k], j.grip[k], j.hand_side[k]);
     }
     s
 }
@@ -895,70 +895,90 @@ pub fn sculpt(j: &Joints) -> Sculpt {
         fine: true,
     };
     for k in 0..2 {
-        let g = j.grip[k];
         let s = if k == 0 { 1.0f32 } else { -1.0 };
-        let ax = [bike.fwd, bike.up, bike.right];
-        // A point near the grip, in the bike's terms: `out` is away from
-        // the stem (the thumb is on the other side).
-        let at = |fwd: f32, up: f32, out: f32| add(g, bike.dir(fwd, up, s * out));
-        // The back of the gloved hand, resting along the top of the hood.
+        // The hand's own frame, as its bone has it: `reach` from the wrist
+        // to the bar, `back` out of the back of the hand, `across` along
+        // the bar (index finger towards little finger on the right hand).
+        let g = j.grip[k];
+        let reach = norm(sub(g, j.wrist[k]));
+        let side = j.hand_side[k];
+        let across = norm(sub(side, scale(reach, dot(side, reach))));
+        let back = cross(across, reach);
+        let ax = [reach, back, across];
+        // A point of the hand: `r` towards the bar's far side, `b` out of
+        // the back of the hand, `a` along the bar (mirrored for the left
+        // hand, so its index finger is at the same end).
+        let at = |r: f32, b: f32, a: f32| {
+            add(
+                g,
+                add(add(scale(reach, r), scale(back, b)), scale(across, a * s)),
+            )
+        };
+        // The radius of the bar it closes round (the hood's, or the bar's
+        // with its tape), glove included.
+        let bar = 0.0165;
+        // The back of the gloved hand, over the bar.
         hands.parts.push(rigid(
-            ell(at(-0.012, 0.016, 0.002), ax, [0.042, 0.0145, 0.031]),
+            ell(at(-0.024, bar + 0.01, 0.0), ax, [0.042, 0.0135, 0.031]),
             0.012,
             solid(Paint::Glove),
             HAND[k],
         ));
-        // Four fingers over the front of the hood, each in three joints
-        // curling down round it: gloved to the first joint, bare beyond
-        // (fingerless gloves). Index finger on the inside, by the thumb.
-        for (i, (across, long)) in [
-            (-0.021f32, 0.92f32),
-            (-0.007, 1.0),
-            (0.007, 0.96),
-            (0.02, 0.8),
+        // The heel of the hand, round the near side of the bar.
+        hands.parts.push(rigid(
+            ell(at(-bar - 0.006, 0.002, 0.008), ax, [0.014, 0.016, 0.022]),
+            0.01,
+            solid(Paint::Glove),
+            HAND[k],
+        ));
+        // Four fingers closed round the bar: over its far side, under it
+        // and back up the near side; gloved to the first joint, bare
+        // beyond (fingerless gloves). Index finger first.
+        for (i, (a, long)) in [
+            (-0.0215f32, 0.95f32),
+            (-0.0072, 1.0),
+            (0.0072, 0.96),
+            (0.0205, 0.82),
         ]
         .into_iter()
         .enumerate()
         {
-            let knuckle = at(0.024, 0.017 - 0.0015 * i as f32, across);
-            let mid = add(knuckle, bike.dir(0.02 * long, -0.006, s * across * 0.12));
-            let end = add(mid, bike.dir(0.009 * long, -0.02 * long, s * across * 0.05));
-            let tip = add(end, bike.dir(-0.004 * long, -0.015 * long, 0.0));
-            let r = 0.0083 - 0.0006 * (i as f32 - 1.0).abs();
-            for (a, b, ra, rb, paint) in [
-                (knuckle, mid, r, r * 0.95, Paint::Glove),
-                (mid, end, r * 0.95, r * 0.88, Paint::Skin),
-                (end, tip, r * 0.88, r * 0.8, Paint::Skin),
+            let r = 0.0084 - 0.0006 * (i as f32 - 1.0).abs();
+            let ring = bar + r;
+            let knuckle = at(0.004, bar + 0.008, a);
+            let first = at(ring * 0.92, 0.004, a * 1.02);
+            let second = at(0.004, -ring * long, a * 1.03);
+            let tip = at(-ring * 0.75 * long, -ring * 0.62 * long, a * 1.03);
+            for (p, q, ra, rb, paint) in [
+                (knuckle, first, r, r * 0.95, Paint::Glove),
+                (first, second, r * 0.95, r * 0.88, Paint::Skin),
+                (second, tip, r * 0.88, r * 0.8, Paint::Skin),
             ] {
                 hands
                     .parts
-                    .push(rigid(cone(a, b, ra, rb), 0.003, solid(paint), HAND[k]));
+                    .push(rigid(cone(p, q, ra, rb), 0.003, solid(paint), HAND[k]));
             }
         }
-        // The thumb, round the inside of the hood: gloved at its root.
-        let root = at(-0.012, 0.004, -0.026);
-        let thumb_mid = at(0.012, 0.0, -0.03);
-        let thumb_tip = at(0.03, -0.006, -0.026);
+        // The thumb, from the heel of the hand round the other way, under
+        // the bar to meet the fingers.
+        let root = at(-0.03, bar * 0.5, -0.028);
+        let mid = at(-bar - 0.008, -0.004, -0.03);
+        let tip = at(-0.006, -bar - 0.006, -0.025);
         hands.parts.push(rigid(
-            cone(root, thumb_mid, 0.011, 0.0095),
+            cone(root, mid, 0.011, 0.0095),
             0.006,
             solid(Paint::Glove),
             HAND[k],
         ));
         hands.parts.push(rigid(
-            cone(thumb_mid, thumb_tip, 0.0095, 0.008),
+            cone(mid, tip, 0.0095, 0.008),
             0.004,
             solid(Paint::Skin),
             HAND[k],
         ));
         // The wrist, joining the forearm.
         hands.parts.push(part(
-            cone(
-                j.wrist[k],
-                add(g, bike.dir(-0.034, 0.014, 0.0)),
-                0.024,
-                0.021,
-            ),
+            cone(j.wrist[k], at(-0.05, bar + 0.006, 0.0), 0.024, 0.021),
             0.02,
             solid(Paint::Glove),
             ARM[k],

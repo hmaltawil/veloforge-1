@@ -1432,8 +1432,13 @@ pub struct Joints {
     pub shoulder: [V3; 2],
     pub elbow: [V3; 2],
     pub wrist: [V3; 2],
-    /// Where the hand holds the brake hood.
+    /// Where the hand holds the bar: the middle of the bar inside its fist
+    /// (on the hoods, the tops or the drops).
     pub grip: [V3; 2],
+    /// The hand's sideways direction (index finger towards pinky, for the
+    /// right hand; mirrored for the left): with the wrist and grip it turns
+    /// the hand to the bar it holds.
+    pub hand_side: [V3; 2],
     pub neck_base: V3,
     pub head: V3,
     /// The head's forward, up and right.
@@ -1450,6 +1455,41 @@ impl Joints {
         lerp(a, b, t)
     }
 }
+
+/// A way of holding the bar, in the bike's terms for the right hand: the
+/// middle of the bar inside the fist, the way the bar runs through the
+/// hand (from the index finger towards the little finger), and the way the
+/// back of the hand faces.
+#[derive(Clone, Copy)]
+struct Grip {
+    at: V3,
+    bar: V3,
+    back: V3,
+}
+
+/// On the brake hoods: the hood runs up and forward through the hand,
+/// index finger in front, the back of the hand up, turned out a little.
+const GRIP_HOODS: Grip = Grip {
+    at: [0.598, 0.876, 0.2],
+    bar: [-0.75, -0.66, 0.0],
+    back: [0.0, 0.88, 0.47],
+};
+/// On the tops, either side of the stem: the bar runs across the hand,
+/// index finger towards the stem, the back of the hand up.
+const GRIP_TOPS: Grip = Grip {
+    at: [0.497, 0.864, 0.11],
+    bar: [0.0, 0.0, 1.0],
+    back: [0.35, 0.94, 0.0],
+};
+/// In the drops: along the bottom of the drop, index finger in front, the
+/// back of the hand outward.
+const GRIP_DROPS: Grip = Grip {
+    at: [0.565, 0.744, 0.21],
+    bar: [-1.0, -0.1, 0.0],
+    back: [-0.1, 0.25, 0.96],
+};
+/// From the wrist to the middle of the bar in the fist.
+pub const HAND_REACH: f32 = 0.058;
 
 /// The rider's pose for `p`.
 pub fn joints(p: &RiderPose) -> Joints {
@@ -1515,15 +1555,45 @@ pub fn joints(p: &RiderPose) -> Joints {
     let rate = 0.25 + 0.2 * p.effort.clamp(0.0, 2.0);
     let chest = 1.0 + (0.012 + 0.012 * p.effort.clamp(0.0, 2.0)) * (p.time * rate * TAU).sin();
 
-    // Arms, to the hands on the brake hoods.
+    // Where the hands hold the bar: the drops when tucked for a descent or
+    // sprinting out of the saddle, the tops when climbing seated at an easy
+    // effort, the hoods otherwise; blended, so they move between them.
+    let grade = p.fwd[1] * 100.0;
+    let drops = tuck.max(stand * smoothstep(1.3, 1.6, p.effort));
+    let tops = (1.0 - stand)
+        * (1.0 - drops)
+        * smoothstep(4.0, 6.5, grade)
+        * (1.0 - smoothstep(0.75, 0.95, p.effort));
+    let hoods = (1.0 - drops - tops).max(0.0);
+    let held = [(hoods, GRIP_HOODS), (tops, GRIP_TOPS), (drops, GRIP_DROPS)];
+
+    // Arms, to the hands on the bar.
     let mut shoulder = [[0.0; 3]; 2];
     let mut elbow = [[0.0; 3]; 2];
     let mut wrist = [[0.0; 3]; 2];
     let mut grip = [[0.0; 3]; 2];
+    let mut hand_side = [[0.0; 3]; 2];
     for (k, side) in [1.0f32, -1.0].into_iter().enumerate() {
         shoulder[k] = add(shoulders, body.dir(0.01, -0.028, side * 0.168));
-        grip[k] = bike.at(0.59, 0.89, side * 0.2);
-        wrist[k] = add(grip[k], bike.dir(-0.045, 0.035, 0.0));
+        // The grip blended between the places, in the bike's terms (the
+        // right hand's; the left's mirrored).
+        let mut at = [0.0f32; 3];
+        let (mut bar, mut back) = ([0.0f32; 3], [0.0f32; 3]);
+        for (w, g) in held {
+            at = add(at, scale(g.at, w));
+            bar = add(bar, scale(g.bar, w));
+            back = add(back, scale(g.back, w));
+        }
+        let mirror = |v: V3| bike.dir(v[0], v[1], side * v[2]);
+        grip[k] = add(bike.pos, mirror(at));
+        // The hand's frame: its back facing `back`, the bar across its
+        // palm along `bar`, and from the wrist to the bar square to both.
+        let bar = norm(mirror(bar));
+        let back = norm(sub(mirror(back), scale(bar, dot(mirror(back), bar))));
+        let across = scale(bar, side);
+        let reach = cross(back, across);
+        hand_side[k] = across;
+        wrist[k] = sub(grip[k], scale(reach, HAND_REACH));
         elbow[k] = ik(
             shoulder[k],
             wrist[k],
@@ -1557,6 +1627,7 @@ pub fn joints(p: &RiderPose) -> Joints {
         elbow,
         wrist,
         grip,
+        hand_side,
         neck_base: add(shoulders, scale(back_dir, 0.02)),
         head,
         head_axes: [hf, hu, body.right],

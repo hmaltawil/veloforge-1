@@ -1386,6 +1386,35 @@ mod tests {
         }
     }
 
+    /// The hands hold the bar wherever they are: on the hoods riding on
+    /// the flat, on the tops climbing seated at an easy effort, in the drops
+    /// tucked for a descent or sprinting out of the saddle.
+    #[test]
+    fn the_hands_hold_the_bar_in_every_position() {
+        let climb = (8.0f32 / 100.0).atan();
+        for (what, fwd, effort, tuck, stand) in [
+            ("hoods", [1.0, 0.0, 0.0], 1.0, 0.0, 0.0),
+            ("tops", [climb.cos(), climb.sin(), 0.0], 0.5, 0.0, 0.0),
+            ("drops, tucked", [1.0, 0.0, 0.0], 1.0, 1.0, 0.0),
+            ("drops, sprinting", [1.0, 0.0, 0.0], 1.8, 0.0, 1.0),
+        ] {
+            let mut p = pose(1.0, stand);
+            p.fwd = fwd;
+            p.up = cross(p.right, fwd);
+            p.effort = effort;
+            p.tuck = tuck;
+            let j = joints(&p);
+            let v = verts(&aero_bike(&p, &j, [0.85, 0.86, 0.88], false));
+            for g in j.grip {
+                let near = v
+                    .iter()
+                    .map(|(q, _)| len(sub(*q, g)))
+                    .fold(f32::MAX, f32::min);
+                assert!(near < 0.025, "{what}: the bar is {near} m from the grip");
+            }
+        }
+    }
+
     /// How far `q` is outside the tyres (less than 0 inside one): each tyre
     /// a ring round its hub.
     fn outside_tyres(q: V3) -> f32 {
