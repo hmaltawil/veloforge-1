@@ -243,6 +243,9 @@ struct Group {
     cuts: Vec<Shape>,
     /// Half-spaces the group is clipped to: keep where `dot(p - o, n) < 0`.
     clips: Vec<(V3, V3)>,
+    /// Too finely shaped for the body's grid (the hands' fingers): made
+    /// on a finer one of its own.
+    fine: bool,
 }
 
 const FAR: f32 = 1.0;
@@ -281,18 +284,29 @@ impl Group {
 pub struct Sculpt {
     groups: Vec<Group>,
     bones: [(V3, V3); BONES],
+    /// While the surface is made: only the fine groups (`Some(true)`), only
+    /// the others (`Some(false)`), or all of them.
+    pass: std::cell::Cell<Option<bool>>,
 }
 
 impl Sculpt {
+    /// The groups in the pass being made.
+    fn in_pass(&self) -> impl Iterator<Item = &Group> {
+        let pass = self.pass.get();
+        self.groups
+            .iter()
+            .filter(move |g| pass.is_none_or(|fine| g.fine == fine))
+    }
+
     /// Distance to the body's surface (negative inside).
     pub fn dist(&self, p: V3) -> f32 {
-        self.groups.iter().map(|g| g.dist(p).0).fold(FAR, f32::min)
+        self.in_pass().map(|g| g.dist(p).0).fold(FAR, f32::min)
     }
 
     /// The part whose surface `p` lies on.
     fn part_at(&self, p: V3) -> Option<&Part> {
         let mut best: Option<(&Part, f32)> = None;
-        for g in &self.groups {
+        for g in self.in_pass() {
             let (d, i, _) = g.dist(p);
             if i == usize::MAX {
                 continue;
@@ -581,6 +595,7 @@ pub fn sculpt(j: &Joints) -> Sculpt {
         parts: Vec::new(),
         cuts: Vec::new(),
         clips: Vec::new(),
+        fine: false,
     };
     let mut add_part = |p: Part| body.parts.push(p);
 
@@ -877,51 +892,72 @@ pub fn sculpt(j: &Joints) -> Sculpt {
         parts: Vec::new(),
         cuts: Vec::new(),
         clips: Vec::new(),
+        fine: true,
     };
     for k in 0..2 {
         let g = j.grip[k];
         let s = if k == 0 { 1.0f32 } else { -1.0 };
         let ax = [bike.fwd, bike.up, bike.right];
+        // A point near the grip, in the bike's terms: `out` is away from
+        // the stem (the thumb is on the other side).
+        let at = |fwd: f32, up: f32, out: f32| add(g, bike.dir(fwd, up, s * out));
+        // The back of the gloved hand, resting along the top of the hood.
         hands.parts.push(rigid(
-            ell(
-                add(g, bike.dir(-0.018, 0.016, 0.0)),
-                ax,
-                [0.052, 0.03, 0.04],
-            ),
-            0.02,
+            ell(at(-0.012, 0.016, 0.002), ax, [0.042, 0.0145, 0.031]),
+            0.012,
             solid(Paint::Glove),
             HAND[k],
         ));
-        // Fingers wrapped down round the hood, and the thumb inside.
+        // Four fingers over the front of the hood, each in three joints
+        // curling down round it: gloved to the first joint, bare beyond
+        // (fingerless gloves). Index finger on the inside, by the thumb.
+        for (i, (across, long)) in [
+            (-0.021f32, 0.92f32),
+            (-0.007, 1.0),
+            (0.007, 0.96),
+            (0.02, 0.8),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let knuckle = at(0.024, 0.017 - 0.0015 * i as f32, across);
+            let mid = add(knuckle, bike.dir(0.02 * long, -0.006, s * across * 0.12));
+            let end = add(mid, bike.dir(0.009 * long, -0.02 * long, s * across * 0.05));
+            let tip = add(end, bike.dir(-0.004 * long, -0.015 * long, 0.0));
+            let r = 0.0083 - 0.0006 * (i as f32 - 1.0).abs();
+            for (a, b, ra, rb, paint) in [
+                (knuckle, mid, r, r * 0.95, Paint::Glove),
+                (mid, end, r * 0.95, r * 0.88, Paint::Skin),
+                (end, tip, r * 0.88, r * 0.8, Paint::Skin),
+            ] {
+                hands
+                    .parts
+                    .push(rigid(cone(a, b, ra, rb), 0.003, solid(paint), HAND[k]));
+            }
+        }
+        // The thumb, round the inside of the hood: gloved at its root.
+        let root = at(-0.012, 0.004, -0.026);
+        let thumb_mid = at(0.012, 0.0, -0.03);
+        let thumb_tip = at(0.03, -0.006, -0.026);
         hands.parts.push(rigid(
-            cone(
-                add(g, bike.dir(0.025, 0.02, 0.0)),
-                add(g, bike.dir(0.03, -0.035, 0.0)),
-                0.019,
-                0.016,
-            ),
-            0.02,
+            cone(root, thumb_mid, 0.011, 0.0095),
+            0.006,
+            solid(Paint::Glove),
+            HAND[k],
+        ));
+        hands.parts.push(rigid(
+            cone(thumb_mid, thumb_tip, 0.0095, 0.008),
+            0.004,
             solid(Paint::Skin),
-            HAND[k],
-        ));
-        hands.parts.push(rigid(
-            cone(
-                add(j.wrist[k], bike.dir(0.01, 0.0, -s * 0.02)),
-                add(g, bike.dir(0.02, 0.0, -s * 0.03)),
-                0.013,
-                0.011,
-            ),
-            0.015,
-            solid(Paint::Glove),
             HAND[k],
         ));
         // The wrist, joining the forearm.
         hands.parts.push(part(
             cone(
                 j.wrist[k],
-                add(g, bike.dir(-0.03, 0.015, 0.0)),
+                add(g, bike.dir(-0.034, 0.014, 0.0)),
                 0.024,
-                0.026,
+                0.021,
             ),
             0.02,
             solid(Paint::Glove),
@@ -935,6 +971,7 @@ pub fn sculpt(j: &Joints) -> Sculpt {
         parts: Vec::new(),
         cuts: Vec::new(),
         clips: Vec::new(),
+        fine: false,
     };
     for k in 0..2 {
         let (b, f, n) = (j.ball[k], j.foot_fwd[k], j.foot_up[k]);
@@ -1025,6 +1062,7 @@ pub fn sculpt(j: &Joints) -> Sculpt {
         parts: Vec::new(),
         cuts: Vec::new(),
         clips: Vec::new(),
+        fine: false,
     };
     let hh = (h, hf, hu);
     let skull_paint: Painter = Box::new(move |p| {
@@ -1090,6 +1128,7 @@ pub fn sculpt(j: &Joints) -> Sculpt {
         parts: Vec::new(),
         cuts: Vec::new(),
         clips: Vec::new(),
+        fine: false,
     };
     // Long vents following the shell's curve from the brow to the back,
     // shorter towards the sides.
@@ -1157,6 +1196,7 @@ pub fn sculpt(j: &Joints) -> Sculpt {
         parts: Vec::new(),
         cuts: Vec::new(),
         clips: Vec::new(),
+        fine: false,
     };
     let lens_c = on(-0.004, 0.006, 0.0);
     glasses.parts.push(rigid(
@@ -1189,6 +1229,7 @@ pub fn sculpt(j: &Joints) -> Sculpt {
     Sculpt {
         groups,
         bones: segments(j).map(|(a, b, _)| (a, b)),
+        pass: std::cell::Cell::new(None),
     }
 }
 
@@ -1248,8 +1289,39 @@ pub struct Skin {
 pub fn build(cell: f32) -> Skin {
     let rest = joints(&rest_pose());
     let sculpt = sculpt(&rest);
-    let lo = [-0.42f32, 0.02, -0.34];
-    let hi = [0.74f32, 1.72, 0.34];
+    // The body on the grid asked for...
+    sculpt.pass.set(Some(false));
+    let (mut verts, mut indices) = net(&sculpt, [-0.42, 0.02, -0.34], [0.74, 1.72, 0.34], cell);
+    // ...and each hand, fingers and all, on one 2.5 times finer, in a box
+    // round it.
+    sculpt.pass.set(Some(true));
+    for k in 0..2 {
+        let (w, g) = (rest.wrist[k], rest.grip[k]);
+        let lo = [0, 1, 2].map(|a| w[a].min(g[a]) - 0.07);
+        let hi = [0, 1, 2].map(|a| w[a].max(g[a]) + 0.07);
+        let (v, i) = net(&sculpt, lo, hi, cell * 0.4);
+        let base = verts.len() as u32;
+        verts.extend(v);
+        indices.extend(i.iter().map(|x| x + base));
+    }
+    sculpt.pass.set(None);
+
+    let mut vertices = Vec::with_capacity(verts.len() * STRIDE);
+    for v in &verts {
+        let (col, mat) = v.paint.look();
+        let col = scale(col, v.ao);
+        vertices.extend_from_slice(&[
+            v.p[0], v.p[1], v.p[2], v.n[0], v.n[1], v.n[2], col[0], col[1], col[2], mat,
+        ]);
+        vertices.extend_from_slice(&v.bones);
+        vertices.extend_from_slice(&v.weights);
+    }
+    Skin { vertices, indices }
+}
+
+/// The surface of `sculpt` (its groups in the pass being made) inside the
+/// box `lo`..`hi`, made on a grid of `cell`: its vertices, and triangles.
+fn net(sculpt: &Sculpt, lo: V3, hi: V3, cell: f32) -> (Vec<Vert>, Vec<u32>) {
     let n = [
         ((hi[0] - lo[0]) / cell).ceil() as usize + 1,
         ((hi[1] - lo[1]) / cell).ceil() as usize + 1,
@@ -1444,23 +1516,9 @@ pub fn build(cell: f32) -> Skin {
     // or a chest band is a clean line, not a jagged blend.
     let mut out = Vec::with_capacity(indices.len());
     for t in indices.chunks(3) {
-        split(&sculpt, &mut verts, [t[0], t[1], t[2]], 0, &mut out);
+        split(sculpt, &mut verts, [t[0], t[1], t[2]], 0, &mut out);
     }
-
-    let mut vertices = Vec::with_capacity(verts.len() * STRIDE);
-    for v in &verts {
-        let (col, mat) = v.paint.look();
-        let col = scale(col, v.ao);
-        vertices.extend_from_slice(&[
-            v.p[0], v.p[1], v.p[2], v.n[0], v.n[1], v.n[2], col[0], col[1], col[2], mat,
-        ]);
-        vertices.extend_from_slice(&v.bones);
-        vertices.extend_from_slice(&v.weights);
-    }
-    Skin {
-        vertices,
-        indices: out,
-    }
+    (verts, out)
 }
 
 /// A vertex of the body while it is being made.

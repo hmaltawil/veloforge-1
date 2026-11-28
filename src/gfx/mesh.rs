@@ -1678,9 +1678,9 @@ pub fn bike(p: &RiderPose, j: &Joints) -> Mesh {
         m.tube(at(0.6, 0.78, z), at(0.53, 0.73, z), 0.012, 0.012, 6, tape);
         m.tube(
             at(0.575, 0.855, z),
-            at(0.61, 0.915, z),
+            at(0.606, 0.9, z),
             0.017,
-            0.012,
+            0.011,
             6,
             rubber,
         );
